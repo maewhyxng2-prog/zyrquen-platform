@@ -1,0 +1,6 @@
+# Model weights - Cloud Volume only
+/data/
+models/
+*.safetensors
+*.bin
+*.gguf
