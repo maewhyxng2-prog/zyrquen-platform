@@ -1,6 +1,3 @@
-
-from uuid import UUID
-
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -17,6 +14,6 @@ class UserLogin(BaseModel):
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: UUID
+    id: str
     email: str
     is_active: bool
