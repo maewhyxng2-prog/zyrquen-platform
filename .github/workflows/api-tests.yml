@@ -1,3 +1,4 @@
+
 name: ZYRQUEN API Tests
 
 on:
@@ -9,6 +10,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    env:
+      DATABASE_URL: sqlite:///./test.db
 
     defaults:
       run:
