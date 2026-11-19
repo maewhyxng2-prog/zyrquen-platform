@@ -1,10 +1,14 @@
+
 from fastapi import FastAPI
+
+from routers.auth import router as auth_router
 
 app = FastAPI(
     title="ZYRQUEN Ω∞ API",
     version="0.1.0",
-    description="Independent Native AI Platform API"
 )
+
+app.include_router(auth_router)
 
 
 @app.get("/")
@@ -13,7 +17,7 @@ async def root():
         "platform": "ZYRQUEN Ω∞",
         "status": "running",
         "mode": "online",
-        "native_ai": "not_implemented"
+        "native_ai": "not_implemented",
     }
 
 
@@ -21,5 +25,5 @@ async def root():
 async def health():
     return {
         "status": "healthy",
-        "service": "zyrquen-api"
-  }
+        "service": "zyrquen-api",
+    }
