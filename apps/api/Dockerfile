@@ -9,8 +9,9 @@ FROM python:3.11-slim
 # ไม่สร้าง .pyc / ให้ log ออกทันที
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app \
+    PYTHONPATH=/app:/app/apps/api \
     ZYRQUEN_MODEL_DIR=/data/models/qwen2.5-0.5b \
+    ZYRQUEN_MODEL_PATH=/data/models/zyrquen-native-v1 \
     PORT=8000
 
 WORKDIR /app
@@ -39,5 +40,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# 6. รัน API จาก Root Path - ใช้ apps.api.main เพื่อให้ Import apps.core ได้
+# 6. รัน API จาก Root Path - PYTHONPATH รวม /app (apps.core) และ /app/apps/api
+#    (routers, database, security ที่ main.py import แบบ top-level)
 CMD ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -22,3 +22,21 @@ models/
 # OS / Editor
 .DS_Store
 .vscode/
+
+# --- Added: local DB / test artifacts / tooling ---
+*.db
+*.sqlite3
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Allow the committed env template (".env.*" above would otherwise hide it)
+!.env.example
+
+# Native training outputs - Cloud Volume only, never in Git
+checkpoints/
+runs/
+artifacts/
+*.ckpt
+*.npz

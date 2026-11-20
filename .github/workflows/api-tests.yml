@@ -13,6 +13,8 @@ jobs:
 
     env:
       DATABASE_URL: sqlite:///./test.db
+      # main.py imports apps.core (repo root) and routers/database (apps/api)
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/apps/api
 
     defaults:
       run:
@@ -34,3 +36,7 @@ jobs:
 
       - name: Run API tests
         run: pytest -v
+
+      - name: Run native tokenizer tests
+        working-directory: .
+        run: pytest -v apps/core/native/test_tokenizer.py
