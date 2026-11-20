@@ -25,6 +25,9 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
+      - name: Check whitespace errors
+        run: git diff --check
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -41,6 +44,19 @@ jobs:
           pip install tokenizers transformers
       - name: Run API tests
         run: python -m pytest -v
+
+      - name: Compile Python sources
+        working-directory: .
+        run: python -m compileall -q apps/api apps/core
+
+      - name: Static migration validation
+        working-directory: .
+        env:
+          PYTHON_DOTENV_DISABLED: "1"
+          ZYRQUEN_ENV: unit_test
+          DATABASE_URL: sqlite:///./test.db
+          JWT_SECRET_KEY: test-secret
+        run: python -m compileall -q apps/api/migrations
 
       - name: Install PyTorch (CPU) for native model tests
         working-directory: .
@@ -79,3 +95,18 @@ jobs:
 
       - name: Lint web application
         run: npm run lint
+
+      - name: Build web application
+        run: npm run build
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Build API image
+        run: docker build -f apps/api/Dockerfile -t zyrquen-api:test .
+
+      - name: Build web image
+        run: docker build -f apps/web/Dockerfile -t zyrquen-web:test ./apps/web

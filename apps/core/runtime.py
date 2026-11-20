@@ -55,12 +55,23 @@ class NativeRuntime:
 
         return {
             "runtime_status": (
-                "ready" if ready else "degraded"
+                "ready" if ready else (
+                    "not_configured"
+                    if not self.loader.model_path.is_dir()
+                    else "degraded"
+                )
             ),
             "native_model_loaded": self.loader.is_ready(),
             "authority": "ZYRQUEN Native AI Core",
             "inference_available": ready,
         }
+
+    def shutdown(self) -> None:
+        """Release native model resources during application shutdown."""
+        with self._initialization_lock:
+            self._initialized = False
+            self.loader.model = None
+            self.loader.tokenizer = None
 
 
 runtime = NativeRuntime()

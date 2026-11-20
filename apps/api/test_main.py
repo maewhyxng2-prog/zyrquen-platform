@@ -13,5 +13,36 @@ def test_root():
 
 def test_health():
     response = client.get("/health")
+    assert response.status_code in (200, 503)
+    assert response.json()["status"] in ("healthy", "degraded", "unavailable")
+    assert "database" in response.json()
+    assert "native_ai" in response.json()
+
+
+def test_liveness_does_not_probe_dependencies():
+    response = client.get("/livez")
     assert response.status_code == 200
-    assert response.json()["status"] == "healthy"
+    assert response.json() == {
+        "status": "healthy",
+        "service": "zyrquen-api",
+    }
+
+
+def test_readiness_reports_real_dependency_states():
+    response = client.get("/readyz")
+    assert response.status_code in (200, 503)
+    body = response.json()
+    assert body["status"] in ("healthy", "degraded", "unavailable")
+    assert body["database"]["status"] in ("healthy", "unavailable")
+    assert body["native_ai"]["runtime_status"] in (
+        "ready",
+        "degraded",
+        "not_configured",
+    )
+
+
+def test_request_observability_headers():
+    response = client.get("/livez", headers={"X-Correlation-ID": "test-correlation"})
+    assert response.headers["x-correlation-id"] == "test-correlation"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"

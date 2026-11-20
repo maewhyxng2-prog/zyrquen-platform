@@ -128,3 +128,33 @@ SQLite is used only for unit tests. PostgreSQL-specific migration and
 row-locking behavior must be validated against an explicitly identified
 non-production Test database. Native PyTorch-dependent tests may be skipped
 when PyTorch is not installed.
+
+## Phase 7 production operations
+
+The repository now contains production-oriented health, structured logging,
+container, CI, security, and recovery documentation. For operators, use:
+
+- `docs/operations/PRODUCTION_OPERATIONS.md`
+- `docs/operations/DEPLOYMENT_READINESS.md`
+- `docs/operations/HEALTH_READINESS.md`
+- `docs/operations/LOGGING_MONITORING.md`
+- `docs/operations/BACKUP_RECOVERY_RUNBOOK.md`
+- `docs/operations/INCIDENT_RESPONSE_RUNBOOK.md`
+- `docs/operations/CONFIGURATION_REFERENCE.md`
+- `docs/operations/SECURITY_OPERATIONS_CHECKLIST.md`
+- `docs/operations/KNOWN_LIMITATIONS.md`
+
+Operational endpoints:
+
+- `GET /livez` — process liveness only; does not probe dependencies.
+- `GET /readyz` — real database and native-runtime readiness probe.
+- `GET /health` — backward-compatible aggregate dependency health.
+
+`/readyz` is intended for orchestration readiness. A not-loaded native model
+is reported as `not_configured` or `degraded`; it is never fabricated as
+healthy. Database readiness executes a real local connection check and is not
+an inferred configuration check.
+
+Phase 7 implementation does not establish that the platform is deployed or
+production-ready. PostgreSQL concurrency, safe Test PostgreSQL migrations,
+and production-like HTTP/multi-user testing remain separate blockers.

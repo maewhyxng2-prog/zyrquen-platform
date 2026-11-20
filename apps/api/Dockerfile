@@ -4,7 +4,7 @@
 # คำสั่ง Build ที่ถูกต้อง (รันที่ Root):
 # docker build -f apps/api/Dockerfile -t zyrquen-api:test .
 
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # ไม่สร้าง .pyc / ให้ log ออกทันที
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -44,9 +44,10 @@ EXPOSE 8000
 # 5. Healthcheck - ใช้ endpoint เดิมที่มีอยู่แล้วใน main.py
 # main.py เดิมมี / และ /health อยู่แล้ว ไม่ต้องสร้าง endpoint ใหม่
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:8000/livez || exit 1
 
 # 6. รัน API จาก Root Path - PYTHONPATH รวม /app (apps.core) และ /app/apps/api
 #    (routers, database, security ที่ main.py import แบบ top-level)
 USER 10001:10001
-CMD ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+STOPSIGNAL SIGTERM
+CMD ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "30"]
