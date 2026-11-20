@@ -14,7 +14,7 @@ from apps.api.evaluation_models import EvaluationRun
 from apps.api.main import app
 from apps.api.models import User
 from apps.api.security import ALGORITHM
-from apps.api.training_models import TrainingRun
+from training_models import TrainingRun
 
 
 @pytest.fixture
@@ -40,7 +40,7 @@ def auth_client(tmp_path, monkeypatch):
 
     monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-for-auth-gate-only")
     app.dependency_overrides[get_db] = override_db
-    with TestClient(app) as client:
+    with TestClient(app, client=("127.0.0.1", 12345)) as client:
         yield client, TestingSession
     app.dependency_overrides.clear()
     engine.dispose()
@@ -72,7 +72,10 @@ def test_session_me_and_protected_routes_require_real_auth(auth_client):
     assert client.get("/auth/me").status_code == 401
     assert client.post("/auth/logout").status_code == 401
     assert (
-        client.post("/v1/native-ai/infer", json={"prompt": "hello"}).status_code
+        client.post(
+            "/v1/native-ai/infer",
+            json={"prompt": "hello", "request_id": str(uuid.uuid4())},
+        ).status_code
         == 401
     )
 
@@ -103,7 +106,7 @@ def test_logout_revokes_token_against_backend(auth_client):
         client.post(
             "/v1/native-ai/infer",
             headers=headers,
-            json={"prompt": "test"},
+            json={"prompt": "test", "request_id": str(uuid.uuid4())},
         ).status_code
         == 401
     )
@@ -168,7 +171,13 @@ def test_multi_user_isolation_and_backend_authorization(auth_client, monkeypatch
                 model_config={"n_layers": 1},
             )
         )
-        eval_run = EvaluationRun(model_version="v1", status="pending")
+        eval_run = EvaluationRun(
+            user_id=uuid.UUID(admin_a_id),
+            model_version="v1",
+            dataset_id="dataset-v1",
+            dataset_checksum="abc123",
+            status="queued",
+        )
         db.add(eval_run)
         db.commit()
         db.refresh(eval_run)

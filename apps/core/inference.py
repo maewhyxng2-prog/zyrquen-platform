@@ -1,10 +1,8 @@
 import asyncio
-from threading import Lock
-
 from .context import InferenceContext
 from .exceptions import InferenceError
 from .exceptions import ResourceLimitExceeded
-from .model_loader import NativeModelLoader
+from .model_loader import NativeModelLoader, native_generation_lock
 
 class NativeInferenceEngine:
     def __init__(
@@ -13,7 +11,6 @@ class NativeInferenceEngine:
         max_concurrent_requests: int = 1,
     ):
         self.loader = loader
-        self._generation_lock = Lock()
         self._semaphore = asyncio.Semaphore(
             max_concurrent_requests,
         )
@@ -67,7 +64,7 @@ class NativeInferenceEngine:
             _tp = getattr(context, "top_p", 1.0)
             if _tp is not None and 0.0 < _tp < 1.0:
                 generation_options["top_p"] = _tp
-            with self._generation_lock:
+            with native_generation_lock:
                 with torch.inference_mode():
                     outputs = model.generate(
                         **inputs,

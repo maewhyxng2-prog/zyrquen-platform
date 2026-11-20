@@ -7,6 +7,7 @@ from threading import Lock
 from .exceptions import ModelNotFoundError, ModelLoadError
 
 logger = logging.getLogger(__name__)
+native_generation_lock = Lock()
 
 
 class NativeModelLoader:

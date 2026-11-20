@@ -168,6 +168,9 @@ def test_03_max_chars_drops_oldest():
     assert m2.messages()[0].content == "b"
 
 def test_04_engine_with_context(tmp_path):
+    import torch
+
+    torch.manual_seed(0)
     mdir = _make_tiny_model_dir(
         tmp_path / "tiny-54",
     )
@@ -175,6 +178,9 @@ def test_04_engine_with_context(tmp_path):
         model_path=str(mdir),
     )
     _init_loader(loader)
+    loader.tokenizer.eos_token_id = None
+    loader.model.config.eos_token_id = None
+    loader.model.generation_config.eos_token_id = None
     m = ContextManager(
         max_turns=10,
     )

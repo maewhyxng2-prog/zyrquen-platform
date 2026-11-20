@@ -1,17 +1,17 @@
 import asyncio
-from threading import Lock
-
 from pydantic import BaseModel, Field
 
 from .context import InferenceContext
 from .exceptions import InferenceError
 from .exceptions import ResourceLimitExceeded
-from .model_loader import NativeModelLoader
+from .model_loader import NativeModelLoader, native_generation_lock
 
 class StreamChunk(BaseModel):
     text: str
     index: int = Field(ge=0)
     is_final: bool = False
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
 
 def _filter_logits(logits, temp, top_k, top_p):
     import torch
@@ -59,7 +59,6 @@ class StreamingInferenceEngine:
         loader: NativeModelLoader,
     ):
         self.loader = loader
-        self._lock = Lock()
 
     def _step(
         self,
@@ -69,7 +68,7 @@ class StreamingInferenceEngine:
     ):
         import torch
 
-        with self._lock:
+        with native_generation_lock:
             with torch.inference_mode():
                 logits = model(
                     input_ids,
@@ -124,6 +123,8 @@ class StreamingInferenceEngine:
             ).device
             input_ids = input_ids.to(device)
             eos = tokenizer.eos_token_id
+            input_tokens = int(input_ids.shape[1])
+            output_tokens = 0
             for i in range(context.max_tokens):
                 tok_id, tok_t = await asyncio.to_thread(
                     self._step,
@@ -133,6 +134,7 @@ class StreamingInferenceEngine:
                 )
                 if eos is not None and tok_id == eos:
                     break
+                output_tokens += 1
                 text = tokenizer.decode(
                     [tok_id],
                     skip_special_tokens=True,
@@ -153,6 +155,8 @@ class StreamingInferenceEngine:
                 text="",
                 index=context.max_tokens,
                 is_final=True,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
             )
         except (ResourceLimitExceeded, InferenceError):
             raise

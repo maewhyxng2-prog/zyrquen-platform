@@ -12,6 +12,33 @@ type RouteContext = {
   params: Promise<{ path: string[] }>;
 };
 
+async function readBoundedBody(
+  request: NextRequest,
+  maxBytes: number,
+): Promise<string | null> {
+  const reader = request.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > maxBytes) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(body);
+}
+
 function respondFromLogin(
   request: NextRequest,
   result: { access_token?: unknown },
@@ -63,18 +90,49 @@ async function proxy(request: NextRequest, context: RouteContext) {
   const baseUrl = resolveApiBaseUrl(configuredUrl, process.env.NODE_ENV);
   const hasExplicitUrl = Boolean(configuredUrl?.trim());
   const isInferenceStream = path === "v1/native-ai/infer/stream";
+  const isInferenceRequest =
+    path === "v1/native-ai/infer" || isInferenceStream;
+  const isUserDataRequest =
+    path === "users/me" || path.startsWith("users/me/");
+  const isConversationRequest =
+    path === "conversations" || path.startsWith("conversations/");
+  const requiresExpectedIdentity =
+    isInferenceRequest || isUserDataRequest || isConversationRequest;
+  const cookieStore = await cookies();
+  const accessToken = cookieStore.get(ACCESS_COOKIE)?.value;
+  if (
+    accessToken &&
+    !["GET", "HEAD", "OPTIONS"].includes(method) &&
+    request.headers.get("origin") !== request.nextUrl.origin
+  ) {
+    return NextResponse.json(
+      { detail: "คำขอไม่ผ่านการตรวจสอบแหล่งที่มา" },
+      { status: 403 },
+    );
+  }
 
   let body: string | undefined;
   const headers = new Headers({
     Accept: isInferenceStream ? "text/event-stream" : "application/json",
   });
-  if (method === "POST") {
-    body = await request.text();
+  if (["POST", "PATCH", "PUT"].includes(method)) {
+    const declaredLength = Number(request.headers.get("content-length") ?? 0);
+    if (declaredLength > 65_536) {
+      return NextResponse.json(
+        { detail: "คำขอมีขนาดใหญ่เกินขีดจำกัด" },
+        { status: 413 },
+      );
+    }
+    body = await readBoundedBody(request, 65_536) ?? undefined;
+    if (body === undefined) {
+      return NextResponse.json(
+        { detail: "คำขอมีขนาดใหญ่เกินขีดจำกัด" },
+        { status: 413 },
+      );
+    }
     headers.set("Content-Type", request.headers.get("content-type") || "application/json");
   }
 
-  const cookieStore = await cookies();
-  const accessToken = cookieStore.get(ACCESS_COOKIE)?.value;
   if (accessToken && path !== "auth/login" && path !== "auth/register") {
     headers.set("Authorization", `Bearer ${accessToken}`);
   }
@@ -88,14 +146,14 @@ async function proxy(request: NextRequest, context: RouteContext) {
     );
   }
 
-  if (isInferenceStream) {
+  if (requiresExpectedIdentity) {
     const expectedUserId = request.headers
       .get("x-zyrquen-expected-user-id")
       ?.trim();
     const authorizationHeader = headers.get("Authorization");
     if (!expectedUserId || !authorizationHeader) {
       return NextResponse.json(
-        { detail: "ยืนยันบัญชีผู้ใช้ก่อนเริ่ม Native Inference" },
+        { detail: "ยืนยันบัญชีผู้ใช้ก่อนดำเนินการ" },
         { status: 401 },
       );
     }
@@ -165,7 +223,7 @@ async function proxy(request: NextRequest, context: RouteContext) {
 
   let upstream: Response;
   try {
-    const timeoutMs = isInferenceStream
+    const timeoutMs = isInferenceRequest
       ? 120_000
       : hasExplicitUrl
         ? 20_000
@@ -232,3 +290,5 @@ async function proxy(request: NextRequest, context: RouteContext) {
 
 export const GET = proxy;
 export const POST = proxy;
+export const PATCH = proxy;
+export const DELETE = proxy;

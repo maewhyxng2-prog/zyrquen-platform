@@ -120,6 +120,7 @@ def test_01_defaults_and_validation():
     assert ctx.top_p == 1.0
     req = InferenceRequest(
         prompt="hello world",
+        request_id="123e4567-e89b-42d3-a456-426614174000",
     )
     assert req.top_k == 0
     assert req.top_p == 1.0

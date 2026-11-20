@@ -37,8 +37,8 @@ jobs:
 
       - name: Install native test deps for API tests
         run: |
-  pip install 【entity-torch¦canonical_name=torch】 --index-url https://download.pytorch.org/whl/cpu
-  pip install tokenizers transformers
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install tokenizers transformers
       - name: Run API tests
         run: python -m pytest -v
 
@@ -48,4 +48,34 @@ jobs:
 
       - name: Run native model, training and infrastructure tests
         working-directory: .
-        run: python -m pytest -v apps/core/native apps/core/training_infrastructure apps/core/training
+        run: python -m pytest -v apps/core/test_*.py apps/core/native apps/core/training_infrastructure apps/core/training
+
+  web:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: apps/web
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install web dependencies
+        run: npm ci
+
+      - name: Run Vitest
+        run: npm test
+
+      - name: Type-check web application
+        run: npm run typecheck
+
+      - name: Lint web application
+        run: npm run lint

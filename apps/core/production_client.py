@@ -1,4 +1,5 @@
 import json
+from uuid import uuid4
 
 class ProductionError(Exception):
     pass
@@ -25,6 +26,7 @@ class ProductionClient:
             "/v1/native-ai/infer",
             json={
                 "prompt": prompt,
+                "request_id": str(uuid4()),
                 "max_tokens": max_tokens,
                 "temperature": temperature,
                 "top_k": top_k,
@@ -55,10 +57,34 @@ class ProductionClient:
         temperature=0.7,
         top_k=0, top_p=1.0,
     ):
+        conversation = self.client.post(
+            "/conversations",
+            json={"title": prompt[:48] or "Native AI"},
+        )
+        if conversation.status_code != 201:
+            raise ProductionError(
+                f"conversation creation failed: {conversation.status_code}"
+            )
+        conversation_id = conversation.json()["id"]
+        user_message = self.client.post(
+            f"/conversations/{conversation_id}/messages",
+            json={
+                "id": str(uuid4()),
+                "role": "user",
+                "content": prompt,
+            },
+        )
+        if user_message.status_code != 201:
+            raise ProductionError(
+                f"user message persistence failed: {user_message.status_code}"
+            )
+        request_id = str(uuid4())
         r = self.client.post(
             "/v1/native-ai/infer/stream",
             json={
                 "prompt": prompt,
+                "request_id": request_id,
+                "conversation_id": conversation_id,
                 "max_tokens": max_tokens,
                 "temperature": temperature,
                 "top_k": top_k,

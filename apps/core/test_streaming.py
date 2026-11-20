@@ -117,6 +117,13 @@ def test_01_stream_chunks(tmp_path):
         c.text for c in content
     )
     assert any(c.text for c in content)
+    expected_input_tokens = loader.tokenizer(
+        "hello world",
+        return_tensors="pt",
+        truncation=False,
+    )["input_ids"].shape[-1]
+    assert chunks[-1].input_tokens == expected_input_tokens
+    assert chunks[-1].output_tokens == len(content)
 
 def test_02_greedy_stream_deterministic(tmp_path):
     mdir = _make_tiny_model_dir(

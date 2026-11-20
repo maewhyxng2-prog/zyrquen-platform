@@ -23,8 +23,11 @@ from apps.api.database_safety import (  # noqa: E402
     validate_database_target,
     verify_test_database_connection,
 )
-import models  # noqa: E402,F401
-import training_models  # noqa: E402,F401
+import apps.api.models  # noqa: E402,F401
+import apps.api.training_models  # noqa: E402,F401
+import apps.api.evaluation_models  # noqa: E402,F401
+import apps.api.usage_models  # noqa: E402,F401
+import apps.api.api_access_models  # noqa: E402,F401
 
 target_metadata = Base.metadata
 

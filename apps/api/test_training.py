@@ -60,7 +60,7 @@ def api_client(tmp_path, monkeypatch):
     monkeypatch.setenv(
         "ZYRQUEN_TRAINING_ADMIN_EMAILS", "training-admin@example.com"
     )
-    with TestClient(app) as client:
+    with TestClient(app, client=("127.0.0.1", 12345)) as client:
         yield client, TestingSession, test_user
     app.dependency_overrides.clear()
     engine.dispose()
