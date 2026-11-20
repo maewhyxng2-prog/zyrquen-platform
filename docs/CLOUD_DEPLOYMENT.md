@@ -38,6 +38,10 @@ do not commit production values:
 | `DATABASE_URL` | Managed PostgreSQL SQLAlchemy URL, e.g. `postgresql+psycopg://USER:PASSWORD@HOST:5432/DB?sslmode=require`. URL-encode special characters in credentials. |
 | `JWT_SECRET_KEY` | High-entropy secret stored in the provider secret manager. |
 | `ZYRQUEN_MODEL_PATH` | Persistent mount path to the native model artifact; default deployment path is `/data/models/zyrquen-native-v1`. |
+| `ZYRQUEN_TRAINING_ADMIN_EMAILS` | Comma-separated allowlist of authenticated administrator emails. Empty means training management is disabled. |
+| `ZYRQUEN_DATASET_DIR` | Directory containing the prepared dataset manifest and train/validation splits. |
+| `ZYRQUEN_TOKENIZER_PATH` | Path to the matching ZYRQUEN tokenizer JSON artifact. |
+| `ZYRQUEN_TRAINING_ROOT` | Persistent output directory for per-run telemetry and checkpoints; default `/data/training`. |
 
 `NODE_ENV=production`, `PORT`, and the web bind address are set by the web
 container. `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` are only for
@@ -45,7 +49,7 @@ the local Compose database and should not replace managed PostgreSQL credentials
 
 The web/API images run as non-root. Configure volume ownership/permissions for
 UID 1001 on the web container if persistent web storage is ever added, and UID
-10001 for API model artifacts.
+10001 for API model, dataset, tokenizer, and training mounts.
 
 ## Health checks and readiness
 
@@ -59,6 +63,24 @@ native-model artifact, so native inference must remain unavailable until those
 runtime dependencies and a ZYRQUEN-trained artifact are provisioned and verified.
 Do not substitute or download an external model.
 
+Training job endpoints are admin-allowlisted and return 503 until a CUDA-enabled
+PyTorch runtime, attached NVIDIA GPU, verified dataset, and tokenizer are
+available. Jobs run in a single API process; deploy one API worker/replica for
+this initial dispatcher. The native training loop reports steps, not epochs,
+and telemetry reports epochs as unavailable rather than deriving them.
+
+Before starting the API, apply the additive training schema migration against a
+database that already has the existing `users` table:
+
+```bash
+DATABASE_URL='postgresql+psycopg://USER:PASSWORD@HOST:5432/DB?sslmode=require' \
+  alembic -c apps/api/alembic.ini upgrade head
+```
+
+The migration adds `training_runs` and does not alter `users`. This repository
+does not yet contain a baseline migration for the existing authentication
+schema.
+
 ## Production blockers
 
 Before a real deployment can be attempted, an operator must select and provide:
@@ -70,9 +92,9 @@ Before a real deployment can be attempted, an operator must select and provide:
 4. Persistent model storage, appropriate permissions, and a verified native
    model artifact.
 5. Secret-manager values for `JWT_SECRET_KEY` and service configuration.
-6. Database schema migrations: Alembic is listed as a dependency, but this
-   repository currently has no migration setup/scripts or verified schema
-   initialization path.
+6. Apply the included `training_runs` migration after provisioning the existing
+   `users` table. A baseline migration for the authentication schema is still
+   absent.
 7. For cloud training, a GPU provider and explicit approval for any paid
    compute. No cloud GPU integration exists yet.
 

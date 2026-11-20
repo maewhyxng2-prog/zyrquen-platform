@@ -35,8 +35,12 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run API tests
-        run: pytest -v
+        run: python -m pytest -v
 
-      - name: Run native tokenizer tests
+      - name: Install PyTorch (CPU) for native model tests
         working-directory: .
-        run: pytest -v apps/core/native/test_tokenizer.py
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Run native model, training and infrastructure tests
+        working-directory: .
+        run: python -m pytest -v apps/core/native apps/core/training_infrastructure apps/core/training
