@@ -27,7 +27,7 @@ async function proxy(request: NextRequest, context: RouteContext) {
   const method = request.method.toUpperCase();
 
   if (!isAllowedBackendRoute(method, path)) {
-    return NextResponse.json({ detail: "Backend route not allowed." }, { status: 404 });
+    return NextResponse.json({ detail: "ไม่รองรับเส้นทาง API ที่ร้องขอ" }, { status: 404 });
   }
 
   const baseUrl = resolveApiBaseUrl(
@@ -36,7 +36,10 @@ async function proxy(request: NextRequest, context: RouteContext) {
   );
   if (!baseUrl) {
     return NextResponse.json(
-      { detail: "The ZYRQUEN API URL is not configured for this environment." },
+      {
+        detail:
+          "ยังไม่ได้กำหนดค่า ZYRQUEN_API_BASE_URL สำหรับสภาพแวดล้อมนี้ กรุณาตั้งค่าการเชื่อมต่อ API ฝั่งเซิร์ฟเวอร์",
+      },
       { status: 503 },
     );
   }
@@ -66,7 +69,10 @@ async function proxy(request: NextRequest, context: RouteContext) {
     });
   } catch {
     return NextResponse.json(
-      { detail: "Unable to connect to the configured ZYRQUEN API." },
+      {
+        detail:
+          "ไม่สามารถเชื่อมต่อกับ ZYRQUEN API ที่กำหนดไว้ได้ กรุณาตรวจสอบว่าบริการ API กำลังทำงานอยู่",
+      },
       { status: 503 },
     );
   }
@@ -79,14 +85,14 @@ async function proxy(request: NextRequest, context: RouteContext) {
       credentials = JSON.parse(body || "{}") as { email?: unknown };
     } catch {
       return NextResponse.json(
-        { detail: "The authentication service returned an invalid response." },
+        { detail: "บริการยืนยันตัวตนส่งข้อมูลตอบกลับไม่ถูกต้อง" },
         { status: 502 },
       );
     }
 
     if (typeof result.access_token !== "string" || !result.access_token) {
       return NextResponse.json(
-        { detail: "The authentication service did not return an access token." },
+        { detail: "บริการยืนยันตัวตนไม่ได้ส่ง Access Token กลับมา" },
         { status: 502 },
       );
     }

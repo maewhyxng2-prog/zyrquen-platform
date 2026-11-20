@@ -43,65 +43,68 @@ export default function SystemPage() {
   return (
     <div className="page-stack">
       <PageHeader
-        action={<button className="button button-secondary" onClick={() => void refresh()} type="button"><Icon name="activity" size={16} /> Recheck services</button>}
-        description="Live API health is checked against the existing FastAPI endpoints. Unsupported infrastructure signals remain unavailable."
-        eyebrow="PLATFORM / OPERATIONS"
+        action={<button className="button button-secondary" onClick={() => void refresh()} type="button"><Icon name="activity" size={16} /> ตรวจสอบบริการอีกครั้ง</button>}
+        description="ตรวจสอบสถานะการเชื่อมต่อ API และความพร้อมของบริการจาก Endpoint ที่มีอยู่จริง หากบริการไม่พร้อมใช้งานระบบจะแจ้งเตือนตามจริงโดยไม่แสดงสถานะเท็จ"
+        eyebrow="แพลตฟอร์ม / สถานะระบบ"
         icon="activity"
-        title="System health"
+        title="สถานะสุขภาพของระบบ"
       />
       <Panel>
         <div className="panel-heading">
-          <div><div className="eyebrow">SERVICE INVENTORY</div><h2>Current service state</h2></div>
-          <span className="updated-label">{lastChecked ? `Last checked ${lastChecked.toLocaleTimeString()}` : loading ? "Checking..." : "Not checked"}</span>
+          <div><div className="eyebrow">รายการบริการ</div><h2>สถานะบริการปัจจุบัน</h2></div>
+          <span className="updated-label">{lastChecked ? `ตรวจสอบล่าสุด ${lastChecked.toLocaleTimeString("th-TH")}` : loading ? "กำลังตรวจสอบ..." : "ยังไม่ได้ตรวจสอบ"}</span>
         </div>
         <div className="system-list">
           <SystemRow
             detail={apiError || `GET /health${apiHealth?.service ? ` · ${apiHealth.service}` : ""}`}
             icon="server"
-            state={apiHealth?.status === "healthy" ? "Healthy" : apiHealth ? "Degraded" : "Unavailable"}
-            title="API service"
+            state={apiHealth?.status === "healthy" ? "พร้อมใช้งาน" : apiHealth ? "ทำงานไม่สมบูรณ์" : "ไม่พร้อมใช้งาน"}
+            title="บริการ API"
             tone={apiHealth?.status === "healthy" ? "good" : apiHealth ? "warn" : "neutral"}
           />
           <SystemRow
             detail={nativeError || nativeHealth?.authority || "GET /v1/native-ai/health"}
             icon="cpu"
-            state={nativeHealth?.runtime_status || "Unavailable"}
-            title="Native runtime"
+            state={nativeHealth?.inference_available ? "พร้อมใช้งาน" : nativeHealth?.runtime_status || "ไม่พร้อมใช้งาน"}
+            title="รันไทม์ Native Model"
             tone={nativeHealth?.inference_available ? "good" : nativeHealth ? "warn" : "neutral"}
           />
           <SystemRow
-            detail={session?.authenticated ? `Signed in${session.email ? ` as ${session.email}` : ""}` : "JWT login and registration are implemented"}
+            detail={session?.authenticated ? `เข้าสู่ระบบแล้ว${session.email ? ` ในชื่อ ${session.email}` : ""}` : "รองรับการสมัครสมาชิกและเข้าสู่ระบบด้วย JWT"}
             icon="shield"
-            state={session?.authenticated ? "Session present" : session ? "Signed out" : "Unknown"}
-            title="Authentication"
+            state={session?.authenticated ? "มีเซสชันใช้งานอยู่" : session ? "ยังไม่ได้เข้าสู่ระบบ" : "ไม่ทราบสถานะ"}
+            title="การยืนยันตัวตน"
             tone={session?.authenticated ? "good" : session ? "info" : "neutral"}
           />
           <SystemRow
-            detail="No database health endpoint is implemented"
+            detail="ยังไม่มี Endpoint สำหรับตรวจสอบสถานะฐานข้อมูล"
             icon="database"
-            state="Unavailable"
-            title="Database connectivity"
+            state="ไม่พร้อมใช้งาน"
+            title="การเชื่อมต่อฐานข้อมูล"
             tone="neutral"
           />
           <SystemRow
-            detail="No storage health endpoint is implemented"
+            detail="ยังไม่มี Endpoint สำหรับตรวจสอบสถานะพื้นที่จัดเก็บโมเดลและชุดข้อมูล"
             icon="layers"
-            state="Unavailable"
-            title="Model and dataset storage"
+            state="ไม่พร้อมใช้งาน"
+            title="พื้นที่จัดเก็บโมเดลและชุดข้อมูล"
             tone="neutral"
           />
           <SystemRow
-            detail="No cloud provider or infrastructure telemetry endpoint is configured"
+            detail="ยังไม่มี Endpoint สำหรับตรวจวัดทรัพยากรโครงสร้างพื้นฐานและ GPU"
             icon="activity"
-            state="Unavailable"
-            title="Infrastructure telemetry"
+            state="ไม่พร้อมใช้งาน"
+            title="ข้อมูลโครงสร้างพื้นฐาน"
             tone="neutral"
           />
         </div>
       </Panel>
       <Panel className="notice-panel">
         <span className="notice-icon"><Icon name="help" size={18} /></span>
-        <div><strong>Health scope</strong><p>The API reports overall service health and native runtime readiness. Database, storage, GPU utilization, and event history are not independently exposed by current API routes.</p></div>
+        <div>
+          <strong>หลักการตรวจสอบสถานะระบบ</strong>
+          <p>API รายงานเฉพาะสถานะสุขภาพบริการโดยรวมและความพร้อมของ Native Model ส่วนฐานข้อมูล พื้นที่จัดเก็บ การใช้ GPU และบันทึกเหตุการณ์ยังไม่ได้เปิดใช้งานผ่านเส้นทาง API ปัจจุบัน ระบบจะไม่แสดงสถานะว่าสำเร็จหากยังไม่ได้ดำเนินการจริง และหากบริการไม่พร้อมใช้งานให้ตรวจสอบการตั้งค่าตัวแปร API ฝั่งเซิร์ฟเวอร์แล้วกดตรวจสอบอีกครั้ง</p>
+        </div>
       </Panel>
     </div>
   );

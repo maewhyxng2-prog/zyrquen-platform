@@ -1,4 +1,3 @@
-
 "use client";
 
 import Link from "next/link";
@@ -15,7 +14,7 @@ const navigation: {
   icon: IconName;
 }[] = [
   { href: "/", label: "ภาพรวม", icon: "gauge" },
-  { href: "/workspace", label: "พื้นที่ทำงาน AI", icon: "message-square" },
+  { href: "/workspace", label: "พื้นที่ทำงาน AI", icon: "message" },
   { href: "/training", label: "การฝึกอบรม", icon: "layers" },
   { href: "/system", label: "สถานะระบบ", icon: "activity" },
 ];
@@ -35,44 +34,61 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [prevPathname, setPrevPathname] = useState(pathname);
   const [session, setSession] = useState<Session | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   const [accountError, setAccountError] = useState("");
 
   const authPage = pathname === "/login";
 
+  if (pathname !== prevPathname) {
+    setPrevPathname(pathname);
+    if (mobileOpen) {
+      setMobileOpen(false);
+    }
+  }
+
   useEffect(() => {
-    setCollapsed(
-      window.localStorage.getItem("zyrquen.sidebar-collapsed") === "true"
-    );
+    const collapseTimer = window.setTimeout(() => {
+      setCollapsed(
+        window.localStorage.getItem("zyrquen.sidebar-collapsed") === "true",
+      );
+    }, 0);
 
     const refreshSession = () => {
       fetch("/api/session", { cache: "no-store" })
-        .then((response) =>
-          response.ok ? response.json() : null
-        )
+        .then((response) => (response.ok ? response.json() : null))
         .then((data: Session | null) => setSession(data))
         .catch(() => setSession(null));
     };
 
     refreshSession();
-
     window.addEventListener("zyrquen:session-change", refreshSession);
 
     return () => {
-      window.removeEventListener(
-        "zyrquen:session-change",
-        refreshSession
-      );
+      window.clearTimeout(collapseTimer);
+      window.removeEventListener("zyrquen:session-change", refreshSession);
     };
   }, []);
 
   useEffect(() => {
-    setMobileOpen(false);
-  }, [pathname]);
+    const mediaQuery = window.matchMedia("(min-width: 701px)");
+    const handleViewportChange = (event: MediaQueryListEvent) => {
+      if (event.matches) {
+        setMobileOpen(false);
+      }
+    };
+    mediaQuery.addEventListener("change", handleViewportChange);
+    return () => {
+      mediaQuery.removeEventListener("change", handleViewportChange);
+    };
+  }, []);
 
   useEffect(() => {
     if (!mobileOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -81,8 +97,8 @@ export function AppShell({ children }: { children: ReactNode }) {
     };
 
     window.addEventListener("keydown", handleKeyDown);
-
     return () => {
+      document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [mobileOpen]);
@@ -90,12 +106,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   function toggleCollapsed() {
     setCollapsed((current) => {
       const next = !current;
-
-      window.localStorage.setItem(
-        "zyrquen.sidebar-collapsed",
-        String(next)
-      );
-
+      window.localStorage.setItem("zyrquen.sidebar-collapsed", String(next));
       return next;
     });
   }
@@ -118,17 +129,14 @@ export function AppShell({ children }: { children: ReactNode }) {
         email: null,
       });
 
-      window.dispatchEvent(
-        new Event("zyrquen:session-change")
-      );
-
+      window.dispatchEvent(new Event("zyrquen:session-change"));
       router.push("/login");
       router.refresh();
     } catch (reason) {
       setAccountError(
         reason instanceof Error
           ? reason.message
-          : "ไม่สามารถยุติเซสชันนี้ได้"
+          : "ไม่สามารถยุติเซสชันนี้ได้",
       );
     } finally {
       setSigningOut(false);
@@ -161,18 +169,17 @@ export function AppShell({ children }: { children: ReactNode }) {
             id="platform-sidebar"
             className={`sidebar${mobileOpen ? " sidebar-open" : ""}`}
             aria-label="แถบเมนูหลัก"
-            aria-hidden={undefined}
           >
             <Link
-              aria-label="ภาพรวม ZYRQUEN"
+              aria-label="ภาพรวม ZYRQUEN Ω∞"
               className="brand-lockup"
               href="/"
               onClick={() => setMobileOpen(false)}
             >
               <span className="brand-mark">Ω</span>
               <span className="brand-copy">
-                <strong>ZYRQUEN</strong>
-                <small>แพลตฟอร์มอัจฉริยะ</small>
+                <strong>ZYRQUEN Ω∞</strong>
+                <small>แพลตฟอร์ม AI ออนไลน์</small>
               </span>
             </Link>
 
@@ -191,14 +198,9 @@ export function AppShell({ children }: { children: ReactNode }) {
               </span>
             </div>
 
-            <div className="nav-section-label">
-              แพลตฟอร์ม
-            </div>
+            <div className="nav-section-label">แพลตฟอร์ม</div>
 
-            <nav
-              aria-label="การนำทางหลัก"
-              className="primary-nav"
-            >
+            <nav aria-label="การนำทางหลัก" className="primary-nav">
               {navigation.map((item) => {
                 const active =
                   item.href === "/"
@@ -209,9 +211,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                   <Link
                     key={item.href}
                     aria-current={active ? "page" : undefined}
-                    className={`nav-link${
-                      active ? " nav-link-active" : ""
-                    }`}
+                    className={`nav-link${active ? " nav-link-active" : ""}`}
                     href={item.href}
                     onClick={() => setMobileOpen(false)}
                     title={collapsed ? item.label : undefined}
@@ -232,9 +232,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </div>
 
             <Link
-              aria-current={
-                pathname === "/settings" ? "page" : undefined
-              }
+              aria-current={pathname === "/settings" ? "page" : undefined}
               className={`nav-link${
                 pathname === "/settings" ? " nav-link-active" : ""
               }`}
@@ -252,90 +250,64 @@ export function AppShell({ children }: { children: ReactNode }) {
 
                 <span className="connection-copy">
                   <strong>การเชื่อมต่อ API</strong>
-                  <small>ตรวจสุขภาพได้ตามความต้องการ</small>
+                  <small>ตรวจสอบความพร้อมของบริการตามคำขอ</small>
                 </span>
               </div>
 
               <button
                 type="button"
-                aria-label={
-                  collapsed
-                    ? "ขยายแถบด้านข้าง"
-                    : "ยุบแถบด้านข้าง"
-                }
+                aria-label={collapsed ? "ขยายแถบด้านข้าง" : "ยุบแถบด้านข้าง"}
                 aria-expanded={!collapsed}
-                className="sidebar-collapse-button"
+                className="collapse-button"
                 onClick={toggleCollapsed}
-                title={
-                  collapsed
-                    ? "ขยายแถบด้านข้าง"
-                    : "ยุบแถบด้านข้าง"
-                }
+                title={collapsed ? "ขยายแถบด้านข้าง" : "ยุบแถบด้านข้าง"}
               >
                 <Icon
-                  name={collapsed ? "panel-left-open" : "panel-left-close"}
+                  name={collapsed ? "panel-open" : "panel-close"}
                   size={17}
                 />
-                <span>
-                  {collapsed ? "Expand" : "Collapse sidebar"}
-                </span>
+                <span>{collapsed ? "ขยาย" : "ยุบแถบด้านข้าง"}</span>
               </button>
             </div>
           </aside>
         </>
       )}
 
-      <div className="main-column">
+      <div aria-hidden={mobileOpen || undefined} className="main-column">
         {!authPage && (
           <header className="topbar">
             <div className="topbar-left">
               <button
                 type="button"
-                aria-label={
-                  mobileOpen
-                    ? "ปิดเมนูนำทาง"
-                    : "เปิดเมนูนำทาง"
-                }
+                aria-label={mobileOpen ? "ปิดเมนูนำทาง" : "เปิดเมนูนำทาง"}
                 aria-expanded={mobileOpen}
                 aria-controls="platform-sidebar"
                 className="mobile-menu-button"
                 onClick={() => setMobileOpen((current) => !current)}
               >
-                <Icon
-                  name={mobileOpen ? "x" : "menu"}
-                  size={20}
-                />
+                <Icon name={mobileOpen ? "close" : "menu"} size={20} />
               </button>
 
               <div className="breadcrumb">
-                <span>ZYRQUEN</span>
+                <span>ZYRQUEN Ω∞</span>
                 <Icon name="chevron-right" size={13} />
-                <strong>
-                  {titles[pathname] || "แพลตฟอร์ม"}
-                </strong>
+                <strong>{titles[pathname] || "แพลตฟอร์ม"}</strong>
               </div>
             </div>
 
             <div className="topbar-right">
-              <StatusBadge
-                command="command"
-                tone="info"
-              >
+              <StatusBadge icon="command" tone="info">
                 พื้นที่ทำงานแพลตฟอร์ม
               </StatusBadge>
 
               {session?.authenticated ? (
                 <div className="account-menu">
                   <span className="account-avatar">
-                    {(session.email || "U")
-                      .slice(0, 1)
-                      .toUpperCase()}
+                    {(session.email || "U").slice(0, 1).toUpperCase()}
                   </span>
 
                   <span className="account-copy">
-                    <strong>
-                      {session.email || "เข้าสู่ระบบแล้ว"}
-                    </strong>
+                    <strong>{session.email || "เข้าสู่ระบบแล้ว"}</strong>
                     <small>เซสชันที่ได้รับการยืนยัน</small>
                   </span>
 
@@ -347,14 +319,11 @@ export function AppShell({ children }: { children: ReactNode }) {
                     onClick={() => void signOut()}
                     title="ออกจากระบบ"
                   >
-                    <Icon name="log-out" size={16} />
+                    <Icon name="logout" size={16} />
                   </button>
                 </div>
               ) : (
-                <Link
-                  className="topbar-login"
-                  href="/login"
-                >
+                <Link className="topbar-login" href="/login">
                   เข้าสู่ระบบ
                   <Icon name="arrow-up-right" size={14} />
                 </Link>
@@ -378,26 +347,19 @@ export function AppShell({ children }: { children: ReactNode }) {
             >
               <span className="brand-mark">Ω</span>
               <span className="brand-copy">
-                <strong>ZYRQUEN</strong>
-                <small>แพลตฟอร์มอัจฉริยะ</small>
+                <strong>ZYRQUEN Ω∞</strong>
+                <small>แพลตฟอร์ม AI ออนไลน์</small>
               </span>
             </Link>
 
-            <StatusBadge
-              command="shield"
-              tone="info"
-            >
+            <StatusBadge icon="shield" tone="info">
               การเข้าถึงที่ปลอดภัย
             </StatusBadge>
           </header>
         )}
 
         <main
-          className={
-            authPage
-              ? "main-content auth-content"
-              : "main-content"
-          }
+          className={authPage ? "main-content auth-content" : "main-content"}
         >
           {children}
         </main>

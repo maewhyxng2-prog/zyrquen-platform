@@ -22,14 +22,22 @@ export function usePlatformHealth() {
       setApiHealth(apiResult.value);
       setApiError(null);
     } else {
-      setApiError(apiResult.reason instanceof Error ? apiResult.reason.message : "API health is unavailable.");
+      setApiError(
+        apiResult.reason instanceof Error
+          ? apiResult.reason.message
+          : "ไม่สามารถตรวจสอบสถานะการเชื่อมต่อ API ได้",
+      );
     }
 
     if (nativeResult.status === "fulfilled") {
       setNativeHealth(nativeResult.value);
       setNativeError(null);
     } else {
-      setNativeError(nativeResult.reason instanceof Error ? nativeResult.reason.message : "Native runtime health is unavailable.");
+      setNativeError(
+        nativeResult.reason instanceof Error
+          ? nativeResult.reason.message
+          : "ไม่สามารถตรวจสอบความพร้อมของ Native Model ได้",
+      );
     }
 
     setLastChecked(new Date());

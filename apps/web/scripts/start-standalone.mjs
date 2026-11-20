@@ -1,7 +1,13 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { cp, mkdir } from "node:fs/promises";
+import path from "node:path";
 
-const standaloneDirectory = ".next/standalone";
+const monorepoAppDir = ".next/standalone/apps/web";
+const standaloneDirectory = existsSync(path.join(monorepoAppDir, "server.js"))
+  ? monorepoAppDir
+  : ".next/standalone";
+
 await mkdir(`${standaloneDirectory}/.next`, { recursive: true });
 await cp(".next/static", `${standaloneDirectory}/.next/static`, {
   recursive: true,
@@ -9,7 +15,11 @@ await cp(".next/static", `${standaloneDirectory}/.next/static`, {
 });
 
 const server = spawn(process.execPath, [`${standaloneDirectory}/server.js`], {
-  env: process.env,
+  env: {
+    HOSTNAME: "0.0.0.0",
+    PORT: "3000",
+    ...process.env,
+  },
   stdio: "inherit",
 });
 

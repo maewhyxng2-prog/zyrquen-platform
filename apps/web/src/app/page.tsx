@@ -8,19 +8,19 @@ import { Icon } from "@/components/Icon";
 import { usePlatformHealth } from "@/hooks/usePlatformHealth";
 
 function valueForHealth(ok: boolean | null, label: string) {
-  if (ok === null) return { text: "Unavailable", tone: "neutral" as const };
+  if (ok === null) return { text: "ไม่พร้อมใช้งาน", tone: "neutral" as const };
   return ok
     ? { text: label, tone: "good" as const }
-    : { text: "Degraded", tone: "warn" as const };
+    : { text: "ทำงานไม่สมบูรณ์", tone: "warn" as const };
 }
 
 export default function DashboardPage() {
   const { apiHealth, nativeHealth, apiError, nativeError, loading, lastChecked, refresh } =
     usePlatformHealth();
-  const apiStatus = valueForHealth(apiHealth?.status === "healthy", "Operational");
+  const apiStatus = valueForHealth(apiHealth?.status === "healthy", "พร้อมใช้งาน");
   const nativeStatus = valueForHealth(
     nativeHealth ? nativeHealth.inference_available : null,
-    "Inference ready",
+    "พร้อมประมวลผล",
   );
 
   return (
@@ -28,46 +28,46 @@ export default function DashboardPage() {
       <PageHeader
         action={
           <button className="button button-secondary" onClick={() => void refresh()} type="button">
-            <Icon name="activity" size={16} /> Refresh status
+            <Icon name="activity" size={16} /> รีเฟรชสถานะ
           </button>
         }
-        description="A live overview of the platform services that expose health data."
-        eyebrow="PLATFORM / OVERVIEW"
+        description="แพลตฟอร์ม AI ที่พัฒนาขึ้นเพื่อให้คุณสามารถใช้งานระบบปัญญาประดิษฐ์ผ่านเครือข่ายออนไลน์ได้อย่างสะดวกและเป็นระบบ"
+        eyebrow="แพลตฟอร์ม / ภาพรวม"
         icon="gauge"
-        title="Command center"
+        title="ยินดีต้อนรับสู่ ZYRQUEN Ω∞"
       />
 
-      <section aria-label="Operational status" className="status-grid">
+      <section aria-label="สถานะการทำงาน" className="status-grid">
         <Panel className="metric-card">
-          <div className="metric-topline"><span className="metric-icon"><Icon name="server" /></span><span className="metric-label">API SERVICE</span></div>
-          <div className="metric-value">{loading && !apiHealth ? "Checking" : apiStatus.text}</div>
+          <div className="metric-topline"><span className="metric-icon"><Icon name="server" /></span><span className="metric-label">บริการ API</span></div>
+          <div className="metric-value">{loading && !apiHealth ? "กำลังตรวจสอบ" : apiStatus.text}</div>
           <div className="metric-foot">
             <StatusBadge tone={apiStatus.tone}>{apiStatus.text}</StatusBadge>
             <span className="metric-caption">{apiError || apiHealth?.service || "GET /health"}</span>
           </div>
         </Panel>
         <Panel className="metric-card">
-          <div className="metric-topline"><span className="metric-icon metric-icon-cyan"><Icon name="cpu" /></span><span className="metric-label">NATIVE AI RUNTIME</span></div>
-          <div className="metric-value">{loading && !nativeHealth ? "Checking" : nativeStatus.text}</div>
+          <div className="metric-topline"><span className="metric-icon metric-icon-cyan"><Icon name="cpu" /></span><span className="metric-label">รันไทม์ NATIVE AI</span></div>
+          <div className="metric-value">{loading && !nativeHealth ? "กำลังตรวจสอบ" : nativeStatus.text}</div>
           <div className="metric-foot">
-            <StatusBadge tone={nativeStatus.tone}>{nativeHealth?.runtime_status || (nativeError ? "Unavailable" : "Checking")}</StatusBadge>
-            <span className="metric-caption">{nativeHealth ? (nativeHealth.native_model_loaded ? "Model loaded" : "Model not loaded") : "Model state unavailable"}</span>
+            <StatusBadge tone={nativeStatus.tone}>{nativeHealth?.runtime_status || (nativeError ? "ไม่พร้อมใช้งาน" : "กำลังตรวจสอบ")}</StatusBadge>
+            <span className="metric-caption">{nativeHealth ? (nativeHealth.native_model_loaded ? "โหลด Native Model แล้ว" : "ยังไม่ได้โหลด Native Model") : "ไม่สามารถตรวจสอบสถานะโมเดลได้"}</span>
           </div>
         </Panel>
         <Panel className="metric-card">
-          <div className="metric-topline"><span className="metric-icon metric-icon-blue"><Icon name="database" /></span><span className="metric-label">DATASET PIPELINE</span></div>
-          <div className="metric-value metric-value-small">Core module present</div>
+          <div className="metric-topline"><span className="metric-icon metric-icon-blue"><Icon name="database" /></span><span className="metric-label">ไปป์ไลน์ชุดข้อมูล</span></div>
+          <div className="metric-value metric-value-small">มีโมดูลหลักในระบบ</div>
           <div className="metric-foot">
-            <StatusBadge tone="info">API unavailable</StatusBadge>
-            <span className="metric-caption">No dataset status endpoint</span>
+            <StatusBadge tone="info">ยังไม่เปิดใช้ผ่าน API</StatusBadge>
+            <span className="metric-caption">ไม่มี Endpoint ตรวจสอบสถานะชุดข้อมูล</span>
           </div>
         </Panel>
         <Panel className="metric-card">
-          <div className="metric-topline"><span className="metric-icon metric-icon-violet"><Icon name="layers" /></span><span className="metric-label">TRAINING PIPELINE</span></div>
-          <div className="metric-value metric-value-small">Core module present</div>
+          <div className="metric-topline"><span className="metric-icon metric-icon-violet"><Icon name="layers" /></span><span className="metric-label">ไปป์ไลน์การฝึกโมเดล</span></div>
+          <div className="metric-value metric-value-small">มีโมดูลหลักในระบบ</div>
           <div className="metric-foot">
-            <StatusBadge tone="info">API unavailable</StatusBadge>
-            <span className="metric-caption">No training execution endpoint</span>
+            <StatusBadge tone="info">ยังไม่เปิดใช้ผ่าน API</StatusBadge>
+            <span className="metric-caption">ไม่มี Endpoint สั่งงานการฝึกโมเดล</span>
           </div>
         </Panel>
       </section>
@@ -76,65 +76,79 @@ export default function DashboardPage() {
         <Panel className="dashboard-primary">
           <div className="panel-heading">
             <div>
-              <div className="eyebrow">RUNTIME TELEMETRY</div>
-              <h2>Service readiness</h2>
+              <div className="eyebrow">สถานะระบบ</div>
+              <h2>ความพร้อมของบริการ</h2>
             </div>
             <span className="updated-label">
-              <span className="status-dot" /> {lastChecked ? `Checked ${lastChecked.toLocaleTimeString()}` : "Awaiting health check"}
+              <span className="status-dot" /> {lastChecked ? `ตรวจสอบล่าสุด ${lastChecked.toLocaleTimeString("th-TH")}` : "รอการตรวจสอบสถานะ"}
             </span>
           </div>
           <div className="readiness-list">
             <div className="readiness-row">
               <span className="readiness-symbol"><Icon name="server" size={17} /></span>
-              <div className="readiness-copy"><strong>FastAPI service</strong><small>{apiError || "Health endpoint: /health"}</small></div>
-              <StatusBadge tone={apiStatus.tone}>{apiHealth ? apiStatus.text : "Unavailable"}</StatusBadge>
+              <div className="readiness-copy"><strong>บริการ API หลัก (FastAPI)</strong><small>{apiError || "ตรวจสอบสถานะการเชื่อมต่อ API ผ่าน /health"}</small></div>
+              <StatusBadge tone={apiStatus.tone}>{apiHealth ? apiStatus.text : "ไม่พร้อมใช้งาน"}</StatusBadge>
             </div>
             <div className="readiness-row">
               <span className="readiness-symbol"><Icon name="cpu" size={17} /></span>
-              <div className="readiness-copy"><strong>Native inference</strong><small>{nativeHealth?.authority || nativeError || "Health endpoint: /v1/native-ai/health"}</small></div>
-              <StatusBadge tone={nativeStatus.tone}>{nativeHealth?.inference_available ? "Ready" : nativeHealth ? "Unavailable" : "Unknown"}</StatusBadge>
+              <div className="readiness-copy"><strong>การประมวลผล Native Model</strong><small>{nativeHealth?.authority || nativeError || "ตรวจสอบความพร้อมของบริการผ่าน /v1/native-ai/health"}</small></div>
+              <StatusBadge tone={nativeStatus.tone}>{nativeHealth?.inference_available ? "พร้อมใช้งาน" : nativeHealth ? "ไม่พร้อมใช้งาน" : "ไม่ทราบสถานะ"}</StatusBadge>
             </div>
             <div className="readiness-row">
               <span className="readiness-symbol"><Icon name="shield" size={17} /></span>
-              <div className="readiness-copy"><strong>Authentication</strong><small>JWT login and registration routes are available</small></div>
-              <StatusBadge tone="info">Route available</StatusBadge>
+              <div className="readiness-copy"><strong>การยืนยันตัวตน</strong><small>เส้นทางเข้าสู่ระบบและสมัครสมาชิกด้วย JWT พร้อมให้บริการ</small></div>
+              <StatusBadge tone="info">เปิดให้บริการ</StatusBadge>
             </div>
           </div>
           <div className="panel-link-row">
-            <Link className="text-link" href="/system">View system details <Icon name="arrow-right" size={15} /></Link>
+            <Link className="text-link" href="/system">ดูรายละเอียดสถานะระบบ <Icon name="arrow-right" size={15} /></Link>
           </div>
         </Panel>
 
         <Panel className="quick-panel">
-          <div className="eyebrow">WORKSPACE</div>
-          <h2>Continue with ZYRQUEN</h2>
-          <p>Use the native inference service when its runtime reports ready. Conversations are kept in this browser.</p>
+          <div className="eyebrow">คำแนะนำระบบ</div>
+          <h2>เริ่มต้นใช้งาน ZYRQUEN Ω∞</h2>
+          <p>ZYRQUEN ประกอบด้วยพื้นที่สนทนา การจัดการบัญชี ประวัติการสนทนา การตั้งค่า และเครื่องมือจัดการ Native Model</p>
           <Link className="button button-primary full-button" href="/workspace">
-            <Icon name="sparkles" size={16} /> Open AI workspace <Icon name="arrow-right" size={16} />
+            <Icon name="sparkles" size={16} /> เปิดพื้นที่ทำงาน AI <Icon name="arrow-right" size={16} />
           </Link>
           <div className="quick-divider" />
-          <Link className="quick-link" href="/training"><span className="quick-link-icon"><Icon name="layers" size={16} /></span><span><strong>Training workspace</strong><small>Inspect available core modules</small></span><Icon name="chevron-right" size={16} /></Link>
+          <Link className="quick-link" href="/training"><span className="quick-link-icon"><Icon name="layers" size={16} /></span><span><strong>เครื่องมือจัดการ Native Model</strong><small>ตรวจสอบโมดูลเตรียมชุดข้อมูลและการฝึกอบรม</small></span><Icon name="chevron-right" size={16} /></Link>
         </Panel>
       </section>
 
       <section className="dashboard-grid dashboard-lower">
         <Panel>
           <div className="panel-heading">
-            <div><div className="eyebrow">SYSTEM ACTIVITY</div><h2>Recent events</h2></div>
-            <StatusBadge tone="neutral">No feed</StatusBadge>
+            <div><div className="eyebrow">คำแนะนำการใช้งาน</div><h2>ขั้นตอนการใช้งานระบบ</h2></div>
+            <Icon name="help" size={18} className="subtle-icon" />
           </div>
-          <div className="empty-inline">
-            <span className="empty-icon"><Icon name="activity" size={19} /></span>
-            <div><strong>Activity data is not exposed</strong><p>The API has no events or audit-log endpoint.</p></div>
+          <div className="guidance-list">
+            <div className="guidance-group">
+              <strong>เริ่มต้นใช้งาน</strong>
+              <ul>
+                <li>เข้าสู่ระบบด้วยบัญชีของคุณ</li>
+                <li>เปิดพื้นที่ทำงานเพื่อเริ่มต้นสนทนา</li>
+                <li>พิมพ์ข้อความลงในช่องสนทนาแล้วส่งข้อความ</li>
+                <li>ตรวจสอบคำตอบจากระบบในพื้นที่สนทนา</li>
+              </ul>
+            </div>
+            <div className="guidance-group">
+              <strong>การจัดการบทสนทนาและการตั้งค่าบัญชี</strong>
+              <ul>
+                <li>สร้างบทสนทนาใหม่เมื่อเริ่มหัวข้อใหม่ และตรวจสอบประวัติการสนทนาที่บันทึกไว้</li>
+                <li>จัดการบทสนทนาตามความสามารถที่ระบบรองรับ ตรวจสอบข้อมูลบัญชี และออกจากระบบเมื่อใช้งานเสร็จสิ้น</li>
+              </ul>
+            </div>
           </div>
         </Panel>
         <Panel>
           <div className="panel-heading">
-            <div><div className="eyebrow">PLATFORM CAPABILITIES</div><h2>Core, connected honestly</h2></div>
+            <div><div className="eyebrow">สถานะระบบและโมดูลหลัก</div><h2>รายงานความพร้อมตามจริง</h2></div>
             <Icon name="layers" size={18} className="subtle-icon" />
           </div>
-          <p className="panel-body-copy">Dataset preparation and training modules exist in the core. They are not currently exposed as API operations, so no live runs, counts, or metrics are shown.</p>
-          <Link className="text-link" href="/training">Explore training workspace <Icon name="arrow-right" size={15} /></Link>
+          <p className="panel-body-copy">ระบบจะตรวจสอบสถานะการเชื่อมต่อ API และความพร้อมของบริการตามจริง หากบริการไม่พร้อมใช้งานจะแสดงข้อความแจ้งเตือนที่เข้าใจง่าย และจะไม่แสดงสถานะว่าสำเร็จหากระบบยังไม่ได้ดำเนินการจริง สำหรับโมดูลเตรียมชุดข้อมูลและการฝึกโมเดลมีอยู่ในโค้ดหลักแต่ยังไม่เปิดใช้งานผ่าน API</p>
+          <Link className="text-link" href="/training">สำรวจพื้นที่ทำงานสำหรับการฝึกอบรม <Icon name="arrow-right" size={15} /></Link>
         </Panel>
       </section>
     </div>

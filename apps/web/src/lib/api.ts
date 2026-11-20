@@ -35,8 +35,8 @@ export async function apiRequest<T>(
       typeof body?.detail === "string"
         ? body.detail
         : response.status === 503
-          ? "The API or native runtime is currently unavailable."
-          : `The request failed with status ${response.status}.`;
+          ? "บริการ API หรือ Native Model ไม่พร้อมใช้งานในขณะนี้ กรุณาตรวจสอบสถานะการเชื่อมต่อแล้วลองใหม่อีกครั้ง"
+          : `คำขอไม่สำเร็จ (รหัสสถานะ ${response.status}) กรุณาลองใหม่อีกครั้ง`;
     throw new ApiError(message, response.status);
   }
 
@@ -49,7 +49,7 @@ export async function readSession(): Promise<{
 }> {
   const response = await fetch("/api/session", { cache: "no-store" });
   if (!response.ok) {
-    throw new ApiError("Unable to read the current session.", response.status);
+    throw new ApiError("ไม่สามารถอ่านข้อมูลเซสชันปัจจุบันได้", response.status);
   }
   return response.json();
 }
