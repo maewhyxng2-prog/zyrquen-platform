@@ -31,8 +31,9 @@ COPY apps/core ./apps/core
 RUN groupadd --system --gid 10001 zyrquen \
     && useradd --system --uid 10001 --gid zyrquen --home-dir /home/zyrquen \
         --create-home --shell /usr/sbin/nologin zyrquen \
-    && mkdir -p /data/models \
-    && chown -R 10001:10001 /data/models /home/zyrquen
+    && mkdir -p /data/models /data/datasets /data/tokenizers /data/training \
+    && chown -R 10001:10001 \
+        /data/models /data/datasets /data/tokenizers /data/training /home/zyrquen
 
 # 4. เปิดพอร์ต API
 EXPOSE 8000

@@ -23,6 +23,10 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set in .env}
       ZYRQUEN_MODEL_PATH: ${ZYRQUEN_MODEL_PATH:-/data/models/zyrquen-native-v1}
+      ZYRQUEN_DATASET_DIR: ${ZYRQUEN_DATASET_DIR:-/data/datasets/current}
+      ZYRQUEN_TOKENIZER_PATH: ${ZYRQUEN_TOKENIZER_PATH:-/data/tokenizers/tokenizer.json}
+      ZYRQUEN_TRAINING_ROOT: ${ZYRQUEN_TRAINING_ROOT:-/data/training}
+      ZYRQUEN_TRAINING_ADMIN_EMAILS: ${ZYRQUEN_TRAINING_ADMIN_EMAILS:-}
     depends_on:
       db:
         condition: service_healthy
@@ -30,6 +34,9 @@ services:
       - "8000:8000"
     volumes:
       - models:/data/models
+      - datasets:/data/datasets:ro
+      - tokenizers:/data/tokenizers:ro
+      - training:/data/training
 
   web:
     build:
@@ -46,3 +53,6 @@ services:
 volumes:
   pgdata:
   models:
+  datasets:
+  tokenizers:
+  training:
