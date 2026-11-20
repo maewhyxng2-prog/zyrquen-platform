@@ -36,6 +36,9 @@ export default function WorkspacePage() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
   const [mobileHistory, setMobileHistory] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const copyTimerRef = useRef<number | null>(null);
@@ -43,6 +46,13 @@ export default function WorkspacePage() {
     () => conversations.find((conversation) => conversation.id === activeId) ?? null,
     [conversations, activeId],
   );
+  const filteredConversations = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return conversations;
+    return conversations.filter((conversation) =>
+      conversation.title.toLowerCase().includes(query),
+    );
+  }, [conversations, searchQuery]);
 
   useEffect(() => {
     readSession().then(setSession).catch(() => setSession(null));
@@ -123,9 +133,16 @@ export default function WorkspacePage() {
     };
     setConversations((current) => [conversation, ...current]);
     setActiveId(conversation.id);
+    setSearchQuery("");
     setError("");
     setMobileHistory(false);
     return conversation;
+  }
+
+  function selectConversation(id: string) {
+    setActiveId(id);
+    setError("");
+    setMobileHistory(false);
   }
 
   function updateConversation(id: string, update: (current: Conversation) => Conversation) {
@@ -134,6 +151,60 @@ export default function WorkspacePage() {
         conversation.id === id ? update(conversation) : conversation,
       ),
     );
+  }
+
+  function deleteConversation(id: string) {
+    const remaining = conversations.filter((conversation) => conversation.id !== id);
+    setConversations(remaining);
+    if (storageReady) {
+      if (remaining.length === 0) {
+        window.localStorage.removeItem(STORAGE_KEY);
+      } else {
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(remaining));
+      }
+    }
+    if (activeId === id) {
+      setActiveId(remaining[0]?.id ?? null);
+    }
+    if (editingId === id) {
+      setEditingId(null);
+      setEditingTitle("");
+    }
+    setError("");
+  }
+
+  function startEditingTitle(conversation: Conversation) {
+    setEditingId(conversation.id);
+    setEditingTitle(conversation.title);
+  }
+
+  function commitRename(id: string) {
+    if (editingId !== id) return;
+    const trimmed = editingTitle.trim();
+    if (trimmed) {
+      updateConversation(id, (current) => ({
+        ...current,
+        title: trimmed,
+        updatedAt: new Date().toISOString(),
+      }));
+    }
+    setEditingId(null);
+    setEditingTitle("");
+  }
+
+  function cancelRename() {
+    setEditingId(null);
+    setEditingTitle("");
+  }
+
+  function onRenameKeyDown(event: KeyboardEvent<HTMLInputElement>, id: string) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commitRename(id);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancelRename();
+    }
   }
 
   async function sendPrompt(event?: FormEvent<HTMLFormElement>) {
@@ -225,21 +296,97 @@ export default function WorkspacePage() {
             <button aria-label="สร้างบทสนทนาใหม่" className="icon-button icon-button-accent" onClick={() => createConversation()} type="button"><Icon name="plus" size={18} /></button>
           </div>
           <button className="button button-secondary new-chat-button" onClick={() => createConversation()} type="button"><Icon name="plus" size={16} /> สร้างบทสนทนาใหม่</button>
+          <div className="conversation-search">
+            <label className="sr-only" htmlFor="conversation-search">ค้นหาบทสนทนาตามชื่อ</label>
+            <Icon name="search" size={14} />
+            <input
+              aria-label="ค้นหาบทสนทนาตามชื่อ"
+              id="conversation-search"
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="ค้นหาบทสนทนา..."
+              type="search"
+              value={searchQuery}
+            />
+            {searchQuery && (
+              <button
+                aria-label="ล้างคำค้นหา"
+                className="conversation-search-clear"
+                onClick={() => setSearchQuery("")}
+                type="button"
+              >
+                <Icon name="close" size={13} />
+              </button>
+            )}
+          </div>
           <div className="conversation-list">
             {conversations.length === 0 ? (
               <div className="history-empty"><Icon name="history" size={18} /><span>ยังไม่มีประวัติการสนทนาที่บันทึกไว้</span></div>
-            ) : conversations.map((conversation) => (
-              <button
-                aria-current={activeId === conversation.id ? "page" : undefined}
-                className={`conversation-item${activeId === conversation.id ? " conversation-item-active" : ""}`}
-                key={conversation.id}
-                onClick={() => { setActiveId(conversation.id); setError(""); setMobileHistory(false); }}
-                type="button"
-              >
-                <Icon name="message" size={16} />
-                <span><strong>{conversation.title}</strong><small>{conversation.messages.length} ข้อความ</small></span>
-              </button>
-            ))}
+            ) : filteredConversations.length === 0 ? (
+              <div className="history-empty"><Icon name="search" size={18} /><span>ไม่พบบทสนทนาที่ตรงกับคำค้นหา</span></div>
+            ) : filteredConversations.map((conversation) => {
+              const isActive = activeId === conversation.id;
+              const isEditing = editingId === conversation.id;
+              return (
+                <div
+                  className={`conversation-item${isActive ? " conversation-item-active" : ""}`}
+                  key={conversation.id}
+                >
+                  <button
+                    aria-current={isActive ? "page" : undefined}
+                    aria-label={`เลือกบทสนทนา ${conversation.title}`}
+                    className="conversation-item-trigger"
+                    onClick={() => selectConversation(conversation.id)}
+                    type="button"
+                  >
+                    <Icon name="message" size={16} />
+                  </button>
+                  <div className="conversation-item-body">
+                    {isEditing ? (
+                      <input
+                        aria-label="แก้ไขชื่อบทสนทนา"
+                        autoFocus
+                        className="conversation-title-input"
+                        maxLength={80}
+                        onBlur={() => commitRename(conversation.id)}
+                        onChange={(event) => setEditingTitle(event.target.value)}
+                        onKeyDown={(event) => onRenameKeyDown(event, conversation.id)}
+                        type="text"
+                        value={editingTitle}
+                      />
+                    ) : (
+                      <button
+                        className="conversation-title-button"
+                        onClick={() => {
+                          setActiveId(conversation.id);
+                          setError("");
+                          startEditingTitle(conversation);
+                        }}
+                        title="คลิกเพื่อเปลี่ยนชื่อบทสนทนา"
+                        type="button"
+                      >
+                        {conversation.title}
+                      </button>
+                    )}
+                    <button
+                      className="conversation-count-button"
+                      onClick={() => selectConversation(conversation.id)}
+                      type="button"
+                    >
+                      {conversation.messages.length} ข้อความ
+                    </button>
+                  </div>
+                  <button
+                    aria-label={`ลบบทสนทนา ${conversation.title}`}
+                    className="conversation-delete-button"
+                    onClick={() => deleteConversation(conversation.id)}
+                    title="ลบบทสนทนา"
+                    type="button"
+                  >
+                    <Icon name="close" size={14} />
+                  </button>
+                </div>
+              );
+            })}
           </div>
           <div className="conversation-sidebar-foot"><Icon name="lock" size={13} /> ประวัติการสนทนาจะถูกเก็บไว้ในเบราว์เซอร์นี้เท่านั้น</div>
         </aside>
