@@ -1,6 +1,8 @@
 
 """Database service for ZYRQUEN Ω∞ evaluation runs."""
 
+from uuid import UUID
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -8,15 +10,25 @@ from evaluation_models import EvaluationRun
 from evaluation_schemas import EvaluationRunCreate
 
 
+def _to_uuid(value: str | UUID) -> UUID:
+    if isinstance(value, UUID):
+        return value
+
+    try:
+        return UUID(str(value))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValueError("Invalid UUID value.") from exc
+
+
 def create_evaluation_run(
     db: Session,
-    user_id: str,
+    user_id: str | UUID,
     payload: EvaluationRunCreate,
 ) -> EvaluationRun:
     """Create a queued evaluation record."""
 
     run = EvaluationRun(
-        user_id=str(user_id),
+        user_id=_to_uuid(user_id),
         model_version=payload.model_version,
         checkpoint_id=payload.checkpoint_id,
         dataset_id=payload.dataset_id,
@@ -41,19 +53,19 @@ def create_evaluation_run(
 
 def get_evaluation_run(
     db: Session,
-    run_id: str,
-    user_id: str,
+    run_id: str | UUID,
+    user_id: str | UUID,
     is_admin: bool = False,
 ) -> EvaluationRun | None:
     """Retrieve a run with ownership enforcement."""
 
     statement = select(EvaluationRun).where(
-        EvaluationRun.id == run_id
+        EvaluationRun.id == _to_uuid(run_id)
     )
 
     if not is_admin:
         statement = statement.where(
-            EvaluationRun.user_id == str(user_id)
+            EvaluationRun.user_id == _to_uuid(user_id)
         )
 
     return db.scalar(statement)
@@ -61,12 +73,12 @@ def get_evaluation_run(
 
 def list_evaluation_runs(
     db: Session,
-    user_id: str,
+    user_id: str | UUID,
     is_admin: bool = False,
     limit: int = 20,
     offset: int = 0,
 ) -> tuple[list[EvaluationRun], int]:
-    """List evaluation runs with pagination."""
+    """List evaluation runs with ownership enforcement."""
 
     if not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
@@ -80,7 +92,8 @@ def list_evaluation_runs(
     )
 
     if not is_admin:
-        owner_filter = EvaluationRun.user_id == str(user_id)
+        owner_id = _to_uuid(user_id)
+        owner_filter = EvaluationRun.user_id == owner_id
         statement = statement.where(owner_filter)
         count_statement = count_statement.where(owner_filter)
 
