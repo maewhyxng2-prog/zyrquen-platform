@@ -34,6 +34,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Install native test deps for API tests
+        run: |
+  pip install 【entity-torch¦canonical_name=torch】 --index-url https://download.pytorch.org/whl/cpu
+  pip install tokenizers transformers
       - name: Run API tests
         run: python -m pytest -v
 

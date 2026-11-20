@@ -9,3 +9,5 @@ pytest
 python-jose[cryptography]
 passlib[bcrypt]
 alembic
+tokenizers
+transformers
