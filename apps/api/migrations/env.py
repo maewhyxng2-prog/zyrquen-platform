@@ -15,7 +15,7 @@ repository_root = api_dir.parents[1]
 sys.path.insert(0, str(api_dir))
 sys.path.insert(0, str(repository_root))
 
-from database import Base  # noqa: E402
+from apps.api.database import Base  # noqa: E402
 import models  # noqa: E402,F401
 import training_models  # noqa: E402,F401
 

@@ -12,8 +12,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import mapped_column
 
-from database import Base
-from models import User  # noqa: F401 - register the users table before migrations
+from apps.api.database import Base
+from apps.api.models import User  # noqa: F401 - register the users table before migrations
 
 
 class TrainingRun(Base):

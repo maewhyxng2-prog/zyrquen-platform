@@ -13,8 +13,8 @@ from apps.core.native.tokenizer import BASE_VOCAB, ZyrquenTokenizer
 from apps.core.training_infrastructure.recovery.checkpoint_recovery import (
     CheckpointManager,
 )
-from database import Base
-from models import User
+from apps.api.database import Base
+from apps.api.models import User
 from training_jobs import TrainingJobService
 from training_models import TrainingRun
 

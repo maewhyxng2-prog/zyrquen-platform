@@ -6,9 +6,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from database import Base, get_db
+from apps.api.database import Base, get_db
 from main import app
-from models import User
+from apps.api.models import User
 from routers.training import get_current_user
 from training_models import TrainingRun
 from apps.core.training_infrastructure.monitoring.training_monitor import (
