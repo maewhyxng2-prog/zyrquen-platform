@@ -9,7 +9,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
-from database import get_db
+from apps.api.database import get_db
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
@@ -92,7 +92,7 @@ def get_current_user(
     except (JWTError, ValueError, TypeError):
         raise credentials_error
 
-    from models import User
+    from apps.api.models import User
 
     user = db.query(User).filter(
         User.id == user_id

@@ -3,7 +3,7 @@ import uuid
 from sqlalchemy import Boolean, DateTime, String, Uuid, func
 from sqlalchemy.orm import mapped_column
 
-from database import Base
+from apps.api.database import Base
 
 
 class User(Base):
