@@ -204,4 +204,11 @@ class TrainingOrchestrator:
             device="cuda",
             tokenizer_fingerprint=prepared.tokenizer_fingerprint,
             dataset_version=prepared.dataset_version,
+            cost_controller=_cost_controller_from_env(),
         )
+
+
+def _cost_controller_from_env():
+    from apps.core.training.cost_limits import cost_controller_from_env
+
+    return cost_controller_from_env()

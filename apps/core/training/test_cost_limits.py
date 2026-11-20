@@ -46,5 +46,5 @@ def test_gpu_hours_with_gpu_count():
     c = cost_controller_from_env({"ZYRQUEN_TRAINING_MAX_GPU_HOURS": "2",
                                   "ZYRQUEN_TRAINING_GPU_COUNT": "4"}, clk)
     c.start()
-    clk.t = 1800
+    clk.t = 1800  # 0.5h * 4 gpus = 2 gpu-hours
     assert c.exceeded() == "max_gpu_hours"
