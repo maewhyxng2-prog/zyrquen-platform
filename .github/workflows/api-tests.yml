@@ -14,6 +14,8 @@ jobs:
     env:
       DATABASE_URL: sqlite:///./test.db
       ZYRQUEN_ENV: unit_test
+      PYTHON_DOTENV_DISABLED: "1"
+      JWT_SECRET_KEY: test-secret
       # main.py imports apps.core (repo root) and routers/database (apps/api)
       PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/apps/api
 
@@ -98,6 +100,77 @@ jobs:
 
       - name: Build web application
         run: npm run build
+
+  postgres-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: zyrquen_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d zyrquen_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      PYTHON_DOTENV_DISABLED: "1"
+      ZYRQUEN_PG_INTEGRATION: "1"
+      ZYRQUEN_ENV: test
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/zyrquen_test
+      ZYRQUEN_TEST_DATABASE_HOST: 127.0.0.1
+      ZYRQUEN_TEST_DATABASE_PORT: "5432"
+      ZYRQUEN_TEST_DATABASE_NAME: zyrquen_test
+      ZYRQUEN_TEST_DATABASE_ID: ci-test-instance
+      ZYRQUEN_PRODUCTION_DATABASE_HOSTS: prod-db.invalid
+      ZYRQUEN_PRODUCTION_DATABASE_NAMES: zyrquen
+      JWT_SECRET_KEY: ci-test-secret
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/apps/api
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r apps/api/requirements.txt
+
+      - name: Create Test database identity marker
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg
+
+          url = os.environ["DATABASE_URL"]
+          with psycopg.connect(url.replace("postgresql+psycopg://", "postgresql://")) as conn:
+              with conn.cursor() as cur:
+                  cur.execute("CREATE SCHEMA IF NOT EXISTS public")
+                  cur.execute(
+                      "CREATE TABLE IF NOT EXISTS public.zyrquen_environment_identity "
+                      "(database_name text PRIMARY KEY, environment text NOT NULL, database_id text NOT NULL)"
+                  )
+                  cur.execute(
+                      "INSERT INTO public.zyrquen_environment_identity "
+                      "(database_name, environment, database_id) VALUES (%s, %s, %s) "
+                      "ON CONFLICT (database_name) DO UPDATE SET "
+                      "environment = EXCLUDED.environment, database_id = EXCLUDED.database_id",
+                      ("zyrquen_test", "test", "ci-test-instance"),
+                  )
+          PY
+
+      - name: Run PostgreSQL integration tests
+        run: python -m pytest -v apps/api/test_pg_integration.py
 
   docker:
     runs-on: ubuntu-latest

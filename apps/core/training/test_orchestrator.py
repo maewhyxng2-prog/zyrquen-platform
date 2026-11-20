@@ -9,7 +9,6 @@ from apps.core.training.orchestrator import (
     TrainingOrchestrator,
     TrainingUnavailable,
 )
-from apps.core.training_infrastructure.gpu.resource_manager import ResourceManager
 
 
 def _write_dataset(path, version="0.1.0"):
@@ -31,7 +30,18 @@ def _write_dataset(path, version="0.1.0"):
         }
     (path / "manifest.json").write_text(
         json.dumps(
-            {"schema": DATASET_SCHEMA, "version": version, "files": files}
+            {
+                "schema": DATASET_SCHEMA,
+                "version": version,
+                "sources": {
+                    "declared-source": {
+                        "path": "source.jsonl",
+                        "license": "CC0-1.0",
+                        "sha256": hashlib.sha256(b"declared source").hexdigest(),
+                    }
+                },
+                "files": files,
+            }
         ),
         encoding="utf-8",
     )
@@ -78,25 +88,23 @@ def _model_config():
     }
 
 
-def test_preflight_returns_unavailable_without_attached_gpu(tmp_path):
+def test_preflight_accepts_bounded_cpu_training_without_gpu(tmp_path):
     dataset_dir = tmp_path / "dataset"
     tokenizer_path = tmp_path / "tokenizer.json"
     _write_dataset(dataset_dir)
     _write_tokenizer(tokenizer_path)
-    resources = ResourceManager(runner=lambda _: "")
     orchestrator = TrainingOrchestrator(
         dataset_dir=dataset_dir,
         tokenizer_path=tokenizer_path,
         training_root=tmp_path / "runs",
-        resource_manager=resources,
     )
 
-    with pytest.raises(TrainingUnavailable, match="No NVIDIA GPU"):
-        orchestrator.prepare(
-            dataset_version="0.1.0",
-            training_values=_config(),
-            model_values=_model_config(),
-        )
+    prepared = orchestrator.prepare(
+        dataset_version="0.1.0",
+        training_values=_config(),
+        model_values=_model_config(),
+    )
+    assert prepared.model_config.estimated_num_parameters <= 5_000_000
 
 
 def test_preflight_rejects_dataset_integrity_failure(tmp_path):
@@ -112,7 +120,6 @@ def test_preflight_rejects_dataset_integrity_failure(tmp_path):
         dataset_dir=dataset_dir,
         tokenizer_path=tokenizer_path,
         training_root=tmp_path / "runs",
-        resource_manager=ResourceManager(runner=lambda _: ""),
     )
 
     with pytest.raises(TrainingUnavailable, match="integrity validation"):
@@ -128,7 +135,6 @@ def test_preflight_requires_configured_artifact_paths(tmp_path):
         dataset_dir=None,
         tokenizer_path=None,
         training_root=tmp_path / "runs",
-        resource_manager=ResourceManager(runner=lambda _: ""),
     )
 
     with pytest.raises(TrainingUnavailable, match="not configured"):
@@ -150,7 +156,6 @@ def test_preflight_rejects_non_directory_training_storage(tmp_path):
         dataset_dir=dataset_dir,
         tokenizer_path=tokenizer_path,
         training_root=training_root,
-        resource_manager=ResourceManager(runner=lambda _: ""),
     )
 
     with pytest.raises(TrainingUnavailable, match="storage is not writable"):
@@ -158,4 +163,29 @@ def test_preflight_rejects_non_directory_training_storage(tmp_path):
             dataset_version="0.1.0",
             training_values=_config(),
             model_values=_model_config(),
+        )
+
+
+def test_preflight_rejects_cpu_model_over_parameter_limit(tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    tokenizer_path = tmp_path / "tokenizer.json"
+    _write_dataset(dataset_dir)
+    _write_tokenizer(tokenizer_path)
+    orchestrator = TrainingOrchestrator(
+        dataset_dir=dataset_dir,
+        tokenizer_path=tokenizer_path,
+        training_root=tmp_path / "runs",
+    )
+
+    with pytest.raises(TrainingUnavailable, match="5,000,000-parameter limit"):
+        orchestrator.prepare(
+            dataset_version="0.1.0",
+            training_values=_config(),
+            model_values={
+                **_model_config(),
+                "d_model": 1024,
+                "n_heads": 8,
+                "d_ff": 4096,
+                "n_layers": 4,
+            },
         )

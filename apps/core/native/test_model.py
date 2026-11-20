@@ -49,3 +49,9 @@ def test_overfits_tiny_batch():
 def test_config_validation():
     with pytest.raises(ValueError):
         ZyrquenConfig(d_model=30, n_heads=4)
+
+
+def test_default_config_is_within_initial_parameter_target():
+    model = ZyrquenModel(ZyrquenConfig())
+    assert 1_000_000 <= model.num_parameters() <= 5_000_000
+    assert model.num_parameters() == model.cfg.estimated_num_parameters

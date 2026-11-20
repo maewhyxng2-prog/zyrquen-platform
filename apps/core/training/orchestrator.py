@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import stat
 from dataclasses import dataclass
@@ -10,16 +11,25 @@ from apps.core.native.config import ZyrquenConfig
 from apps.core.native.dataset import SCHEMA as DATASET_SCHEMA
 from apps.core.native.dataset import load_split
 from apps.core.native.tokenizer import ZyrquenTokenizer
-from apps.core.native.train import TrainConfig, build_token_stream, train
-from apps.core.training_infrastructure.gpu.provisioner import (
-    LocalProvider,
-    ProvisioningError,
+from apps.core.native.train import (
+    TokenStreamLimitExceeded,
+    TrainConfig,
+    build_token_stream,
+    train,
 )
-from apps.core.training_infrastructure.gpu.resource_manager import ResourceManager
 
 
 class TrainingUnavailable(RuntimeError):
     """Raised when required training infrastructure or artifacts are unavailable."""
+
+
+MAX_CPU_MODEL_PARAMETERS = 5_000_000
+MAX_CPU_SEQUENCE_LENGTH = 256
+MAX_CPU_BATCH_SIZE = 4
+MAX_CPU_GRAD_ACCUM_STEPS = 8
+MAX_CPU_TRAINING_STEPS = 1_000
+MAX_CPU_EVAL_BATCHES = 20
+MAX_CPU_SPLIT_TOKENS = 1_000_000
 
 
 @dataclass(frozen=True)
@@ -40,7 +50,6 @@ class TrainingOrchestrator:
         dataset_dir: str | Path | None = None,
         tokenizer_path: str | Path | None = None,
         training_root: str | Path | None = None,
-        resource_manager: ResourceManager | None = None,
     ):
         dataset_value = dataset_dir or os.getenv("ZYRQUEN_DATASET_DIR")
         tokenizer_value = tokenizer_path or os.getenv("ZYRQUEN_TOKENIZER_PATH")
@@ -52,7 +61,6 @@ class TrainingOrchestrator:
             Path(tokenizer_value).resolve() if tokenizer_value else None
         )
         self.training_root = Path(root_value).resolve()
-        self.resource_manager = resource_manager or ResourceManager()
 
     def prepare(
         self,
@@ -96,6 +104,24 @@ class TrainingOrchestrator:
                 raise TrainingUnavailable(
                     "Dataset manifest is invalid or does not match dataset_version."
                 )
+            sources = manifest.get("sources")
+            if not isinstance(sources, dict) or not sources:
+                raise TrainingUnavailable(
+                    "Dataset manifest has no licensed source provenance."
+                )
+            for source_name, source in sources.items():
+                digest = source.get("sha256") if isinstance(source, dict) else None
+                license_name = source.get("license") if isinstance(source, dict) else None
+                if (
+                    not isinstance(license_name, str)
+                    or not license_name.strip()
+                    or not isinstance(digest, str)
+                    or len(digest) != 64
+                    or any(char not in "0123456789abcdef" for char in digest)
+                ):
+                    raise TrainingUnavailable(
+                        f"Dataset source provenance is invalid: {source_name}."
+                    )
             files = manifest.get("files")
             if not isinstance(files, dict):
                 raise TrainingUnavailable("Dataset manifest has no split records.")
@@ -140,27 +166,32 @@ class TrainingOrchestrator:
             raise TrainingUnavailable(
                 "Training block_size must not exceed model max_seq_len."
             )
-
-        try:
-            LocalProvider(self.resource_manager).provision()
-        except ProvisioningError as exc:
+        if model_config.max_seq_len > MAX_CPU_SEQUENCE_LENGTH:
             raise TrainingUnavailable(
-                "No NVIDIA GPU is attached to this API worker."
-            ) from exc
-
-        try:
-            import torch
-        except ImportError as exc:
+                f"CPU training max_seq_len must be <= {MAX_CPU_SEQUENCE_LENGTH}."
+            )
+        if model_config.estimated_num_parameters > MAX_CPU_MODEL_PARAMETERS:
             raise TrainingUnavailable(
-                "The training runtime requires a CUDA-enabled PyTorch installation."
-            ) from exc
-        try:
-            cuda_available = torch.cuda.is_available()
-        except (RuntimeError, OSError) as exc:
-            raise TrainingUnavailable("CUDA runtime is unavailable.") from exc
-        if not cuda_available:
+                "CPU training model exceeds the "
+                f"{MAX_CPU_MODEL_PARAMETERS:,}-parameter limit."
+            )
+        if training_config.batch_size > MAX_CPU_BATCH_SIZE:
             raise TrainingUnavailable(
-                "An NVIDIA GPU was detected, but PyTorch CUDA is unavailable."
+                f"CPU training batch_size must be <= {MAX_CPU_BATCH_SIZE}."
+            )
+        if training_config.grad_accum_steps > MAX_CPU_GRAD_ACCUM_STEPS:
+            raise TrainingUnavailable(
+                "CPU training grad_accum_steps must be <= "
+                f"{MAX_CPU_GRAD_ACCUM_STEPS}."
+            )
+        if training_config.max_steps > MAX_CPU_TRAINING_STEPS:
+            raise TrainingUnavailable(
+                f"CPU training max_steps must be <= {MAX_CPU_TRAINING_STEPS}."
+            )
+        if training_config.eval_batches > MAX_CPU_EVAL_BATCHES:
+            raise TrainingUnavailable(
+                "CPU training eval_batches must be <= "
+                f"{MAX_CPU_EVAL_BATCHES}."
             )
 
         return PreparedTraining(
@@ -179,12 +210,21 @@ class TrainingOrchestrator:
         from apps.core.native.model import ZyrquenModel
 
         tokenizer = ZyrquenTokenizer.load(prepared.tokenizer_path)
-        train_ids = build_token_stream(
-            load_split(prepared.dataset_dir, "train"), tokenizer
-        )
-        validation_ids = build_token_stream(
-            load_split(prepared.dataset_dir, "validation"), tokenizer
-        )
+        try:
+            train_ids = build_token_stream(
+                load_split(prepared.dataset_dir, "train"),
+                tokenizer,
+                max_tokens=MAX_CPU_SPLIT_TOKENS,
+            )
+            validation_ids = build_token_stream(
+                load_split(prepared.dataset_dir, "validation"),
+                tokenizer,
+                max_tokens=MAX_CPU_SPLIT_TOKENS,
+            )
+        except TokenStreamLimitExceeded as exc:
+            raise TrainingUnavailable(
+                "Tokenized dataset exceeds the CPU training token limit."
+            ) from exc
         block_size = prepared.training_config.block_size
         if len(train_ids) < block_size + 1 or len(validation_ids) < block_size + 1:
             raise TrainingUnavailable(
@@ -194,18 +234,90 @@ class TrainingOrchestrator:
         run_dir = prepared.training_root / str(run_id)
         run_dir.mkdir(parents=True, exist_ok=False)
         model = ZyrquenModel(prepared.model_config)
-        return train(
+        result = train(
             model,
             train_ids,
             validation_ids,
             prepared.training_config,
             run_dir / "checkpoints",
             run_dir / "metrics.jsonl",
-            device="cuda",
             tokenizer_fingerprint=prepared.tokenizer_fingerprint,
             dataset_version=prepared.dataset_version,
             cost_controller=_cost_controller_from_env(),
+            device="cpu",
         )
+        if not result["parameter_changed"]:
+            raise TrainingUnavailable(
+                "Training completed without changing model parameters."
+            )
+        if result["train_loss"] is None or result["val_loss"] is None:
+            raise TrainingUnavailable(
+                "Training did not produce both training and validation loss."
+            )
+        if not math.isfinite(result["train_loss"]) or not math.isfinite(
+            result["val_loss"]
+        ):
+            raise TrainingUnavailable("Training produced a non-finite loss.")
+
+        from apps.core.training_infrastructure.recovery.checkpoint_recovery import (
+            CheckpointManager,
+        )
+
+        checkpoints = CheckpointManager(run_dir / "checkpoints")
+        checkpoint_entry = checkpoints.latest_valid()
+        checkpoint = checkpoints.load_latest()
+        if checkpoint_entry is None or checkpoint is None:
+            raise TrainingUnavailable(
+                "Training did not produce a checkpoint with valid integrity."
+            )
+        checkpoint_step, state = checkpoint
+        if (
+            checkpoint_step != result["steps"]
+            or state.get("model_config") != prepared.model_config.to_dict()
+            or state.get("tokenizer_sha256") != prepared.tokenizer_fingerprint
+            or state.get("dataset_version") != prepared.dataset_version
+        ):
+            raise TrainingUnavailable(
+                "Saved checkpoint metadata does not match this training run."
+            )
+
+        trained_model = ZyrquenModel(prepared.model_config)
+        trained_model.load_state_dict(state["model"])
+        if any(
+            not torch.equal(state["model"][name], parameter.detach().cpu())
+            for name, parameter in model.state_dict().items()
+        ):
+            raise TrainingUnavailable(
+                "Reloaded checkpoint does not contain the final trained parameters."
+            )
+        trained_model.eval()
+        validation_prompt = next(load_split(prepared.dataset_dir, "validation"))
+        prompt_ids = tokenizer.encode(validation_prompt)[:block_size]
+        if not prompt_ids:
+            raise TrainingUnavailable(
+                "Validation text produced no tokens for CPU native inference."
+            )
+        with torch.inference_mode():
+            generated_ids = trained_model.generate(
+                torch.tensor([prompt_ids], dtype=torch.long),
+                max_new_tokens=8,
+                temperature=0,
+            )
+        if generated_ids.shape[1] != len(prompt_ids) + 8:
+            raise TrainingUnavailable(
+                "Reloaded checkpoint failed native inference verification."
+            )
+        generated_text = tokenizer.decode(generated_ids[0, len(prompt_ids):].tolist())
+        return {
+            **result,
+            "checkpoint_reloaded": True,
+            "checkpoint_sha256": checkpoint_entry["sha256"],
+            "inference_verified": True,
+            "inference_tokens": 8,
+            "inference_text_nonempty": bool(generated_text),
+            "device": "cpu",
+            "parameter_count": prepared.model_config.estimated_num_parameters,
+        }
 
 
 def _cost_controller_from_env():

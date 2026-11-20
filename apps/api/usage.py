@@ -95,6 +95,7 @@ def _expire_stale_reservations(
             InferenceUsage.lease_expires_at <= now,
         )
         .with_for_update()
+        .order_by(InferenceUsage.request_id.asc())
         .all()
     )
     for row in rows:
@@ -183,6 +184,52 @@ def _reserve_inference(
 ) -> tuple[InferenceUsage, bool]:
     try:
         now = datetime.now(timezone.utc)
+
+        # Acquire the quota-policy row before any usage/request row. This is
+        # the single lock order for every reservation in PostgreSQL and SQLite.
+        policy = (
+            db.query(UserQuotaPolicy)
+            .filter(UserQuotaPolicy.user_id == user_id)
+            .with_for_update()
+            .first()
+        )
+        if policy is None:
+            existing = (
+                db.query(InferenceUsage)
+                .filter(InferenceUsage.request_id == request_id)
+                .with_for_update()
+                .first()
+            )
+            if existing is not None and (
+                existing.user_id != user_id
+                or existing.conversation_id != conversation_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="ไม่พบคำขอประมวลผล",
+                )
+            if existing is not None and existing.request_fingerprint != request_hash:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Request ID นี้ถูกใช้กับคำขออื่นแล้ว",
+                )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "code": "quota_policy_unavailable",
+                    "message": "ยังไม่ได้กำหนดนโยบายโควตา Native AI",
+                },
+            )
+
+        if not _window_is_active(policy, now):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "code": "quota_policy_inactive",
+                    "message": "นโยบายโควตา Native AI ยังไม่อยู่ในช่วงใช้งาน",
+                },
+            )
+
         existing = (
             db.query(InferenceUsage)
             .filter(InferenceUsage.request_id == request_id)
@@ -214,6 +261,8 @@ def _reserve_inference(
                 existing = db.query(InferenceUsage).filter(
                     InferenceUsage.request_id == request_id
                 ).first()
+            else:
+                db.commit()
             return (
                 _validate_existing(
                     existing,
@@ -222,30 +271,6 @@ def _reserve_inference(
                     fingerprint=request_hash,
                 ),
                 False,
-            )
-
-        policy = (
-            db.query(UserQuotaPolicy)
-            .filter(UserQuotaPolicy.user_id == user_id)
-            .with_for_update()
-            .first()
-        )
-        if policy is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    "code": "quota_policy_unavailable",
-                    "message": "ยังไม่ได้กำหนดนโยบายโควตา Native AI",
-                },
-            )
-
-        if not _window_is_active(policy, now):
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    "code": "quota_policy_inactive",
-                    "message": "นโยบายโควตา Native AI ยังไม่อยู่ในช่วงใช้งาน",
-                },
             )
 
         # A terminated process must not retain a reservation indefinitely.

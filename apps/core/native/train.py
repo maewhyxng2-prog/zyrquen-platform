@@ -46,12 +46,23 @@ def lr_at(step: int, cfg: TrainConfig) -> float:
     return cfg.min_lr + 0.5 * (1 + math.cos(math.pi * progress)) * (cfg.lr - cfg.min_lr)
 
 
-def build_token_stream(texts: Iterable[str], tokenizer) -> list[int]:
+def build_token_stream(
+    texts: Iterable[str], tokenizer, max_tokens: int | None = None
+) -> list[int]:
     """Concatenate documents, each followed by <|eos|>."""
     ids: list[int] = []
     for text in texts:
-        ids.extend(tokenizer.encode(text, add_eos=True))
+        document_ids = tokenizer.encode(text, add_eos=True)
+        if max_tokens is not None and len(ids) + len(document_ids) > max_tokens:
+            raise TokenStreamLimitExceeded(
+                f"token stream exceeds the {max_tokens}-token limit"
+            )
+        ids.extend(document_ids)
     return ids
+
+
+class TokenStreamLimitExceeded(ValueError):
+    """Raised when an encoded corpus exceeds its configured memory bound."""
 
 
 def sample_batch(ids: list[int], block_size: int, batch_size: int,
@@ -103,6 +114,11 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
         rng.setstate(state["batch_rng"])
         restore_rng_state(state["rng"])
 
+    initial_parameters = {
+        name: parameter.detach().clone()
+        for name, parameter in model.named_parameters()
+    }
+
     def to_tensor(rows):
         return torch.tensor(rows, dtype=torch.long, device=device)
 
@@ -127,6 +143,7 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
 
     model.train()
     last_val = None
+    last_train_loss = None
     stopped_reason = None
     if cost_controller is not None:
         cost_controller.start()
@@ -147,6 +164,7 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
             total_loss += loss.item()
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         optimizer.step()
+        last_train_loss = total_loss
         step += 1
 
         if step % cfg.log_interval == 0 or step == cfg.max_steps:
@@ -168,5 +186,10 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
         cost_controller.pause()
     if last_val is None and stopped_reason is None:
         last_val = evaluate()
+    parameter_changed = any(
+        not torch.equal(initial_parameters[name], parameter.detach())
+        for name, parameter in model.named_parameters()
+    )
     return {"steps": step, "resumed_from": start_step, "stopped_reason": stopped_reason,
+            "train_loss": last_train_loss, "parameter_changed": parameter_changed,
             "val_loss": last_val, "perplexity": perplexity(last_val) if last_val is not None else None}

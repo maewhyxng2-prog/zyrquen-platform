@@ -69,11 +69,15 @@ native-model artifact, so native inference must remain unavailable until those
 runtime dependencies and a ZYRQUEN-trained artifact are provisioned and verified.
 Do not substitute or download an external model.
 
-Training job endpoints are admin-allowlisted and return 503 until a CUDA-enabled
-PyTorch runtime, attached NVIDIA GPU, verified dataset, and tokenizer are
-available. Jobs run in a single API process; deploy one API worker/replica for
-this initial dispatcher. The native training loop reports steps, not epochs,
-and telemetry reports epochs as unavailable rather than deriving them.
+Training job endpoints are admin-allowlisted and run on CPU only. They require a
+PyTorch runtime, a prepared dataset with non-empty source licence declarations,
+and a matching tokenizer. CPU jobs are limited to 5M parameters, sequence length
+256, batch size 4, gradient accumulation 8, 1,000 steps, 20 evaluation batches,
+and 1M tokens per split. These are execution bounds, not evidence that a
+licensed corpus or trained model is available. Jobs run in a single API process;
+deploy one API worker/replica for this initial dispatcher. The native training
+loop reports steps, not epochs, and telemetry reports epochs as unavailable
+rather than deriving them.
 Successfully completed runs are registered only after a checkpoint passes
 integrity verification. The registry records model, tokenizer, dataset, and
 checkpoint lineage under `ZYRQUEN_MODEL_REGISTRY_ROOT` (default

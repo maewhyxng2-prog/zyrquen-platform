@@ -5,11 +5,11 @@ from dataclasses import asdict, dataclass
 class ZyrquenConfig:
     """Hyper-parameters of the ZYRQUEN decoder-only Transformer.
 
-    Defaults describe a deliberately tiny model for pipeline testing only.
+    Defaults target a 1-5M parameter model with a small native vocabulary.
     """
 
-    vocab_size: int = 32000
-    max_seq_len: int = 512
+    vocab_size: int = 2048
+    max_seq_len: int = 256
     n_layers: int = 4
     n_heads: int = 4
     d_model: int = 256
@@ -30,6 +30,18 @@ class ZyrquenConfig:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @property
+    def estimated_num_parameters(self) -> int:
+        embedding_count = self.vocab_size * self.d_model
+        if not self.tie_embeddings:
+            embedding_count *= 2
+        block_count = self.n_layers * (
+            4 * self.d_model * self.d_model
+            + 3 * self.d_model * self.d_ff
+            + 2 * self.d_model
+        )
+        return embedding_count + block_count + self.d_model
 
     @classmethod
     def from_dict(cls, data: dict) -> "ZyrquenConfig":

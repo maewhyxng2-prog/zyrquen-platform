@@ -6,17 +6,17 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class TrainingConfigRequest(BaseModel):
-    block_size: int = Field(default=128, ge=2, le=8192)
-    batch_size: int = Field(default=16, ge=1, le=4096)
-    grad_accum_steps: int = Field(default=1, ge=1, le=4096)
-    max_steps: int = Field(default=1000, ge=1, le=10_000_000)
+    block_size: int = Field(default=128, ge=2, le=256)
+    batch_size: int = Field(default=1, ge=1, le=4)
+    grad_accum_steps: int = Field(default=1, ge=1, le=8)
+    max_steps: int = Field(default=100, ge=1, le=1_000)
     lr: float = Field(default=3e-4, gt=0, le=1)
     min_lr: float = Field(default=3e-5, gt=0, le=1)
-    warmup_steps: int = Field(default=100, ge=0, le=10_000_000)
+    warmup_steps: int = Field(default=10, ge=0, le=1_000)
     weight_decay: float = Field(default=0.1, ge=0, le=10)
     grad_clip: float = Field(default=1.0, gt=0, le=100)
     eval_interval: int = Field(default=200, ge=1, le=10_000_000)
-    eval_batches: int = Field(default=20, ge=1, le=100_000)
+    eval_batches: int = Field(default=4, ge=1, le=20)
     checkpoint_interval: int = Field(default=200, ge=1, le=10_000_000)
     log_interval: int = Field(default=10, ge=1, le=10_000_000)
     seed: int = Field(default=1337, ge=0)
@@ -31,7 +31,7 @@ class TrainingConfigRequest(BaseModel):
 
 
 class NativeModelConfigRequest(BaseModel):
-    max_seq_len: int = Field(default=512, ge=2, le=8192)
+    max_seq_len: int = Field(default=256, ge=2, le=256)
     n_layers: int = Field(default=4, ge=1, le=128)
     n_heads: int = Field(default=4, ge=1, le=128)
     d_model: int = Field(default=256, ge=2, le=16384)

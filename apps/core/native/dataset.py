@@ -160,7 +160,11 @@ def assign_split(doc_id: str, cfg: PrepConfig) -> str:
 
 
 def _sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 # ---- main entry ----
@@ -241,6 +245,7 @@ def load_split(dataset_dir: str | Path, split: str) -> Iterator[str]:
         raise ValueError(f"unknown split: {split}")
     if _sha256_file(d / name) != manifest["files"][name]["sha256"]:
         raise ValueError(f"dataset integrity check failed: {name}")
-    for line in (d / name).read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            yield json.loads(line)["text"]
+    with (d / name).open(encoding="utf-8") as split_file:
+        for line in split_file:
+            if line.strip():
+                yield json.loads(line)["text"]
