@@ -2,7 +2,7 @@
 """ZYRQUEN Ω∞ evaluation database models."""
 
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import (
     DateTime,
@@ -11,6 +11,7 @@ from sqlalchemy import (
     JSON,
     String,
     Text,
+    Uuid,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,14 +27,14 @@ class EvaluationRun(Base):
 
     __tablename__ = "evaluation_runs"
 
-    id: Mapped[str] = mapped_column(
-        String(36),
+    id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
         primary_key=True,
-        default=lambda: str(uuid4()),
+        default=uuid4,
     )
 
-    user_id: Mapped[str] = mapped_column(
-        String(36),
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
         nullable=False,
         index=True,
     )
