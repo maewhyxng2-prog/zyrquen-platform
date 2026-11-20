@@ -8,6 +8,8 @@ from fastapi import FastAPI
 from routers.auth import router as auth_router
 from routers.inference import router as inference_router
 from routers.training import router as training_router
+from routers.evaluation import router as evaluation_router
+
 from apps.core.runtime import runtime
 
 logger = logging.getLogger(__name__)
@@ -29,13 +31,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="ZYRQUEN Ω∞ API",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
 app.include_router(auth_router)
 app.include_router(inference_router)
 app.include_router(training_router)
+app.include_router(evaluation_router)
 
 
 @app.get("/")
