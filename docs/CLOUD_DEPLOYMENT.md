@@ -68,6 +68,11 @@ PyTorch runtime, attached NVIDIA GPU, verified dataset, and tokenizer are
 available. Jobs run in a single API process; deploy one API worker/replica for
 this initial dispatcher. The native training loop reports steps, not epochs,
 and telemetry reports epochs as unavailable rather than deriving them.
+Successfully completed runs are registered only after a checkpoint passes
+integrity verification. The registry records model, tokenizer, dataset, and
+checkpoint lineage under `ZYRQUEN_MODEL_REGISTRY_ROOT` (default
+`/data/model-registry`); persist that directory across API restarts. Failed,
+cancelled, or early-stopped runs are not registered or activated.
 
 Before starting the API, apply the additive training schema migration against a
 database that already has the existing `users` table:

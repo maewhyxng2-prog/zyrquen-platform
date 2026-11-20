@@ -7,6 +7,10 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from apps.core.native.registry import ModelRegistry
+from apps.core.training_infrastructure.recovery.checkpoint_recovery import (
+    CheckpointManager,
+)
 from apps.core.training.orchestrator import PreparedTraining, TrainingOrchestrator
 from apps.core.training.orchestrator import TrainingUnavailable
 from training_models import TrainingRun
@@ -25,9 +29,11 @@ class TrainingJobService:
         self,
         session_factory: sessionmaker,
         orchestrator: TrainingOrchestrator | None = None,
+        registry: ModelRegistry | None = None,
     ):
         self._session_factory = session_factory
         self._orchestrator = orchestrator or TrainingOrchestrator()
+        self._registry = registry
         self._executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="zyrquen-training"
         )
@@ -89,6 +95,7 @@ class TrainingJobService:
 
     def _execute(self, run_id: UUID, prepared: PreparedTraining) -> None:
         db = self._session_factory()
+        registered = False
         try:
             run = db.get(TrainingRun, run_id)
             if run is None:
@@ -101,11 +108,70 @@ class TrainingJobService:
             db.close()
 
             result = self._orchestrator.run(run_id, prepared)
+            if not isinstance(result, dict):
+                raise TrainingUnavailable(
+                    "Training did not return a valid completion result."
+                )
+            if result.get("stopped_reason") is not None:
+                raise TrainingUnavailable(
+                    "Training stopped before successful completion: "
+                    f"{result['stopped_reason']}."
+                )
+
+            checkpoint_dir = prepared.training_root / str(run_id) / "checkpoints"
+            if CheckpointManager(checkpoint_dir).latest_valid() is None:
+                raise TrainingUnavailable(
+                    "Training completed without a checkpoint with valid integrity."
+                )
+
+            # Commit successful training before registration. If the process exits
+            # before registration, it cannot leave a registry version for a failed run.
+            self._finish(run_id, status="completed", result=result)
+
+            registry = self._registry
+            if registry is None:
+                registry = ModelRegistry(
+                    os.getenv(
+                        "ZYRQUEN_MODEL_REGISTRY_ROOT", "/data/model-registry"
+                    )
+                )
+                self._registry = registry
+
+            model_version = f"run-{run_id.hex}"
+            record = registry.register(
+                model_version,
+                checkpoint_dir,
+                prepared.tokenizer_path,
+                prepared.dataset_dir,
+                metrics=result,
+                notes=f"Training run {run_id}",
+            )
+            registered = True
+            result = {
+                **result,
+                "model_version": model_version,
+                "lineage": {
+                    "model_version": model_version,
+                    "tokenizer_version": record["tokenizer"]["version"],
+                    "tokenizer_path": record["tokenizer"]["path"],
+                    "dataset_version": record["dataset"]["version"],
+                    "dataset_manifest_path": record["dataset"]["path"],
+                    "checkpoint_path": record["checkpoint"]["path"],
+                    "checkpoint_sha256": record["checkpoint"]["sha256"],
+                },
+            }
             self._finish(run_id, status="completed", result=result)
         except Exception as exc:
-            logger.exception("Training run %s failed", run_id)
             db.rollback()
             db.close()
+            if registered:
+                logger.exception(
+                    "Training run %s remains completed because its model version "
+                    "was registered, but lineage result could not be persisted.",
+                    run_id,
+                )
+                return
+            logger.exception("Training run %s failed", run_id)
             self._finish(
                 run_id,
                 status="failed",
