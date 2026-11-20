@@ -4,8 +4,8 @@
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .evaluation_models import EvaluationRun
-from .evaluation_schemas import EvaluationRunCreate
+from evaluation_models import EvaluationRun
+from evaluation_schemas import EvaluationRunCreate
 
 
 def create_evaluation_run(
@@ -16,7 +16,7 @@ def create_evaluation_run(
     """Create a queued evaluation record."""
 
     run = EvaluationRun(
-        user_id=user_id,
+        user_id=str(user_id),
         model_version=payload.model_version,
         checkpoint_id=payload.checkpoint_id,
         dataset_id=payload.dataset_id,
@@ -28,9 +28,13 @@ def create_evaluation_run(
         metadata_json={},
     )
 
-    db.add(run)
-    db.commit()
-    db.refresh(run)
+    try:
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+    except Exception:
+        db.rollback()
+        raise
 
     return run
 
@@ -41,7 +45,7 @@ def get_evaluation_run(
     user_id: str,
     is_admin: bool = False,
 ) -> EvaluationRun | None:
-    """Retrieve a run while enforcing user ownership."""
+    """Retrieve a run with ownership enforcement."""
 
     statement = select(EvaluationRun).where(
         EvaluationRun.id == run_id
@@ -49,7 +53,7 @@ def get_evaluation_run(
 
     if not is_admin:
         statement = statement.where(
-            EvaluationRun.user_id == user_id
+            EvaluationRun.user_id == str(user_id)
         )
 
     return db.scalar(statement)
@@ -62,7 +66,7 @@ def list_evaluation_runs(
     limit: int = 20,
     offset: int = 0,
 ) -> tuple[list[EvaluationRun], int]:
-    """List evaluation runs with ownership filtering and pagination."""
+    """List evaluation runs with pagination."""
 
     if not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
@@ -70,30 +74,25 @@ def list_evaluation_runs(
     if offset < 0:
         raise ValueError("offset cannot be negative")
 
-    filters = []
-
-    if not is_admin:
-        filters.append(EvaluationRun.user_id == user_id)
-
+    statement = select(EvaluationRun)
     count_statement = select(func.count()).select_from(
         EvaluationRun
     )
 
-    query_statement = select(EvaluationRun)
-
-    if filters:
-        count_statement = count_statement.where(*filters)
-        query_statement = query_statement.where(*filters)
+    if not is_admin:
+        owner_filter = EvaluationRun.user_id == str(user_id)
+        statement = statement.where(owner_filter)
+        count_statement = count_statement.where(owner_filter)
 
     total = db.scalar(count_statement) or 0
 
-    query_statement = (
-        query_statement
+    statement = (
+        statement
         .order_by(EvaluationRun.created_at.desc())
         .limit(limit)
         .offset(offset)
     )
 
-    items = list(db.scalars(query_statement).all())
+    items = list(db.scalars(statement).all())
 
     return items, total
