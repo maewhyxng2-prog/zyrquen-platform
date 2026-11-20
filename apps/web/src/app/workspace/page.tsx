@@ -18,9 +18,18 @@ import { usePlatformHealth } from "@/hooks/usePlatformHealth";
 import {
   apiStreamRequest,
   ApiError,
-  conversationStorageKey,
   readSession,
 } from "@/lib/api";
+import {
+  createConversation as createBackendConversation,
+  deleteConversation as deleteBackendConversation,
+  getConversation,
+  listConversations,
+  renameConversation as renameBackendConversation,
+  saveConversationMessage,
+  updateConversationMessage,
+  withConversation,
+} from "@/lib/conversation-api";
 import {
   buildNativeInferencePrompt,
   consumeNativeInferenceStream,
@@ -33,12 +42,6 @@ const examples = [
   "อธิบายขั้นตอนการทำงานของไปป์ไลน์การฝึกโมเดล",
 ];
 
-function isConversation(value: unknown): value is Conversation {
-  if (!value || typeof value !== "object") return false;
-  const item = value as Partial<Conversation>;
-  return typeof item.id === "string" && typeof item.title === "string" && Array.isArray(item.messages);
-}
-
 type RequestPhase = "verifying" | "connecting" | "generating" | null;
 
 export default function WorkspacePage() {
@@ -49,7 +52,11 @@ export default function WorkspacePage() {
   const sessionRef = useRef<Session | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [loadedStorageKey, setLoadedStorageKey] = useState<string | null>(null);
+  const [loadedUserId, setLoadedUserId] = useState<string | null>(null);
+  const [loadedConversationId, setLoadedConversationId] = useState<string | null>(
+    null,
+  );
+  const [historyError, setHistoryError] = useState("");
   const [draft, setDraft] = useState("");
   const [maxTokens, setMaxTokens] = useState(256);
   const [temperature, setTemperature] = useState(0.7);
@@ -68,9 +75,17 @@ export default function WorkspacePage() {
   const copyTimerRef = useRef<number | null>(null);
   const inferenceAbortControllerRef = useRef<AbortController | null>(null);
   const sending = requestPhase !== null;
-  const storageKey = useMemo(() => conversationStorageKey(session), [session]);
-  const storageReadyForCurrentUser =
-    storageKey !== null && loadedStorageKey === storageKey;
+  const reportHistoryFailure = useCallback((reason: unknown) => {
+    setHistoryError(
+      reason instanceof Error ? reason.message : "จัดการบทสนทนาไม่สำเร็จ",
+    );
+  }, []);
+  const conversationsReadyForCurrentUser =
+    Boolean(session?.userId) && loadedUserId === session?.userId;
+  const conversationsLoading =
+    Boolean(session?.authenticated) && !conversationsReadyForCurrentUser;
+  const messagesLoading =
+    activeId !== null && loadedConversationId !== activeId;
   const activeConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === activeId) ?? null,
     [conversations, activeId],
@@ -127,55 +142,103 @@ export default function WorkspacePage() {
   }, [sessionReady, session, router]);
 
   useEffect(() => {
-    const loadTimer = window.setTimeout(() => {
-      if (!storageKey) {
-        setConversations([]);
-        setActiveId(null);
+    let active = true;
+    const userId =
+      sessionReady && session?.authenticated ? session.userId?.trim() : null;
+    if (!sessionReady || !session?.authenticated || !userId) {
+      return () => {
+        active = false;
+      };
+    }
+    listConversations(userId)
+      .then((items) => {
+        if (!active || sessionRef.current?.userId !== userId) return;
+        setConversations(items);
+        setActiveId(items[0]?.id ?? null);
+        setLoadedConversationId(null);
         setDraft("");
         setError("");
+        setHistoryError("");
         setStreamingOutput(null);
-        setLoadedStorageKey(null);
-        return;
-      }
-
-      try {
-        const raw = window.localStorage.getItem(storageKey);
-        if (raw) {
-          const parsed: unknown = JSON.parse(raw);
-          if (Array.isArray(parsed)) {
-            const valid = parsed.filter(isConversation);
-            setConversations(valid);
-            setActiveId(valid[0]?.id ?? null);
-          } else {
-            setConversations([]);
-            setActiveId(null);
-          }
-        } else {
-          setConversations([]);
-          setActiveId(null);
-        }
-      } catch {
-        window.localStorage.removeItem(storageKey);
+        setSearchQuery("");
+        setEditingId(null);
+        setEditingTitle("");
+        setLoadedUserId(userId);
+      })
+      .catch((reason: unknown) => {
+        if (!active || sessionRef.current?.userId !== userId) return;
         setConversations([]);
         setActiveId(null);
-      }
-      setDraft("");
-      setError("");
-      setStreamingOutput(null);
-      setLoadedStorageKey(storageKey);
-    }, 0);
-
-    const clearHistory = () => {
-      setConversations([]);
-      setActiveId(null);
-    };
-
-    window.addEventListener("zyrquen:conversations-cleared", clearHistory);
+        setLoadedConversationId(null);
+        setHistoryError(
+          reason instanceof Error
+            ? reason.message
+            : "โหลดรายการบทสนทนาไม่สำเร็จ",
+        );
+        setLoadedUserId(userId);
+      });
     return () => {
-      window.clearTimeout(loadTimer);
-      window.removeEventListener("zyrquen:conversations-cleared", clearHistory);
+      active = false;
     };
-  }, [storageKey]);
+  }, [sessionReady, session?.authenticated, session?.userId]);
+
+  useEffect(() => {
+    if (!conversationsReadyForCurrentUser || !activeId || !session?.userId) {
+      return;
+    }
+    let active = true;
+    const userId = session.userId;
+    getConversation(activeId, userId)
+      .then((conversation) => {
+        if (!active || sessionRef.current?.userId !== userId) return;
+        setConversations((current) =>
+          current.map((item) => (item.id === conversation.id ? conversation : item)),
+        );
+        setLoadedConversationId(activeId);
+      })
+      .catch((reason: unknown) => {
+        if (!active || sessionRef.current?.userId !== userId) return;
+        setLoadedConversationId(activeId);
+        setHistoryError(
+          reason instanceof Error
+            ? reason.message
+            : "โหลดข้อความในบทสนทนาไม่สำเร็จ",
+        );
+      });
+    return () => {
+      active = false;
+    };
+  }, [activeId, session?.userId, conversationsReadyForCurrentUser]);
+
+  useEffect(() => {
+    const refreshHistory = () => {
+      const ownerId = sessionRef.current?.userId;
+      if (!ownerId) return;
+      listConversations(ownerId)
+        .then((items) => {
+          if (sessionRef.current?.userId !== ownerId) return;
+          setConversations((current) =>
+            items.map((item) => ({
+              ...item,
+              messages:
+                current.find((existing) => existing.id === item.id)?.messages ??
+                [],
+            })),
+          );
+          setActiveId((current) =>
+            items.some((item) => item.id === current)
+              ? current
+              : items[0]?.id ?? null,
+          );
+          setHistoryError("");
+        })
+        .catch(reportHistoryFailure);
+    };
+    window.addEventListener("zyrquen:conversations-cleared", refreshHistory);
+    return () => {
+      window.removeEventListener("zyrquen:conversations-cleared", refreshHistory);
+    };
+  }, [reportHistoryFailure]);
 
   useEffect(() => {
     if (!mobileHistory) return;
@@ -187,12 +250,6 @@ export default function WorkspacePage() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [mobileHistory]);
-
-  useEffect(() => {
-    if (storageReadyForCurrentUser && storageKey) {
-      window.localStorage.setItem(storageKey, JSON.stringify(conversations));
-    }
-  }, [conversations, storageKey, storageReadyForCurrentUser]);
 
   useEffect(() => {
     const scroller = scrollRef.current;
@@ -226,17 +283,20 @@ export default function WorkspacePage() {
     }
   }
 
-  function createConversation(): Conversation {
-    const conversation: Conversation = {
-      id: crypto.randomUUID(),
-      title: "บทสนทนาใหม่",
-      updatedAt: new Date().toISOString(),
-      messages: [],
-    };
-    setConversations((current) => [conversation, ...current]);
+  async function createConversation(title = "บทสนทนาใหม่"): Promise<Conversation> {
+    const ownerId = sessionRef.current?.userId;
+    if (!ownerId) {
+      throw new ApiError("ไม่พบรหัสบัญชีที่ยืนยันตัวตนแล้ว", 401);
+    }
+    const conversation = await createBackendConversation(title, ownerId);
+    if (sessionRef.current?.userId !== ownerId) {
+      throw new DOMException("Session changed", "AbortError");
+    }
+    setConversations((current) => withConversation(current, conversation));
     setActiveId(conversation.id);
     setSearchQuery("");
     setError("");
+    setHistoryError("");
     setMobileHistory(false);
     return conversation;
   }
@@ -244,35 +304,29 @@ export default function WorkspacePage() {
   function selectConversation(id: string) {
     setActiveId(id);
     setError("");
+    setHistoryError("");
     setMobileHistory(false);
   }
 
-  function updateConversation(id: string, update: (current: Conversation) => Conversation) {
-    setConversations((current) =>
-      current.map((conversation) =>
-        conversation.id === id ? update(conversation) : conversation,
-      ),
-    );
-  }
-
-  function deleteConversation(id: string) {
-    const remaining = conversations.filter((conversation) => conversation.id !== id);
-    setConversations(remaining);
-    if (storageReadyForCurrentUser && storageKey) {
-      if (remaining.length === 0) {
-        window.localStorage.removeItem(storageKey);
-      } else {
-        window.localStorage.setItem(storageKey, JSON.stringify(remaining));
+  async function removeConversation(id: string) {
+    const ownerId = sessionRef.current?.userId;
+    try {
+      if (!ownerId) throw new ApiError("ไม่พบรหัสบัญชีที่ยืนยันตัวตนแล้ว", 401);
+      await deleteBackendConversation(id, ownerId);
+      if (sessionRef.current?.userId !== ownerId) return;
+      setConversations((current) => {
+        const remaining = current.filter((conversation) => conversation.id !== id);
+        if (activeId === id) setActiveId(remaining[0]?.id ?? null);
+        return remaining;
+      });
+      if (editingId === id) {
+        setEditingId(null);
+        setEditingTitle("");
       }
+      setHistoryError("");
+    } catch (reason) {
+      reportHistoryFailure(reason);
     }
-    if (activeId === id) {
-      setActiveId(remaining[0]?.id ?? null);
-    }
-    if (editingId === id) {
-      setEditingId(null);
-      setEditingTitle("");
-    }
-    setError("");
   }
 
   function startEditingTitle(conversation: Conversation) {
@@ -280,15 +334,29 @@ export default function WorkspacePage() {
     setEditingTitle(conversation.title);
   }
 
-  function commitRename(id: string) {
+  async function commitRename(id: string) {
     if (editingId !== id) return;
+    const ownerId = sessionRef.current?.userId;
     const trimmed = editingTitle.trim();
     if (trimmed) {
-      updateConversation(id, (current) => ({
-        ...current,
-        title: trimmed,
-        updatedAt: new Date().toISOString(),
-      }));
+      try {
+        if (!ownerId) throw new ApiError("ไม่พบรหัสบัญชีที่ยืนยันตัวตนแล้ว", 401);
+        const renamed = await renameBackendConversation(id, trimmed, ownerId);
+        if (sessionRef.current?.userId === ownerId) {
+          setConversations((current) =>
+            current
+              .map((item) =>
+                item.id === id ? { ...renamed, messages: item.messages } : item,
+              )
+              .sort(
+                (a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt),
+              ),
+          );
+          setHistoryError("");
+        }
+      } catch (reason) {
+        reportHistoryFailure(reason);
+      }
     }
     setEditingId(null);
     setEditingTitle("");
@@ -302,7 +370,7 @@ export default function WorkspacePage() {
   function onRenameKeyDown(event: KeyboardEvent<HTMLInputElement>, id: string) {
     if (event.key === "Enter") {
       event.preventDefault();
-      commitRename(id);
+      void commitRename(id);
     } else if (event.key === "Escape") {
       event.preventDefault();
       cancelRename();
@@ -313,6 +381,7 @@ export default function WorkspacePage() {
     event?.preventDefault();
     const prompt = draft.trim();
     if (!prompt || inferenceAbortControllerRef.current) return;
+    if (!conversationsReadyForCurrentUser || messagesLoading) return;
     if (!session?.authenticated) {
       router.push("/login");
       return;
@@ -330,7 +399,6 @@ export default function WorkspacePage() {
     inferenceAbortControllerRef.current = controller;
     setRequestPhase("verifying");
     setError("");
-    let conversation: Conversation | null = null;
     let responseText = "";
     const expectedUserId = session.userId?.trim();
 
@@ -351,26 +419,53 @@ export default function WorkspacePage() {
         );
       }
 
-      const requestConversation = activeConversation ?? createConversation();
-      conversation = requestConversation;
+      let requestConversation =
+        activeConversation ?? (await createConversation(prompt.slice(0, 48)));
+      if (requestConversation.messages.length === 0) {
+        const title = prompt.slice(0, 48);
+        if (requestConversation.title !== title) {
+          const renamed = await renameBackendConversation(
+            requestConversation.id,
+            title,
+            expectedUserId,
+          );
+          requestConversation = { ...renamed, messages: [] };
+          setConversations((current) =>
+            current.map((item) =>
+              item.id === renamed.id
+                ? { ...renamed, messages: item.messages }
+                : item,
+            ),
+          );
+        }
+      }
       const inferencePrompt = buildNativeInferencePrompt(
         requestConversation.messages,
         prompt,
       );
-      const userMessage: ConversationMessage = {
+      const userMessage: ConversationMessage & { role: "user" } = {
         id: crypto.randomUUID(),
         role: "user",
         content: prompt,
         createdAt: new Date().toISOString(),
       };
-      updateConversation(requestConversation.id, (current) => ({
-        ...current,
-        title: current.messages.length === 0 ? prompt.slice(0, 48) : current.title,
-        updatedAt: userMessage.createdAt,
-        messages: [...current.messages, userMessage],
-      }));
-      setDraft("");
       setRequestPhase("connecting");
+      const savedUserMessage = await saveConversationMessage(
+        requestConversation.id,
+        userMessage,
+        expectedUserId,
+      );
+      if (sessionRef.current?.userId !== expectedUserId) {
+        throw new DOMException("Session changed", "AbortError");
+      }
+      setConversations((current) =>
+        updateConversationMessage(
+          current,
+          requestConversation.id,
+          savedUserMessage,
+        ),
+      );
+      setDraft("");
 
       const response = await apiStreamRequest("v1/native-ai/infer/stream", {
         method: "POST",
@@ -379,6 +474,8 @@ export default function WorkspacePage() {
         },
         body: JSON.stringify({
           prompt: inferencePrompt,
+          conversation_id: requestConversation.id,
+          request_id: crypto.randomUUID(),
           max_tokens: maxTokens,
           temperature,
         }),
@@ -408,36 +505,23 @@ export default function WorkspacePage() {
       if (sessionRef.current?.userId !== expectedUserId) {
         throw new DOMException("Session changed", "AbortError");
       }
-      const assistantMessage: ConversationMessage = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: responseText,
-        createdAt: new Date().toISOString(),
-      };
-      updateConversation(requestConversation.id, (current) => ({
-        ...current,
-        updatedAt: assistantMessage.createdAt,
-        messages: [...current.messages, assistantMessage],
-      }));
-    } catch (reason) {
-      const sessionStillMatches =
-        expectedUserId !== undefined &&
-        sessionRef.current?.userId === expectedUserId;
-      if (conversation && responseText.trim() && sessionStillMatches) {
-        const partialMessage: ConversationMessage = {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: responseText,
-          createdAt: new Date().toISOString(),
-          incomplete: true,
-        };
-        updateConversation(conversation.id, (current) => ({
-          ...current,
-          updatedAt: partialMessage.createdAt,
-          messages: [...current.messages, partialMessage],
-        }));
+      const persistedConversation = await getConversation(
+        requestConversation.id,
+        expectedUserId,
+      );
+      if (sessionRef.current?.userId !== expectedUserId) {
+        throw new DOMException("Session changed", "AbortError");
       }
-
+      setConversations((current) =>
+        current
+          .map((conversation) =>
+            conversation.id === persistedConversation.id
+              ? { ...persistedConversation, messages: persistedConversation.messages }
+              : conversation,
+          )
+          .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)),
+      );
+    } catch (reason) {
       if (
         reason instanceof ApiError &&
         (reason.status === 401 || reason.status === 403)
@@ -451,11 +535,7 @@ export default function WorkspacePage() {
           "เซสชันของคุณหมดอายุหรือไม่ถูกต้อง กรุณาเข้าสู่ระบบใหม่อีกครั้งเพื่อใช้งานต่อ",
         );
       } else if (controller.signal.aborted) {
-        setError(
-          responseText.trim()
-            ? "ยกเลิกคำขอแล้ว คำตอบที่แสดงเป็นข้อความที่ Native Model ส่งมาก่อนยกเลิก"
-            : "ยกเลิกคำขอ Native Inference แล้ว",
-        );
+        setError("ยกเลิกคำขอ Native Inference แล้ว ข้อความที่ยังไม่สมบูรณ์ไม่ได้บันทึก");
       } else if (reason instanceof ApiError && reason.status === 409) {
         setError(reason.message);
       } else {
@@ -500,7 +580,7 @@ export default function WorkspacePage() {
         ? "กำลังเชื่อมต่อ Native Inference API"
         : "กำลังรับข้อความจาก Native Model";
 
-  if (sessionReady && session?.authenticated && !storageReadyForCurrentUser) {
+  if (sessionReady && session?.authenticated && !conversationsReadyForCurrentUser) {
     return (
       <div className="page-stack">
         <PageHeader
@@ -573,15 +653,15 @@ export default function WorkspacePage() {
             type="button"
           />
         )}
-        <aside aria-label="ประวัติการสนทนาในเครื่อง" className={`conversation-sidebar${mobileHistory ? " conversation-sidebar-open" : ""}`} id="workspace-history-sidebar">
+        <aside aria-label="ประวัติการสนทนา" className={`conversation-sidebar${mobileHistory ? " conversation-sidebar-open" : ""}`} id="workspace-history-sidebar">
           <div className="conversation-sidebar-head">
-            <div><span className="eyebrow">บทสนทนา</span><span className="local-only-label">บันทึกเฉพาะในเบราว์เซอร์นี้</span></div>
+            <div><span className="eyebrow">บทสนทนา</span><span className="local-only-label">ซิงก์กับบัญชีของคุณ</span></div>
             <div className="conversation-sidebar-actions">
-              <button aria-label="สร้างบทสนทนาใหม่" className="icon-button icon-button-accent" onClick={() => createConversation()} type="button"><Icon name="plus" size={18} /></button>
+              <button aria-label="สร้างบทสนทนาใหม่" className="icon-button icon-button-accent" disabled={conversationsLoading || sending} onClick={() => void createConversation().catch(reportHistoryFailure)} type="button"><Icon name="plus" size={18} /></button>
               <button aria-label="ปิดรายการบทสนทนา" className="icon-button mobile-history-close" onClick={() => setMobileHistory(false)} type="button"><Icon name="close" size={16} /></button>
             </div>
           </div>
-          <button className="button button-secondary new-chat-button" onClick={() => createConversation()} type="button"><Icon name="plus" size={16} /> สร้างบทสนทนาใหม่</button>
+          <button className="button button-secondary new-chat-button" disabled={conversationsLoading || sending} onClick={() => void createConversation().catch(reportHistoryFailure)} type="button"><Icon name="plus" size={16} /> สร้างบทสนทนาใหม่</button>
           <div className="conversation-search">
             <label className="sr-only" htmlFor="conversation-search">ค้นหาบทสนทนาตามชื่อ</label>
             <Icon name="search" size={14} />
@@ -605,8 +685,12 @@ export default function WorkspacePage() {
             )}
           </div>
           <div className="conversation-list">
-            {conversations.length === 0 ? (
-              <div className="history-empty"><Icon name="history" size={18} /><span>ยังไม่มีประวัติการสนทนาที่บันทึกไว้</span></div>
+            {conversationsLoading ? (
+              <div className="history-empty" role="status"><Icon name="history" size={18} /><span>กำลังโหลดบทสนทนาจาก Backend...</span></div>
+            ) : historyError && conversations.length === 0 ? (
+              <div className="history-empty" role="alert"><Icon name="close" size={18} /><span>{historyError}</span></div>
+            ) : conversations.length === 0 ? (
+              <div className="history-empty"><Icon name="history" size={18} /><span>ยังไม่มีบทสนทนา</span></div>
             ) : filteredConversations.length === 0 ? (
               <div className="history-empty"><Icon name="search" size={18} /><span>ไม่พบบทสนทนาที่ตรงกับคำค้นหา</span></div>
             ) : filteredConversations.map((conversation) => {
@@ -658,13 +742,14 @@ export default function WorkspacePage() {
                       onClick={() => selectConversation(conversation.id)}
                       type="button"
                     >
-                      {conversation.messages.length} ข้อความ
+                      {conversation.messageCount} ข้อความ · {new Date(conversation.updatedAt).toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" })}
                     </button>
                   </div>
                   <button
                     aria-label={`ลบบทสนทนา ${conversation.title}`}
                     className="conversation-delete-button"
-                    onClick={() => deleteConversation(conversation.id)}
+                    disabled={sending}
+                    onClick={() => void removeConversation(conversation.id)}
                     title="ลบบทสนทนา"
                     type="button"
                   >
@@ -674,7 +759,7 @@ export default function WorkspacePage() {
               );
             })}
           </div>
-          <div className="conversation-sidebar-foot"><Icon name="lock" size={13} /> ประวัติการสนทนาจะถูกเก็บไว้ในเบราว์เซอร์นี้เท่านั้น</div>
+          <div className="conversation-sidebar-foot"><Icon name="lock" size={13} /> ประวัติบันทึกใน Backend แยกตามบัญชี</div>
         </aside>
 
         <section aria-label="บทสนทนา" className="conversation-main">
@@ -699,7 +784,9 @@ export default function WorkspacePage() {
           </div>
 
           <div className="message-scroll" ref={scrollRef}>
-            {!activeConversation?.messages.length ? (
+            {messagesLoading ? (
+              <div className="history-empty" role="status">กำลังโหลดข้อความในบทสนทนา...</div>
+            ) : !activeConversation?.messages.length ? (
               <div className="chat-empty-state">
                 <div className="chat-empty-mark"><Icon name="sparkles" size={24} /></div>
                 <StatusBadge tone={nativeHealth?.inference_available ? "good" : healthLoading && !nativeHealth ? "neutral" : "warn"}>{runtimeBadgeLabel}</StatusBadge>
@@ -779,6 +866,7 @@ export default function WorkspacePage() {
           </div>
 
           {error && <div className="workspace-error" role="alert"><Icon name="close" size={16} /><span>{error}</span>{!session?.authenticated && <Link href="/login">เข้าสู่ระบบ</Link>}</div>}
+          {historyError && conversations.length > 0 && <div className="workspace-error" role="alert"><Icon name="close" size={16} /><span>{historyError}</span></div>}
 
           <div className="composer-wrap">
             {!session?.authenticated && <div className="composer-signin"><Icon name="lock" size={14} /> จำเป็นต้องเข้าสู่ระบบก่อนจึงจะส่งคำขอประมวลผลได้ <Link href="/login">เข้าสู่ระบบ</Link></div>}
@@ -820,7 +908,7 @@ export default function WorkspacePage() {
                   <button
                     aria-label="ส่งข้อความ"
                     className="send-button"
-                    disabled={!draft.trim() || !nativeHealth?.inference_available || !session?.authenticated}
+                    disabled={!draft.trim() || !nativeHealth?.inference_available || !session?.authenticated || !conversationsReadyForCurrentUser || conversationsLoading || messagesLoading}
                     type="submit"
                   >
                     <Icon name="send" size={17} />
@@ -828,7 +916,7 @@ export default function WorkspacePage() {
                 )}
               </div>
             </form>
-            <p className="composer-disclaimer">คำตอบจากโมเดลอาจยังไม่สมบูรณ์ ประวัติการสนทนาถูกบันทึกไว้เฉพาะในเบราว์เซอร์นี้ และไม่ได้ซิงค์ขึ้นเซิร์ฟเวอร์</p>
+            <p className="composer-disclaimer">คำตอบจากโมเดลอาจยังไม่สมบูรณ์ ประวัติที่สมบูรณ์จะบันทึกใน Backend หลัง Native Model ส่งคำตอบจบ</p>
           </div>
         </section>
       </div>

@@ -18,11 +18,20 @@ async function errorFromResponse(response: Response): Promise<ApiError> {
     payload = null;
   }
 
-  const body = payload as { detail?: unknown; error?: unknown } | null;
+  const body = payload as
+    | { detail?: unknown; error?: unknown }
+    | null;
+  const detail = body?.detail;
+  const detailMessage =
+    detail && typeof detail === "object" && !Array.isArray(detail)
+      ? (detail as { message?: unknown }).message
+      : undefined;
   const errorCode = (payload as { code?: unknown } | null)?.code;
   const rawMessage =
-    typeof body?.detail === "string"
-      ? body.detail
+    typeof detail === "string"
+      ? detail
+      : typeof detailMessage === "string"
+        ? detailMessage
       : typeof body?.error === "string"
         ? body.error
         : "";
@@ -114,15 +123,4 @@ export async function readSession(signal?: AbortSignal): Promise<Session> {
     throw new ApiError("ไม่สามารถอ่านข้อมูลเซสชันปัจจุบันได้", response.status);
   }
   return response.json();
-}
-
-export function conversationStorageKey(session: Session | null): string | null {
-  if (!session?.authenticated) {
-    return null;
-  }
-  const owner = session.userId?.trim() || session.email?.trim().toLowerCase();
-  if (!owner) {
-    return null;
-  }
-  return `zyrquen.local-conversations.v2.${owner}`;
 }

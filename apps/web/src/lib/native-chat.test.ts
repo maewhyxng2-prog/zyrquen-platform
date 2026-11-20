@@ -74,4 +74,23 @@ describe("Native chat prompt and stream handling", () => {
       consumeNativeInferenceStream(stream, () => undefined),
     ).rejects.toThrow("Native model is unavailable");
   });
+
+  it("rejects a stream that has no final chunk", async () => {
+    const stream = byteStream(
+      'data: {"text":"partial","index":0,"is_final":false}\n\ndata: [DONE]\n\n',
+    );
+
+    await expect(
+      consumeNativeInferenceStream(stream, () => undefined),
+    ).rejects.toThrow("ended before completion");
+  });
+
+  it("rejects a stream that ends without DONE", async () => {
+    const events =
+      'data: {"text":"","index":1,"is_final":true}\n\n';
+
+    await expect(
+      consumeNativeInferenceStream(byteStream(events), () => undefined),
+    ).rejects.toThrow("ended before completion");
+  });
 });

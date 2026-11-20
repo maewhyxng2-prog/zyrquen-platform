@@ -1,36 +1,131 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { PageHeader } from "@/components/PageHeader";
 import { Panel } from "@/components/Panel";
 import { Icon } from "@/components/Icon";
 import { StatusBadge } from "@/components/StatusBadge";
-import { conversationStorageKey, readSession } from "@/lib/api";
+import { readSession } from "@/lib/api";
+import {
+  createApiKey,
+  getApiKeyUsage,
+  listApiKeys,
+  revokeApiKey,
+} from "@/lib/api-access";
+import {
+  deleteConversation,
+  listConversations,
+} from "@/lib/conversation-api";
+import { getMyProfile, getMyUsage, getMyQuota, updateMyProfile } from "@/lib/user-api";
+import {
+  belongsToAccount,
+  quotaPercent,
+  quotaState,
+} from "@/lib/user-state";
+import type { QuotaSummary, UsageSummary } from "@/lib/types";
 import type { Session } from "@/lib/types";
+import type { ApiKeyMetadata, ApiKeyUsage } from "@/lib/types";
+
+function QuotaMetric({
+  label,
+  used,
+  limit,
+}: {
+  label: string;
+  used: number;
+  limit: number | null;
+}) {
+  const percent = quotaPercent(used, limit);
+  return (
+    <div className="settings-info">
+      <span>{label}</span>
+      {limit === null ? (
+        <p>Backend ไม่ได้กำหนดขีดจำกัดสำหรับรายการนี้</p>
+      ) : (
+        <>
+          <code>{used.toLocaleString("th-TH")} / {limit.toLocaleString("th-TH")}</code>
+          <progress aria-label={`สัดส่วน ${label}`} max={100} value={percent ?? 0} />
+          <p>{percent}% · {quotaState(used, limit)}</p>
+        </>
+      )}
+    </div>
+  );
+}
 
 export default function SettingsPage() {
   const router = useRouter();
   const [cleared, setCleared] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [clearError, setClearError] = useState("");
   const [session, setSession] = useState<Session | null>(null);
+  const sessionRef = useRef<Session | null>(null);
   const [sessionReady, setSessionReady] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState("");
+  const [profileEmail, setProfileEmail] = useState("");
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [profileOwnerId, setProfileOwnerId] = useState<string | null>(null);
+  const [profileSavingUserId, setProfileSavingUserId] = useState<string | null>(null);
+  const profileSavingRef = useRef<string | null>(null);
+  const [profileError, setProfileError] = useState("");
+  const [profileSuccess, setProfileSuccess] = useState("");
+  const [usage, setUsage] = useState<UsageSummary | null>(null);
+  const [quota, setQuota] = useState<QuotaSummary | null>(null);
+  const [usageLoading, setUsageLoading] = useState(true);
+  const [usageOwnerId, setUsageOwnerId] = useState<string | null>(null);
+  const [usageError, setUsageError] = useState("");
+  const [quotaError, setQuotaError] = useState("");
+  const [apiKeys, setApiKeys] = useState<ApiKeyMetadata[]>([]);
+  const [apiKeysLoading, setApiKeysLoading] = useState(true);
+  const [apiKeysOwnerId, setApiKeysOwnerId] = useState<string | null>(null);
+  const [apiKeysError, setApiKeysError] = useState("");
+  const [apiKeyName, setApiKeyName] = useState("");
+  const [apiKeyExpiresAt, setApiKeyExpiresAt] = useState("");
+  const [apiKeySaving, setApiKeySaving] = useState(false);
+  const apiKeySavingRef = useRef(false);
+  const [newApiKey, setNewApiKey] = useState("");
+  const [newApiKeyOwnerId, setNewApiKeyOwnerId] = useState<string | null>(null);
+  const [revokingApiKeyId, setRevokingApiKeyId] = useState<string | null>(null);
+  const [apiKeyUsage, setApiKeyUsage] = useState<ApiKeyUsage | null>(null);
+  const [apiKeyUsageOwnerId, setApiKeyUsageOwnerId] = useState<string | null>(null);
+  const [apiKeyUsageLoadingId, setApiKeyUsageLoadingId] = useState<string | null>(null);
+  const [apiKeyUsageError, setApiKeyUsageError] = useState("");
 
   useEffect(() => {
     const refreshSession = () => {
       readSession()
         .then((current) => {
+          if (sessionRef.current?.userId !== current.userId) {
+            setApiKeys([]);
+            setApiKeysOwnerId(null);
+            setApiKeysLoading(true);
+            setNewApiKey("");
+            setNewApiKeyOwnerId(null);
+            setApiKeyUsage(null);
+            setApiKeyUsageOwnerId(null);
+            setApiKeyUsageError("");
+          }
+          sessionRef.current = current;
           setSession(current);
           setSessionReady(true);
         })
         .catch(() => {
-          setSession({
+          setApiKeys([]);
+          setApiKeysOwnerId(null);
+          setApiKeysLoading(true);
+          setNewApiKey("");
+          setNewApiKeyOwnerId(null);
+          setApiKeyUsage(null);
+          setApiKeyUsageOwnerId(null);
+          const unavailableSession = {
             authenticated: false,
             email: null,
             error: "ไม่สามารถตรวจสอบสถานะเซสชันปัจจุบันได้",
-          });
+          };
+          sessionRef.current = unavailableSession;
+          setSession(unavailableSession);
           setSessionReady(true);
         });
     };
@@ -45,14 +140,267 @@ export default function SettingsPage() {
     }
   }, [sessionReady, session, router]);
 
-  function clearConversationHistory() {
-    const key = conversationStorageKey(session);
-    if (!key) {
+  useEffect(() => {
+    if (!sessionReady || !session?.authenticated) {
       return;
     }
-    window.localStorage.removeItem(key);
-    window.dispatchEvent(new Event("zyrquen:conversations-cleared"));
-    setCleared(true);
+    const ownerId = session.userId;
+    if (!ownerId) return;
+    let active = true;
+    const isCurrentOwner = () =>
+      active && sessionRef.current?.userId === ownerId;
+
+    void getMyProfile(ownerId)
+      .then((nextProfile) => {
+        if (!isCurrentOwner()) return;
+        setProfileEmail(nextProfile.email);
+        setProfileError("");
+        setProfileSuccess("");
+      })
+      .catch((reason: unknown) => {
+        if (!isCurrentOwner()) return;
+        setProfileEmail("");
+        setProfileSuccess("");
+        setProfileError(
+          reason instanceof Error
+            ? reason.message
+            : "ไม่สามารถโหลดข้อมูลโปรไฟล์ได้",
+        );
+      })
+      .finally(() => {
+        if (!isCurrentOwner()) return;
+        setProfileOwnerId(ownerId);
+        setProfileLoading(false);
+      });
+
+    void Promise.allSettled([getMyUsage(ownerId), getMyQuota(ownerId)])
+      .then(([usageResult, quotaResult]) => {
+        if (!isCurrentOwner()) return;
+        if (usageResult.status === "fulfilled") {
+          setUsage(usageResult.value);
+          setUsageError("");
+        } else {
+          setUsage(null);
+          setUsageError(
+            usageResult.reason instanceof Error
+              ? usageResult.reason.message
+              : "ไม่สามารถโหลดข้อมูล Usage ได้",
+          );
+        }
+        if (quotaResult.status === "fulfilled") {
+          setQuota(quotaResult.value);
+          setQuotaError("");
+        } else {
+          setQuota(null);
+          setQuotaError(
+            quotaResult.reason instanceof Error
+              ? quotaResult.reason.message
+              : "ไม่สามารถโหลดข้อมูลโควตาได้",
+          );
+        }
+      })
+      .finally(() => {
+        if (!isCurrentOwner()) return;
+        setUsageOwnerId(ownerId);
+        setUsageLoading(false);
+      });
+    void listApiKeys(ownerId)
+      .then((keys) => {
+        if (!isCurrentOwner()) return;
+        setApiKeys(keys);
+        setApiKeysError("");
+      })
+      .catch((reason: unknown) => {
+        if (!isCurrentOwner()) return;
+        setApiKeys([]);
+        setApiKeysError(
+          reason instanceof Error
+            ? reason.message
+            : "ไม่สามารถโหลดรายการ API Key ได้",
+        );
+      })
+      .finally(() => {
+        if (!isCurrentOwner()) return;
+        setApiKeysOwnerId(ownerId);
+        setApiKeysLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [sessionReady, session?.authenticated, session?.userId]);
+
+  async function submitApiKey(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const ownerId = session?.userId;
+    const expiry = new Date(apiKeyExpiresAt);
+    if (!ownerId || sessionRef.current?.userId !== ownerId) {
+      setApiKeysError("ไม่สามารถยืนยันบัญชีผู้ใช้ปัจจุบันได้");
+      return;
+    }
+    if (!apiKeyName.trim() || Number.isNaN(expiry.getTime()) || expiry <= new Date()) {
+      setApiKeysError("กรุณาระบุชื่อและวันหมดอายุในอนาคต");
+      return;
+    }
+    if (apiKeySavingRef.current) return;
+    apiKeySavingRef.current = true;
+    setApiKeySaving(true);
+    setApiKeysError("");
+    setNewApiKey("");
+    try {
+      const created = await createApiKey(
+        ownerId,
+        apiKeyName.trim(),
+        expiry.toISOString(),
+      );
+      const verifiedSession = await readSession();
+      if (!verifiedSession.authenticated || verifiedSession.userId !== ownerId) {
+        throw new Error("บัญชีผู้ใช้เปลี่ยนระหว่างสร้าง API Key");
+      }
+      setApiKeys((current) => [created, ...current]);
+      setNewApiKey(created.key);
+      setNewApiKeyOwnerId(ownerId);
+      setApiKeyName("");
+      setApiKeyExpiresAt("");
+    } catch (reason) {
+      if (sessionRef.current?.userId !== ownerId) return;
+      setApiKeysError(
+        reason instanceof Error
+          ? reason.message
+          : "ไม่สามารถสร้าง API Key ได้",
+      );
+    } finally {
+      apiKeySavingRef.current = false;
+      setApiKeySaving(false);
+    }
+  }
+
+  async function removeApiKey(keyId: string) {
+    const ownerId = session?.userId;
+    if (!ownerId || sessionRef.current?.userId !== ownerId) {
+      setApiKeysError("ไม่สามารถยืนยันบัญชีผู้ใช้ปัจจุบันได้");
+      return;
+    }
+    setRevokingApiKeyId(keyId);
+    setApiKeysError("");
+    try {
+      await revokeApiKey(ownerId, keyId);
+      const verifiedSession = await readSession();
+      if (!verifiedSession.authenticated || verifiedSession.userId !== ownerId) {
+        throw new Error("บัญชีผู้ใช้เปลี่ยนระหว่างเพิกถอน API Key");
+      }
+      setApiKeys(await listApiKeys(ownerId));
+      setNewApiKey("");
+    } catch (reason) {
+      if (sessionRef.current?.userId !== ownerId) return;
+      setApiKeysError(
+        reason instanceof Error
+          ? reason.message
+          : "ไม่สามารถเพิกถอน API Key ได้",
+      );
+    } finally {
+      setRevokingApiKeyId(null);
+    }
+  }
+
+  async function loadApiKeyUsage(keyId: string) {
+    const ownerId = session?.userId;
+    if (!ownerId || sessionRef.current?.userId !== ownerId) {
+      setApiKeysError("ไม่สามารถยืนยันบัญชีผู้ใช้ปัจจุบันได้");
+      return;
+    }
+    setApiKeyUsageLoadingId(keyId);
+    setApiKeyUsageError("");
+    setApiKeyUsage(null);
+    setApiKeyUsageOwnerId(null);
+    try {
+      const usage = await getApiKeyUsage(ownerId, keyId);
+      if (sessionRef.current?.userId !== ownerId) return;
+      setApiKeyUsage(usage);
+      setApiKeyUsageOwnerId(ownerId);
+    } catch (reason) {
+      if (sessionRef.current?.userId !== ownerId) return;
+      setApiKeyUsageError(
+        reason instanceof Error
+          ? reason.message
+          : "ไม่สามารถโหลด Usage ของ API Key ได้",
+      );
+    } finally {
+      setApiKeyUsageLoadingId(null);
+    }
+  }
+
+  async function clearConversationHistory() {
+    setClearing(true);
+    setClearError("");
+    setCleared(false);
+    try {
+      const ownerId = session?.userId;
+      if (!ownerId) throw new Error("ไม่พบรหัสบัญชีที่ยืนยันตัวตนแล้ว");
+      const conversations = await listConversations(ownerId);
+      const verifiedSession = await readSession();
+      if (!verifiedSession.authenticated || verifiedSession.userId !== ownerId) {
+        throw new Error("บัญชีผู้ใช้เปลี่ยนระหว่างล้างประวัติ");
+      }
+      for (const conversation of conversations) {
+        const currentSession = await readSession();
+        if (!currentSession.authenticated || currentSession.userId !== ownerId) {
+          throw new Error("บัญชีผู้ใช้เปลี่ยนระหว่างล้างประวัติ");
+        }
+        await deleteConversation(conversation.id, ownerId);
+      }
+      const finalSession = await readSession();
+      if (!finalSession.authenticated || finalSession.userId !== ownerId) {
+        throw new Error("บัญชีผู้ใช้เปลี่ยนระหว่างล้างประวัติ");
+      }
+      window.dispatchEvent(new Event("zyrquen:conversations-cleared"));
+      setCleared(true);
+    } catch (reason) {
+      setClearError(
+        reason instanceof Error
+          ? reason.message
+          : "ล้างประวัติการสนทนาไม่สำเร็จ",
+      );
+    } finally {
+      setClearing(false);
+    }
+  }
+
+  async function saveProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const ownerId = session?.userId;
+    if (!ownerId || sessionRef.current?.userId !== ownerId) {
+      setProfileError("ไม่สามารถยืนยันบัญชีผู้ใช้ปัจจุบันได้");
+      return;
+    }
+    if (profileSavingRef.current === ownerId) return;
+    const email = profileEmail.trim().toLowerCase();
+    if (!email || email.length > 320) {
+      setProfileError("กรุณากรอกอีเมลที่ถูกต้อง");
+      return;
+    }
+    profileSavingRef.current = ownerId;
+    setProfileSavingUserId(ownerId);
+    setProfileError("");
+    setProfileSuccess("");
+    try {
+      const nextProfile = await updateMyProfile(email, ownerId);
+      if (sessionRef.current?.userId !== ownerId) return;
+      setProfileEmail(nextProfile.email);
+      const nextSession = { ...sessionRef.current, email: nextProfile.email };
+      sessionRef.current = nextSession;
+      setSession(nextSession);
+      setProfileSuccess("บันทึกข้อมูลบัญชีเรียบร้อยแล้ว");
+    } catch (reason) {
+      if (sessionRef.current?.userId !== ownerId) return;
+      setProfileError(
+        reason instanceof Error ? reason.message : "ไม่สามารถบันทึกข้อมูลบัญชีได้",
+      );
+    } finally {
+      if (profileSavingRef.current === ownerId) {
+        profileSavingRef.current = null;
+        setProfileSavingUserId(null);
+      }
+    }
   }
 
   async function signOut() {
@@ -63,7 +411,13 @@ export default function SettingsPage() {
       const payload = (await response.json().catch(() => null)) as {
         detail?: unknown;
       } | null;
-      setSession({ authenticated: false, email: null, verified: true });
+      const signedOutSession = {
+        authenticated: false,
+        email: null,
+        verified: true,
+      };
+      sessionRef.current = signedOutSession;
+      setSession(signedOutSession);
       window.dispatchEvent(new Event("zyrquen:session-change"));
 
       if (!response.ok) {
@@ -126,6 +480,14 @@ export default function SettingsPage() {
     );
   }
 
+  const profileIsLoading =
+    profileLoading || !belongsToAccount(profileOwnerId, session.userId);
+  const usageIsLoading =
+    usageLoading || !belongsToAccount(usageOwnerId, session.userId);
+  const apiKeysAreLoading =
+    apiKeysLoading || !belongsToAccount(apiKeysOwnerId, session.userId);
+  const profileSaving = profileSavingUserId === session.userId;
+
   return (
     <div className="page-stack">
       <PageHeader
@@ -142,19 +504,80 @@ export default function SettingsPage() {
             <code>{session.email || "เข้าสู่ระบบแล้ว"}</code>
             <p>ตรวจสอบข้อมูลบัญชีของคุณ จัดการการตั้งค่าที่เปิดให้ใช้งาน และออกจากระบบเมื่อใช้งานเสร็จสิ้น</p>
           </div>
+          {!session.userId ? (
+            <p className="form-alert form-alert-error" role="alert">ข้อมูลเซสชันไม่มีรหัสบัญชีที่ยืนยันแล้ว</p>
+          ) : profileIsLoading ? (
+            <p className="settings-confirmation" role="status">กำลังโหลดข้อมูลโปรไฟล์...</p>
+          ) : (
+            <form onSubmit={saveProfile}>
+              <label htmlFor="profile-email">อีเมลบัญชี</label>
+              <input
+                id="profile-email"
+                type="email"
+                value={profileEmail}
+                maxLength={320}
+                disabled={profileSaving}
+                onChange={(event) => setProfileEmail(event.target.value)}
+                required
+              />
+              <button className="button button-secondary" disabled={profileSaving || !profileEmail.trim()} type="submit">
+                {profileSaving ? "กำลังบันทึก..." : "บันทึกอีเมล"}
+              </button>
+            </form>
+          )}
+          {belongsToAccount(profileOwnerId, session.userId) && profileSuccess && <p className="settings-confirmation" role="status"><Icon name="check-circle" size={15} /> {profileSuccess}</p>}
+          {belongsToAccount(profileOwnerId, session.userId) && profileError && <p className="form-alert form-alert-error" role="alert"><Icon name="close" size={15} /> {profileError}</p>}
           <button className="button button-secondary" disabled={signingOut} onClick={() => void signOut()} type="button">
             <Icon name="logout" size={16} /> {signingOut ? "กำลังออกจากระบบ..." : "ออกจากระบบ"}
           </button>
           {signOutError && <p className="form-alert form-alert-error" role="alert"><Icon name="close" size={15} /> {signOutError}</p>}
         </Panel>
         <Panel>
-          <div className="panel-heading"><div><div className="eyebrow">ข้อมูลเฉพาะบัญชีในเครื่อง</div><h2>ประวัติการสนทนา</h2></div><span className="metric-icon"><Icon name="history" /></span></div>
+          <div className="panel-heading"><div><div className="eyebrow">การใช้งานจริง</div><h2>Usage และโควตา</h2></div><span className="metric-icon metric-icon-blue"><Icon name="server" /></span></div>
+          {usageIsLoading ? (
+            <p className="settings-confirmation" role="status">กำลังโหลดข้อมูลจาก Backend...</p>
+          ) : (
+            <>
+              {usageError ? (
+                <p className="form-alert form-alert-error" role="alert"><Icon name="close" size={15} /> {usageError}</p>
+              ) : usage && (
+                <div className="settings-info">
+                  <span>Inference สำเร็จ</span>
+                  <code>{usage.successfulRequests.toLocaleString("th-TH")} ครั้ง</code>
+                  <p>Input {usage.inputTokens.toLocaleString("th-TH")} · Output {usage.outputTokens.toLocaleString("th-TH")} · รวม {usage.totalTokens.toLocaleString("th-TH")} Tokens</p>
+                  {usage.updatedAt && <p>อัปเดตล่าสุดจาก Backend: {new Date(usage.updatedAt).toLocaleString("th-TH")}</p>}
+                </div>
+              )}
+              {quotaError ? (
+                <p className="form-alert form-alert-error" role="alert"><Icon name="close" size={15} /> {quotaError}</p>
+              ) : !quota?.configured ? (
+                <div className="security-callout"><Icon name="lock" size={16} /><span>ยังไม่มี Policy โควตาที่ Backend ยืนยันได้ Native Inference จะถูกปฏิเสธแบบ fail-closed</span></div>
+              ) : !quota.active ? (
+                <div className="security-callout"><Icon name="lock" size={16} /><span>Policy โควตาหมดอายุหรือยังไม่เริ่มใช้งาน Native Inference จึงถูกปฏิเสธ</span></div>
+              ) : (
+                <>
+                  <QuotaMetric label="Requests ที่ใช้หรือกำลังประมวลผล" used={quota.requestsInUse} limit={quota.maxRequests} />
+                  <QuotaMetric label="Input Tokens ที่ใช้หรือจอง" used={quota.inputTokens} limit={quota.maxInputTokens} />
+                  <QuotaMetric label="Output Tokens ที่ใช้หรือจอง" used={quota.outputTokens} limit={quota.maxOutputTokens} />
+                  <QuotaMetric label="Total Tokens ที่ใช้หรือจอง" used={quota.totalTokens} limit={quota.maxTotalTokens} />
+                  {quota.windowStartedAt && quota.windowEndsAt && (
+                    <p>ช่วงโควตา: {new Date(quota.windowStartedAt).toLocaleString("th-TH")} – {new Date(quota.windowEndsAt).toLocaleString("th-TH")}</p>
+                  )}
+                  {quota.runningRequests > 0 && <p>กำลังประมวลผลอยู่ {quota.runningRequests.toLocaleString("th-TH")} Request</p>}
+                </>
+              )}
+            </>
+          )}
+        </Panel>
+        <Panel>
+          <div className="panel-heading"><div><div className="eyebrow">ข้อมูลเฉพาะบัญชี</div><h2>ประวัติการสนทนา</h2></div><span className="metric-icon"><Icon name="history" /></span></div>
           <div className="settings-info">
-            <span>ตำแหน่งจัดเก็บ</span><code>เบราว์เซอร์นี้ · แยกตามบัญชี ({session.email})</code>
-            <p>ข้อความและคำตอบของบทสนทนาจะถูกแยกจัดเก็บตามบัญชีผู้ใช้ในเบราว์เซอร์นี้ และไม่ปะปนกับบัญชีอื่นบนอุปกรณ์เดียวกัน</p>
+            <span>ตำแหน่งจัดเก็บ</span><code>Backend · แยกตามบัญชี ({session.email})</code>
+            <p>บทสนทนาและข้อความถูกจัดเก็บบน Backend โดยผูกกับบัญชีผู้ใช้ และไม่ปะปนกับบัญชีอื่น</p>
           </div>
-          <button className="button button-danger" onClick={clearConversationHistory} type="button"><Icon name="close" size={16} /> ล้างประวัติการสนทนาของบัญชีนี้</button>
+          <button className="button button-danger" disabled={clearing} onClick={() => void clearConversationHistory()} type="button"><Icon name="close" size={16} /> {clearing ? "กำลังล้างประวัติ..." : "ล้างประวัติการสนทนาของบัญชีนี้"}</button>
           {cleared && <p className="settings-confirmation" role="status"><Icon name="check-circle" size={15} /> ล้างประวัติการสนทนาของบัญชีนี้เรียบร้อยแล้ว</p>}
+          {clearError && <p className="form-alert form-alert-error" role="alert"><Icon name="close" size={15} /> {clearError}</p>}
         </Panel>
         <Panel>
           <div className="panel-heading"><div><div className="eyebrow">การเชื่อมต่อ API</div><h2>Endpoint ฝั่งเซิร์ฟเวอร์</h2></div><span className="metric-icon metric-icon-blue"><Icon name="server" /></span></div>
@@ -163,6 +586,103 @@ export default function SettingsPage() {
             <p>กำหนดค่าบนเซิร์ฟเวอร์ Next.js (เช่น <code>http://localhost:8000</code>) คำขอจากเบราว์เซอร์จะส่งผ่านพร็อกซีแบบ same-origin โดยส่งต่อเฉพาะเส้นทางตรวจสอบสถานะ การยืนยันตัวตน และการประมวลผลที่มีอยู่จริง</p>
           </div>
           <div className="security-callout"><Icon name="lock" size={16} /><span>URL ปลายทางเป็นค่ากำหนดฝั่งเซิร์ฟเวอร์ จึงไม่เปิดให้แก้ไขจากฝั่งเบราว์เซอร์</span></div>
+        </Panel>
+        <Panel>
+          <div className="panel-heading"><div><div className="eyebrow">การเข้าถึง API</div><h2>API Key สำหรับ Native Inference</h2></div><span className="metric-icon metric-icon-blue"><Icon name="lock" /></span></div>
+          {apiKeysAreLoading ? (
+            <p className="settings-confirmation" role="status">กำลังโหลด API Key จาก Backend...</p>
+          ) : !belongsToAccount(apiKeysOwnerId, session.userId) ? (
+            <p className="settings-confirmation" role="status">กำลังยืนยันบัญชีเพื่อแสดง API Key</p>
+          ) : (
+            <>
+              <form onSubmit={(event) => void submitApiKey(event)}>
+                <label htmlFor="api-key-name">ชื่อ API Key</label>
+                <input
+                  id="api-key-name"
+                  value={apiKeyName}
+                  maxLength={80}
+                  onChange={(event) => setApiKeyName(event.target.value)}
+                  disabled={apiKeySaving}
+                  required
+                />
+                <label htmlFor="api-key-expires">วันหมดอายุ</label>
+                <input
+                  id="api-key-expires"
+                  type="datetime-local"
+                  value={apiKeyExpiresAt}
+                  onChange={(event) => setApiKeyExpiresAt(event.target.value)}
+                  disabled={apiKeySaving}
+                  required
+                />
+                <button className="button button-secondary" type="submit" disabled={apiKeySaving}>
+                  {apiKeySaving ? "กำลังสร้าง..." : "สร้าง API Key"}
+                </button>
+              </form>
+              {newApiKey && belongsToAccount(newApiKeyOwnerId, session.userId) && (
+                <div className="settings-info">
+                  <strong>คัดลอก API Key นี้ไว้ ข้อมูลลับจะแสดงเพียงครั้งเดียว</strong>
+                  <code>{newApiKey}</code>
+                </div>
+              )}
+              {apiKeys.length === 0 ? (
+                <p>ยังไม่มี API Key ที่บันทึกไว้</p>
+              ) : (
+                <div className="guidance-list">
+                  {apiKeys.map((key) => (
+                    <div className="settings-info" key={key.id}>
+                      <strong>{key.name}</strong>
+                      <code>{key.keyPrefix}… · {key.scope}</code>
+                      <p>
+                        หมดอายุ {new Date(key.expiresAt).toLocaleString("th-TH")}
+                        {key.revokedAt
+                          ? ` · เพิกถอน ${new Date(key.revokedAt).toLocaleString("th-TH")}`
+                          : ""}
+                      </p>
+                      <button
+                        className="button button-secondary"
+                        type="button"
+                        disabled={apiKeyUsageLoadingId === key.id}
+                        onClick={() => void loadApiKeyUsage(key.id)}
+                      >
+                        {apiKeyUsageLoadingId === key.id ? "กำลังโหลด Usage..." : "ดู Usage"}
+                      </button>
+                      {!key.revokedAt && (
+                        <button
+                          className="button button-danger"
+                          type="button"
+                          disabled={revokingApiKeyId === key.id}
+                          onClick={() => void removeApiKey(key.id)}
+                        >
+                          {revokingApiKeyId === key.id ? "กำลังเพิกถอน..." : "เพิกถอน"}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {apiKeyUsage && belongsToAccount(apiKeyUsageOwnerId, session.userId) && (
+                <div className="settings-info">
+                  <strong>Usage ที่ Backend บันทึกของ API Key</strong>
+                  <p>
+                    {apiKeyUsage.successfulRequests.toLocaleString("th-TH")} Requests ·
+                    Input {apiKeyUsage.inputTokens.toLocaleString("th-TH")} ·
+                    Output {apiKeyUsage.outputTokens.toLocaleString("th-TH")} ·
+                    รวม {apiKeyUsage.totalTokens.toLocaleString("th-TH")} Tokens
+                  </p>
+                  {apiKeyUsage.updatedAt && (
+                    <p>อัปเดตล่าสุด {new Date(apiKeyUsage.updatedAt).toLocaleString("th-TH")}</p>
+                  )}
+                </div>
+              )}
+              {apiKeyUsageError && <p className="form-alert form-alert-error" role="alert">{apiKeyUsageError}</p>}
+              {apiKeysError && <p className="form-alert form-alert-error" role="alert">{apiKeysError}</p>}
+            </>
+          )}
+        </Panel>
+        <Panel>
+          <div className="panel-heading"><div><div className="eyebrow">ผู้ดูแลระบบ</div><h2>แดชบอร์ดแพลตฟอร์ม</h2></div><span className="metric-icon"><Icon name="settings" /></span></div>
+          <p>ข้อมูลส่วนผู้ดูแลระบบจะเปิดให้เฉพาะบัญชีที่มีบทบาทซึ่งกำหนดจาก Backend เท่านั้น</p>
+          <Link className="button button-secondary" href="/admin">เปิดแดชบอร์ดผู้ดูแลระบบ</Link>
         </Panel>
         <Panel>
           <div className="panel-heading"><div><div className="eyebrow">คำแนะนำการใช้งาน</div><h2>การจัดการบัญชีและการตั้งค่า</h2></div><StatusBadge tone="info">เปิดให้ใช้งาน</StatusBadge></div>
