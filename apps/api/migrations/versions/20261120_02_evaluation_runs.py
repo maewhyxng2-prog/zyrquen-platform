@@ -14,8 +14,8 @@ depends_on = None
 def upgrade() -> None:
     op.create_table(
         "evaluation_runs",
-        sa.Column("id", sa.String(length=36), nullable=False),
-        sa.Column("user_id", sa.String(length=36), nullable=False),
+        sa.Column("id", sa.Uuid(as_uuid=True), nullable=False),
+        sa.Column("user_id", sa.Uuid(as_uuid=True), nullable=False),
         sa.Column("model_version", sa.String(length=128), nullable=False),
         sa.Column("checkpoint_id", sa.String(length=255), nullable=True),
         sa.Column("dataset_id", sa.String(length=255), nullable=False),
@@ -67,6 +67,11 @@ def upgrade() -> None:
             "sample_count >= 0 AND token_count >= 0",
             name="ck_evaluation_runs_counts_nonnegative",
         ),
+        sa.ForeignKeyConstraint(
+            ["user_id"],
+            ["users.id"],
+            ondelete="CASCADE",
+        ),
         sa.PrimaryKeyConstraint("id"),
     )
 
@@ -76,21 +81,18 @@ def upgrade() -> None:
         ["user_id"],
         unique=False,
     )
-
     op.create_index(
         "ix_evaluation_runs_model_version",
         "evaluation_runs",
         ["model_version"],
         unique=False,
     )
-
     op.create_index(
         "ix_evaluation_runs_status",
         "evaluation_runs",
         ["status"],
         unique=False,
     )
-
     op.create_index(
         "ix_evaluation_runs_user_created",
         "evaluation_runs",
