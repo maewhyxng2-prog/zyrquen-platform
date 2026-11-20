@@ -1,11 +1,10 @@
-
 import asyncio
 from threading import Lock
 
 from .context import InferenceContext
-from .exceptions import InferenceError, ResourceLimitExceeded
+from .exceptions import InferenceError
+from .exceptions import ResourceLimitExceeded
 from .model_loader import NativeModelLoader
-
 
 class NativeInferenceEngine:
     def __init__(
@@ -15,38 +14,40 @@ class NativeInferenceEngine:
     ):
         self.loader = loader
         self._generation_lock = Lock()
-        self._semaphore = asyncio.Semaphore(max_concurrent_requests)
+        self._semaphore = asyncio.Semaphore(
+            max_concurrent_requests,
+        )
 
-    def _generate_sync(self, context: InferenceContext) -> str:
+    def _generate_sync(
+        self,
+        context: InferenceContext,
+    ) -> str:
         if not self.loader.is_ready():
-            raise InferenceError("Native model is not ready.")
-
+            raise InferenceError(
+                "Native model is not ready.",
+            )
         try:
             import torch
 
             tokenizer = self.loader.tokenizer
             model = self.loader.model
-
             inputs = tokenizer(
                 context.prompt,
                 return_tensors="pt",
                 truncation=False,
             )
-
             input_tokens = inputs["input_ids"].shape[1]
-
             if input_tokens > 2048:
                 raise ResourceLimitExceeded(
-                    "Input exceeds the 2048-token limit."
+                    "Input exceeds the 2048-token limit.",
                 )
-
-            device = next(model.parameters()).device
-
+            device = next(
+                model.parameters(),
+            ).device
             inputs = {
                 key: value.to(device)
                 for key, value in inputs.items()
             }
-
             generation_options = {
                 "max_new_tokens": context.max_tokens,
                 "do_sample": context.temperature > 0,
@@ -56,10 +57,16 @@ class NativeInferenceEngine:
                     else tokenizer.eos_token_id
                 ),
             }
-
             if context.temperature > 0:
-                generation_options["temperature"] = context.temperature
-
+                generation_options["temperature"] = (
+                    context.temperature
+                )
+            _tk = getattr(context, "top_k", 0)
+            if _tk and _tk > 0:
+                generation_options["top_k"] = _tk
+            _tp = getattr(context, "top_p", 1.0)
+            if _tp is not None and 0.0 < _tp < 1.0:
+                generation_options["top_p"] = _tp
             with self._generation_lock:
                 with torch.inference_mode():
                     outputs = model.generate(
@@ -67,23 +74,24 @@ class NativeInferenceEngine:
                         **generation_options,
                     )
 
-            generated_tokens = outputs[:, input_tokens:]
-
+            generated_tokens = outputs[
+                :,
+                input_tokens:,
+            ]
             result = tokenizer.decode(
                 generated_tokens[0],
                 skip_special_tokens=True,
             )
-
             if not result.strip():
-                raise InferenceError("Native model returned an empty result.")
-
+                raise InferenceError(
+                    "Native model returned an empty result.",
+                )
             return result
-
         except (ResourceLimitExceeded, InferenceError):
             raise
         except Exception as exc:
             raise InferenceError(
-                "Native inference execution failed."
+                "Native inference execution failed.",
             ) from exc
 
     async def execute(
@@ -92,8 +100,9 @@ class NativeInferenceEngine:
         timeout_sec: float = 30.0,
     ) -> str:
         if not self.loader.is_ready():
-            raise InferenceError("Native model is not ready.")
-
+            raise InferenceError(
+                "Native model is not ready.",
+            )
         try:
             async with asyncio.timeout(timeout_sec):
                 async with self._semaphore:
@@ -101,14 +110,9 @@ class NativeInferenceEngine:
                         self._generate_sync,
                         context,
                     )
-
-        except TimeoutError as exc:
-            raise InferenceError(
-                "Native inference timed out."
-            ) from exc
-        except (InferenceError, ResourceLimitExceeded):
+        except (ResourceLimitExceeded, InferenceError):
             raise
         except Exception as exc:
             raise InferenceError(
-                "Native inference execution failed."
+                "Native inference execution failed.",
             ) from exc

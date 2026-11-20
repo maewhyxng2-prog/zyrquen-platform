@@ -3,9 +3,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from database import get_db
-from models import User
-from security import get_current_user
+from apps.api.database import get_db
+from apps.api.models import User
+from apps.api.security import get_current_user
 
 from apps.core.context import InferenceContext
 from apps.core.exceptions import (
@@ -25,6 +25,8 @@ class InferenceRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=4096)
     max_tokens: int = Field(default=256, ge=1, le=1024)
     temperature: float = Field(default=0.7, ge=0.0, le=1.0)
+    top_k: int = Field(default=0, ge=0, le=1000)
+    top_p: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
 @router.get("/health")
@@ -48,6 +50,8 @@ async def native_inference(
         prompt=request.prompt,
         max_tokens=request.max_tokens,
         temperature=request.temperature,
+        top_k=request.top_k,
+        top_p=request.top_p,
     )
 
     try:
