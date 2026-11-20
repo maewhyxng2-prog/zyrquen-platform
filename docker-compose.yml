@@ -1,4 +1,4 @@
-# Local / single-host stack: API + PostgreSQL + persistent volumes.
+# Local / single-host stack: Web + API + PostgreSQL + persistent volumes.
 # Build context is the repository root.  Usage: docker compose up --build
 services:
   db:
@@ -30,6 +30,18 @@ services:
       - "8000:8000"
     volumes:
       - models:/data/models
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    environment:
+      ZYRQUEN_API_BASE_URL: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
 
 volumes:
   pgdata:
