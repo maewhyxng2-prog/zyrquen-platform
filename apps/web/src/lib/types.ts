@@ -14,6 +14,10 @@ export type NativeHealth = {
 export type Session = {
   authenticated: boolean;
   email: string | null;
+  userId?: string | null;
+  verified?: boolean;
+  expired?: boolean;
+  error?: string | null;
 };
 
 export type InferenceResponse = {

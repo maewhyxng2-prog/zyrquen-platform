@@ -9,8 +9,12 @@ import os
 router = APIRouter(prefix="/v1/evaluation", tags=["Evaluation"])
 
 def is_admin(user: User):
-    admin_emails = os.getenv("ZYRQUEN_TRAINING_ADMIN_EMAILS", "").split(",")
-    return user.email in admin_emails
+    admin_emails = {
+        item.strip().lower()
+        for item in os.getenv("ZYRQUEN_TRAINING_ADMIN_EMAILS", "").split(",")
+        if item.strip()
+    }
+    return user.email.strip().lower() in admin_emails
 
 @router.post("/runs")
 async def trigger_evaluation(
@@ -36,6 +40,9 @@ async def get_evaluation_status(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    if not is_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admin access required.")
+
     run = db.query(EvaluationRun).filter(EvaluationRun.id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Evaluation run not found")

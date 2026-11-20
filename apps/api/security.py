@@ -1,5 +1,6 @@
 
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -41,12 +42,15 @@ def create_access_token(subject: str) -> str:
             detail="Authentication service is not configured",
         )
 
-    expires = datetime.now(timezone.utc) + timedelta(
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(
         minutes=ACCESS_TOKEN_EXPIRE_MINUTES
     )
 
     payload = {
         "sub": subject,
+        "jti": str(uuid.uuid4()),
+        "iat": now,
         "exp": expires,
     }
 
@@ -57,9 +61,9 @@ def create_access_token(subject: str) -> str:
     )
 
 
-def get_current_user(
-    token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db),
+def _decode_and_verify_claims(
+    token: str,
+    db: Session,
 ):
     secret_key = os.getenv("JWT_SECRET_KEY")
 
@@ -83,8 +87,10 @@ def get_current_user(
         )
 
         subject = payload.get("sub")
+        jti = payload.get("jti")
+        exp = payload.get("exp")
 
-        if not subject:
+        if not subject or not isinstance(jti, str) or not jti or exp is None:
             raise credentials_error
 
         user_id = UUID(subject)
@@ -92,7 +98,13 @@ def get_current_user(
     except (JWTError, ValueError, TypeError):
         raise credentials_error
 
-    from apps.api.models import User
+    from apps.api.models import RevokedToken, User
+
+    revoked = db.query(RevokedToken).filter(
+        RevokedToken.jti == jti
+    ).first()
+    if revoked is not None:
+        raise credentials_error
 
     user = db.query(User).filter(
         User.id == user_id
@@ -106,5 +118,39 @@ def get_current_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is inactive",
         )
+
+    return user, payload
+
+
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
+    user, _ = _decode_and_verify_claims(token, db)
+    return user
+
+
+def revoke_access_token(
+    token: str,
+    db: Session,
+):
+    from apps.api.models import RevokedToken
+
+    user, payload = _decode_and_verify_claims(token, db)
+    jti = str(payload["jti"])
+    expires_at = datetime.fromtimestamp(int(payload["exp"]), tz=timezone.utc)
+
+    existing = db.query(RevokedToken).filter(
+        RevokedToken.jti == jti
+    ).first()
+    if existing is None:
+        db.add(
+            RevokedToken(
+                jti=jti,
+                user_id=user.id,
+                expires_at=expires_at,
+            )
+        )
+        db.commit()
 
     return user

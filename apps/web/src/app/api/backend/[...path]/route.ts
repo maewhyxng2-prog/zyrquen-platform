@@ -120,10 +120,29 @@ async function proxy(request: NextRequest, context: RouteContext) {
   if (contentType) responseHeaders.set("content-type", contentType);
   responseHeaders.set("cache-control", "no-store");
 
-  return new NextResponse(await upstream.text(), {
+  const response = new NextResponse(await upstream.text(), {
     status: upstream.status,
     headers: responseHeaders,
   });
+
+  if (
+    upstream.status === 401 &&
+    accessToken &&
+    path !== "auth/login" &&
+    path !== "auth/register"
+  ) {
+    const expired = {
+      httpOnly: true,
+      sameSite: "lax" as const,
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: 0,
+    };
+    response.cookies.set(ACCESS_COOKIE, "", expired);
+    response.cookies.set(EMAIL_COOKIE, "", expired);
+  }
+
+  return response;
 }
 
 export const GET = proxy;

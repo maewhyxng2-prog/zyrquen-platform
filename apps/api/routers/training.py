@@ -116,11 +116,11 @@ def start_training(
 @router.get("/runs/{run_id}", response_model=TrainingRunResponse)
 def get_training_status(
     run_id: UUID,
-    _: User = Depends(require_training_admin),
+    current_user: User = Depends(require_training_admin),
     db: Session = Depends(get_db),
 ):
     run = db.get(TrainingRun, run_id)
-    if run is None:
+    if run is None or run.owner_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Training run not found.",
@@ -135,11 +135,11 @@ def get_training_status(
 )
 def get_training_telemetry(
     run_id: UUID,
-    _: User = Depends(require_training_admin),
+    current_user: User = Depends(require_training_admin),
     db: Session = Depends(get_db),
 ):
     run = db.get(TrainingRun, run_id)
-    if run is None:
+    if run is None or run.owner_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Training run not found.",

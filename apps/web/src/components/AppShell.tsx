@@ -119,17 +119,25 @@ export function AppShell({ children }: { children: ReactNode }) {
       const response = await fetch("/api/logout", {
         method: "POST",
       });
-
-      if (!response.ok) {
-        throw new Error("ไม่สามารถสิ้นสุดเซสชันนี้ได้");
-      }
+      const payload = (await response.json().catch(() => null)) as {
+        detail?: unknown;
+      } | null;
 
       setSession({
         authenticated: false,
         email: null,
+        verified: true,
       });
-
       window.dispatchEvent(new Event("zyrquen:session-change"));
+
+      if (!response.ok) {
+        const message =
+          typeof payload?.detail === "string"
+            ? payload.detail
+            : "ไม่สามารถเพิกถอนเซสชันกับ Backend ได้";
+        throw new Error(message);
+      }
+
       router.push("/login");
       router.refresh();
     } catch (reason) {

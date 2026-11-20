@@ -7,10 +7,9 @@ import { Icon } from "@/components/Icon";
 import { PageHeader } from "@/components/PageHeader";
 import { StatusBadge } from "@/components/StatusBadge";
 import { usePlatformHealth } from "@/hooks/usePlatformHealth";
-import { apiRequest, readSession } from "@/lib/api";
+import { apiRequest, conversationStorageKey, readSession } from "@/lib/api";
 import type { Conversation, ConversationMessage, InferenceResponse, Session } from "@/lib/types";
 
-const STORAGE_KEY = "zyrquen.local-conversations.v1";
 const examples = [
   "สรุปความสามารถของ Native Model ในระบบปัจจุบัน",
   "ช่วยวิเคราะห์และวางแนวทางแก้ไขปัญหาทางเทคนิค",
@@ -27,6 +26,7 @@ export default function WorkspacePage() {
   const router = useRouter();
   const { nativeHealth, nativeError, loading: healthLoading } = usePlatformHealth();
   const [session, setSession] = useState<Session | null>(null);
+  const [sessionReady, setSessionReady] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [storageReady, setStorageReady] = useState(false);
@@ -42,6 +42,7 @@ export default function WorkspacePage() {
   const [mobileHistory, setMobileHistory] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const copyTimerRef = useRef<number | null>(null);
+  const storageKey = useMemo(() => conversationStorageKey(session), [session]);
   const activeConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === activeId) ?? null,
     [conversations, activeId],
@@ -55,42 +56,99 @@ export default function WorkspacePage() {
   }, [conversations, searchQuery]);
 
   useEffect(() => {
-    readSession().then(setSession).catch(() => setSession(null));
+    const syncSession = () => {
+      readSession()
+        .then((current) => {
+          setSession(current);
+          setSessionReady(true);
+        })
+        .catch(() => {
+          setSession({
+            authenticated: false,
+            email: null,
+            error: "ไม่สามารถตรวจสอบสถานะเซสชันปัจจุบันได้",
+          });
+          setSessionReady(true);
+        });
+    };
+    syncSession();
+    window.addEventListener("zyrquen:session-change", syncSession);
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+      window.removeEventListener("zyrquen:session-change", syncSession);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (sessionReady && !session?.authenticated) {
+      router.replace("/login");
+    }
+  }, [sessionReady, session, router]);
+
+  useEffect(() => {
     const loadTimer = window.setTimeout(() => {
+      if (!storageKey) {
+        setConversations([]);
+        setActiveId(null);
+        setDraft("");
+        setStorageReady(false);
+        return;
+      }
+
       try {
-        const raw = window.localStorage.getItem(STORAGE_KEY);
+        const raw = window.localStorage.getItem(storageKey);
         if (raw) {
           const parsed: unknown = JSON.parse(raw);
           if (Array.isArray(parsed)) {
             const valid = parsed.filter(isConversation);
             setConversations(valid);
             setActiveId(valid[0]?.id ?? null);
+          } else {
+            setConversations([]);
+            setActiveId(null);
           }
+        } else {
+          setConversations([]);
+          setActiveId(null);
         }
       } catch {
-        window.localStorage.removeItem(STORAGE_KEY);
+        window.localStorage.removeItem(storageKey);
+        setConversations([]);
+        setActiveId(null);
       }
       setStorageReady(true);
     }, 0);
+
     const clearHistory = () => {
       setConversations([]);
       setActiveId(null);
     };
+
     window.addEventListener("zyrquen:conversations-cleared", clearHistory);
     return () => {
       window.clearTimeout(loadTimer);
-      if (copyTimerRef.current !== null) {
-        window.clearTimeout(copyTimerRef.current);
-      }
       window.removeEventListener("zyrquen:conversations-cleared", clearHistory);
     };
-  }, []);
+  }, [storageKey]);
 
   useEffect(() => {
-    if (storageReady) {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations));
+    if (!mobileHistory) return;
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMobileHistory(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [mobileHistory]);
+
+  useEffect(() => {
+    if (storageReady && storageKey) {
+      window.localStorage.setItem(storageKey, JSON.stringify(conversations));
     }
-  }, [conversations, storageReady]);
+  }, [conversations, storageReady, storageKey]);
 
   useEffect(() => {
     const scroller = scrollRef.current;
@@ -156,11 +214,11 @@ export default function WorkspacePage() {
   function deleteConversation(id: string) {
     const remaining = conversations.filter((conversation) => conversation.id !== id);
     setConversations(remaining);
-    if (storageReady) {
+    if (storageReady && storageKey) {
       if (remaining.length === 0) {
-        window.localStorage.removeItem(STORAGE_KEY);
+        window.localStorage.removeItem(storageKey);
       } else {
-        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(remaining));
+        window.localStorage.setItem(storageKey, JSON.stringify(remaining));
       }
     }
     if (activeId === id) {
@@ -280,20 +338,79 @@ export default function WorkspacePage() {
     }
   }
 
+  const runtimeBadgeLabel =
+    healthLoading && !nativeHealth
+      ? "กำลังตรวจสอบรันไทม์..."
+      : nativeHealth?.inference_available
+        ? "Native Model พร้อมใช้งาน"
+        : nativeError
+          ? "รันไทม์ตรวจสอบไม่สำเร็จ"
+          : "รันไทม์ไม่พร้อมใช้งาน";
+
+  if (!sessionReady || !session?.authenticated) {
+    return (
+      <div className="page-stack">
+        <PageHeader
+          description="พื้นที่สนทนาสำหรับพิมพ์ข้อความและรับคำตอบจาก Native Model ผ่าน API ที่ผ่านการยืนยันตัวตน"
+          eyebrow="NATIVE AI / พื้นที่ทำงาน"
+          icon="sparkles"
+          title="พื้นที่ทำงาน AI"
+        />
+        <div className="panel notice-panel">
+          <span className="notice-icon">
+            <Icon name="lock" size={18} />
+          </span>
+          <div>
+            <strong>
+              {!sessionReady
+                ? "กำลังตรวจสอบเซสชันจาก Backend..."
+                : session?.expired
+                  ? "เซสชันหมดอายุแล้ว"
+                  : "จำเป็นต้องเข้าสู่ระบบก่อนใช้งานพื้นที่ทำงาน AI"}
+            </strong>
+            <p>
+              {!sessionReady
+                ? "ระบบกำลังยืนยันตัวตนกับบริการ ZYRQUEN API เพื่อปกป้องเส้นทางที่มีการจำกัดสิทธิ์"
+                : session?.error ||
+                  "หน้านี้เป็นพื้นที่ทำงานสำหรับผู้ใช้ที่ผ่านการยืนยันตัวตนแล้วเท่านั้น กรุณาเข้าสู่ระบบเพื่อดำเนินการต่อ"}
+            </p>
+            {sessionReady && (
+              <Link className="button button-primary" href="/login">
+                <Icon name="lock" size={16} />
+                ไปยังหน้าเข้าสู่ระบบ
+              </Link>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="page-stack workspace-page">
       <PageHeader
-        action={<StatusBadge icon="command" tone={nativeHealth?.inference_available ? "good" : "warn"}>{nativeHealth?.inference_available ? "Native Model พร้อมใช้งาน" : "รันไทม์ไม่พร้อมใช้งาน"}</StatusBadge>}
+        action={<StatusBadge icon="command" tone={nativeHealth?.inference_available ? "good" : healthLoading && !nativeHealth ? "neutral" : "warn"}>{runtimeBadgeLabel}</StatusBadge>}
         description="พื้นที่สนทนาสำหรับพิมพ์ข้อความและรับคำตอบจาก Native Model ผ่าน API ที่ผ่านการยืนยันตัวตน"
         eyebrow="NATIVE AI / พื้นที่ทำงาน"
         icon="sparkles"
         title="พื้นที่ทำงาน AI"
       />
       <div className="chat-layout">
-        <aside aria-label="ประวัติการสนทนาในเครื่อง" className={`conversation-sidebar${mobileHistory ? " conversation-sidebar-open" : ""}`}>
+        {mobileHistory && (
+          <button
+            aria-label="ปิดรายการประวัติการสนทนา"
+            className="conversation-mobile-scrim"
+            onClick={() => setMobileHistory(false)}
+            type="button"
+          />
+        )}
+        <aside aria-label="ประวัติการสนทนาในเครื่อง" className={`conversation-sidebar${mobileHistory ? " conversation-sidebar-open" : ""}`} id="workspace-history-sidebar">
           <div className="conversation-sidebar-head">
             <div><span className="eyebrow">บทสนทนา</span><span className="local-only-label">บันทึกเฉพาะในเบราว์เซอร์นี้</span></div>
-            <button aria-label="สร้างบทสนทนาใหม่" className="icon-button icon-button-accent" onClick={() => createConversation()} type="button"><Icon name="plus" size={18} /></button>
+            <div className="conversation-sidebar-actions">
+              <button aria-label="สร้างบทสนทนาใหม่" className="icon-button icon-button-accent" onClick={() => createConversation()} type="button"><Icon name="plus" size={18} /></button>
+              <button aria-label="ปิดรายการบทสนทนา" className="icon-button mobile-history-close" onClick={() => setMobileHistory(false)} type="button"><Icon name="close" size={16} /></button>
+            </div>
           </div>
           <button className="button button-secondary new-chat-button" onClick={() => createConversation()} type="button"><Icon name="plus" size={16} /> สร้างบทสนทนาใหม่</button>
           <div className="conversation-search">
@@ -393,14 +510,22 @@ export default function WorkspacePage() {
 
         <section aria-label="บทสนทนา" className="conversation-main">
           <div className="conversation-toolbar">
-            <button className="mobile-history-button" onClick={() => setMobileHistory((open) => !open)} type="button"><Icon name="history" size={16} /> ประวัติ</button>
+            <button
+              aria-controls="workspace-history-sidebar"
+              aria-expanded={mobileHistory}
+              className="mobile-history-button"
+              onClick={() => setMobileHistory((open) => !open)}
+              type="button"
+            >
+              <Icon name="history" size={16} /> ประวัติ
+            </button>
             <div className="conversation-title">
               <span className="assistant-avatar"><Icon name="sparkles" size={16} /></span>
               <span><strong>{activeConversation?.title || "บทสนทนาใหม่"}</strong><small>การประมวลผล Native Model ของ ZYRQUEN Ω∞</small></span>
             </div>
             <div className="conversation-runtime">
               <span className={`runtime-dot${nativeHealth?.inference_available ? " runtime-dot-ready" : ""}`} />
-              <span>{healthLoading ? "กำลังตรวจสอบ" : nativeHealth?.inference_available ? "พร้อมใช้งาน" : "ไม่พร้อมใช้งาน"}</span>
+              <span>{healthLoading && !nativeHealth ? "กำลังตรวจสอบ" : nativeHealth?.inference_available ? "พร้อมใช้งาน" : nativeError ? "ตรวจสอบไม่สำเร็จ" : "ไม่พร้อมใช้งาน"}</span>
             </div>
           </div>
 
@@ -408,7 +533,7 @@ export default function WorkspacePage() {
             {!activeConversation?.messages.length ? (
               <div className="chat-empty-state">
                 <div className="chat-empty-mark"><Icon name="sparkles" size={24} /></div>
-                <StatusBadge tone={nativeHealth?.inference_available ? "good" : "warn"}>{nativeHealth?.inference_available ? "Native Model พร้อมใช้งาน" : "Native Model ไม่พร้อมใช้งาน"}</StatusBadge>
+                <StatusBadge tone={nativeHealth?.inference_available ? "good" : healthLoading && !nativeHealth ? "neutral" : "warn"}>{runtimeBadgeLabel}</StatusBadge>
                 <h2>เริ่มต้นสนทนากับ ZYRQUEN Ω∞</h2>
                 <p>พิมพ์ข้อความลงในช่องสนทนาแล้วส่งข้อความ เพื่อตรวจสอบคำตอบจากระบบในพื้นที่สนทนา (ต้องเข้าสู่ระบบและ Native Model ต้องพร้อมใช้งาน)</p>
                 <div className="suggestion-list">

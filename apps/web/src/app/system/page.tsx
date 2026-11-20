@@ -37,13 +37,52 @@ export default function SystemPage() {
   const [session, setSession] = useState<Session | null>(null);
 
   useEffect(() => {
-    readSession().then(setSession).catch(() => setSession(null));
+    const syncSession = () => {
+      readSession().then(setSession).catch(() => setSession(null));
+    };
+    syncSession();
+    window.addEventListener("zyrquen:session-change", syncSession);
+    return () => window.removeEventListener("zyrquen:session-change", syncSession);
   }, []);
+
+  const apiState =
+    loading && !apiHealth
+      ? "กำลังตรวจสอบ"
+      : apiHealth?.status === "healthy"
+        ? "พร้อมใช้งาน"
+        : apiHealth
+          ? "ทำงานไม่สมบูรณ์"
+          : apiError
+            ? "ตรวจสอบไม่สำเร็จ"
+            : "ยังไม่มีข้อมูล";
+
+  const apiTone =
+    apiHealth?.status === "healthy" ? "good" : apiHealth || apiError ? "warn" : "neutral";
+
+  const nativeState =
+    loading && !nativeHealth
+      ? "กำลังตรวจสอบ"
+      : nativeHealth?.inference_available
+        ? "พร้อมใช้งาน"
+        : nativeHealth?.runtime_status || (nativeError ? "ตรวจสอบไม่สำเร็จ" : "ยังไม่มีข้อมูล");
+
+  const nativeTone =
+    nativeHealth?.inference_available ? "good" : nativeHealth || nativeError ? "warn" : "neutral";
 
   return (
     <div className="page-stack">
       <PageHeader
-        action={<button className="button button-secondary" onClick={() => void refresh()} type="button"><Icon name="activity" size={16} /> ตรวจสอบบริการอีกครั้ง</button>}
+        action={
+          <button
+            className="button button-secondary"
+            disabled={loading}
+            onClick={() => void refresh()}
+            type="button"
+          >
+            <Icon name="activity" size={16} />
+            {loading ? "กำลังตรวจสอบ..." : "ตรวจสอบบริการอีกครั้ง"}
+          </button>
+        }
         description="ตรวจสอบสถานะการเชื่อมต่อ API และความพร้อมของบริการจาก Endpoint ที่มีอยู่จริง หากบริการไม่พร้อมใช้งานระบบจะแจ้งเตือนตามจริงโดยไม่แสดงสถานะเท็จ"
         eyebrow="แพลตฟอร์ม / สถานะระบบ"
         icon="activity"
@@ -58,23 +97,48 @@ export default function SystemPage() {
           <SystemRow
             detail={apiError || `GET /health${apiHealth?.service ? ` · ${apiHealth.service}` : ""}`}
             icon="server"
-            state={apiHealth?.status === "healthy" ? "พร้อมใช้งาน" : apiHealth ? "ทำงานไม่สมบูรณ์" : "ไม่พร้อมใช้งาน"}
+            state={apiState}
             title="บริการ API"
-            tone={apiHealth?.status === "healthy" ? "good" : apiHealth ? "warn" : "neutral"}
+            tone={apiTone}
           />
           <SystemRow
             detail={nativeError || nativeHealth?.authority || "GET /v1/native-ai/health"}
             icon="cpu"
-            state={nativeHealth?.inference_available ? "พร้อมใช้งาน" : nativeHealth?.runtime_status || "ไม่พร้อมใช้งาน"}
+            state={nativeState}
             title="รันไทม์ Native Model"
-            tone={nativeHealth?.inference_available ? "good" : nativeHealth ? "warn" : "neutral"}
+            tone={nativeTone}
           />
           <SystemRow
-            detail={session?.authenticated ? `เข้าสู่ระบบแล้ว${session.email ? ` ในชื่อ ${session.email}` : ""}` : "รองรับการสมัครสมาชิกและเข้าสู่ระบบด้วย JWT"}
+            detail={
+              session?.authenticated
+                ? `ยืนยันตัวตนจาก Backend แล้ว${session.email ? ` ในชื่อ ${session.email}` : ""}`
+                : session?.expired
+                  ? "เซสชันหมดอายุแล้ว กรุณาเข้าสู่ระบบใหม่อีกครั้ง"
+                  : session?.error ||
+                    "รองรับการสมัครสมาชิกและเข้าสู่ระบบด้วย JWT (ตรวจสอบผ่าน GET /auth/me)"
+            }
             icon="shield"
-            state={session?.authenticated ? "มีเซสชันใช้งานอยู่" : session ? "ยังไม่ได้เข้าสู่ระบบ" : "ไม่ทราบสถานะ"}
+            state={
+              session?.authenticated
+                ? "มีเซสชันใช้งานอยู่"
+                : session?.expired
+                  ? "เซสชันหมดอายุ"
+                  : session?.error
+                    ? "ยืนยันเซสชันไม่สำเร็จ"
+                    : session
+                      ? "ยังไม่ได้เข้าสู่ระบบ"
+                      : "กำลังตรวจสอบ"
+            }
             title="การยืนยันตัวตน"
-            tone={session?.authenticated ? "good" : session ? "info" : "neutral"}
+            tone={
+              session?.authenticated
+                ? "good"
+                : session?.expired || session?.error
+                  ? "warn"
+                  : session
+                    ? "info"
+                    : "neutral"
+            }
           />
           <SystemRow
             detail="ยังไม่มี Endpoint สำหรับตรวจสอบสถานะฐานข้อมูล"

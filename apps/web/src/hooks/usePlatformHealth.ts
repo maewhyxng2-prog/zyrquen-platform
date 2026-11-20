@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiRequest } from "@/lib/api";
 import type { ApiHealth, NativeHealth } from "@/lib/types";
 
@@ -12,16 +12,35 @@ export function usePlatformHealth() {
   const [loading, setLoading] = useState(true);
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
 
+  const requestId = useRef(0);
+
   const refresh = useCallback(async () => {
+    const currentRequestId = ++requestId.current;
+
+    setLoading(true);
+
     const [apiResult, nativeResult] = await Promise.allSettled([
       apiRequest<ApiHealth>("health"),
       apiRequest<NativeHealth>("v1/native-ai/health"),
     ]);
 
+    // ป้องกันผลลัพธ์จากคำขอเก่าเขียนทับข้อมูลล่าสุด
+    if (currentRequestId !== requestId.current) {
+      return;
+    }
+
     if (apiResult.status === "fulfilled") {
-      setApiHealth(apiResult.value);
-      setApiError(null);
+      if (apiResult.value?.service !== "zyrquen-api") {
+        setApiHealth(null);
+        setApiError(
+          "ปลายทางพอร์ตที่เชื่อมต่ออยู่ไม่ใช่บริการ ZYRQUEN API กรุณาตรวจสอบค่า ZYRQUEN_API_BASE_URL",
+        );
+      } else {
+        setApiHealth(apiResult.value);
+        setApiError(null);
+      }
     } else {
+      setApiHealth(null);
       setApiError(
         apiResult.reason instanceof Error
           ? apiResult.reason.message
@@ -33,6 +52,7 @@ export function usePlatformHealth() {
       setNativeHealth(nativeResult.value);
       setNativeError(null);
     } else {
+      setNativeHealth(null);
       setNativeError(
         nativeResult.reason instanceof Error
           ? nativeResult.reason.message
@@ -45,13 +65,28 @@ export function usePlatformHealth() {
   }, []);
 
   useEffect(() => {
-    const initialCheck = window.setTimeout(() => void refresh(), 0);
-    const interval = window.setInterval(() => void refresh(), 30_000);
+    const initialCheck = window.setTimeout(() => {
+      void refresh();
+    }, 0);
+
+    const interval = window.setInterval(() => {
+      void refresh();
+    }, 30_000);
+
     return () => {
       window.clearTimeout(initialCheck);
       window.clearInterval(interval);
+      requestId.current += 1;
     };
   }, [refresh]);
 
-  return { apiHealth, nativeHealth, apiError, nativeError, loading, lastChecked, refresh };
+  return {
+    apiHealth,
+    nativeHealth,
+    apiError,
+    nativeError,
+    loading,
+    lastChecked,
+    refresh,
+  };
 }
