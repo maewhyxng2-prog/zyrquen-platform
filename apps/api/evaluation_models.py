@@ -14,7 +14,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .database import Base
+from database import Base
 
 
 def utc_now() -> datetime:
@@ -22,7 +22,7 @@ def utc_now() -> datetime:
 
 
 class EvaluationRun(Base):
-    """Stores the lifecycle and results of a native evaluation run."""
+    """Stores native evaluation run records."""
 
     __tablename__ = "evaluation_runs"
 
