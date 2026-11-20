@@ -11,6 +11,7 @@ describe("backend proxy route allowlist", () => {
     expect(isAllowedBackendRoute("POST", "auth/register")).toBe(true);
     expect(isAllowedBackendRoute("POST", "auth/logout")).toBe(true);
     expect(isAllowedBackendRoute("POST", "v1/native-ai/infer")).toBe(true);
+    expect(isAllowedBackendRoute("POST", "v1/native-ai/infer/stream")).toBe(true);
   });
 
   it("rejects unknown paths and method/path combinations", () => {

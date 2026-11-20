@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from apps.api.database import get_db
@@ -33,7 +34,16 @@ def register(data: UserRegister, db: Session = Depends(get_db)):
     )
 
     db.add(user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if db.query(User).filter(User.email == email).first() is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email already registered",
+            ) from exc
+        raise
     db.refresh(user)
 
     return user

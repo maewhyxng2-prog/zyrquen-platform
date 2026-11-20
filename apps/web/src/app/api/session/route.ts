@@ -6,7 +6,6 @@ import {
   EMAIL_COOKIE,
   buildSessionCookieOptions,
 } from "@/lib/cookies";
-import { handleLocalBackendRequest } from "@/lib/local-backend";
 
 function clearSessionCookies(request: NextRequest, response: NextResponse) {
   const expiredCookie = buildSessionCookieOptions(request, 0);
@@ -56,7 +55,7 @@ function buildSessionResponse(
         verified: false,
         error: `ตรวจสอบเซสชันไม่สำเร็จ (รหัสสถานะ ${status})`,
       },
-      { headers: { "Cache-Control": "no-store" } },
+      { status: 503, headers: { "Cache-Control": "no-store" } },
     );
   }
 
@@ -125,24 +124,16 @@ export async function GET(request: NextRequest) {
   const authorization = `Bearer ${accessToken}`;
 
   if (!baseUrl) {
-    if (hasExplicitUrl) {
-      return NextResponse.json(
-        {
-          authenticated: false,
-          email: null,
-          userId: null,
-          verified: false,
-          error: "ค่า ZYRQUEN_API_BASE_URL ไม่ถูกต้องสำหรับตรวจสอบเซสชัน",
-        },
-        { headers: { "Cache-Control": "no-store" } },
-      );
-    }
-    const local = handleLocalBackendRequest({
-      method: "GET",
-      path: "auth/me",
-      authorization,
-    });
-    return buildSessionResponse(request, local.status, local.body);
+    return NextResponse.json(
+      {
+        authenticated: false,
+        email: null,
+        userId: null,
+        verified: false,
+        error: "ค่า ZYRQUEN_API_BASE_URL ไม่ถูกต้องสำหรับตรวจสอบเซสชัน",
+      },
+      { status: 503, headers: { "Cache-Control": "no-store" } },
+    );
   }
 
   let upstream: Response;
@@ -157,14 +148,6 @@ export async function GET(request: NextRequest) {
       signal: AbortSignal.timeout(hasExplicitUrl ? 10_000 : 1_500),
     });
   } catch {
-    if (!hasExplicitUrl) {
-      const local = handleLocalBackendRequest({
-        method: "GET",
-        path: "auth/me",
-        authorization,
-      });
-      return buildSessionResponse(request, local.status, local.body);
-    }
     return NextResponse.json(
       {
         authenticated: false,
@@ -173,7 +156,7 @@ export async function GET(request: NextRequest) {
         verified: false,
         error: "ไม่สามารถเชื่อมต่อบริการ ZYRQUEN API เพื่อยืนยันเซสชันได้",
       },
-      { headers: { "Cache-Control": "no-store" } },
+      { status: 503, headers: { "Cache-Control": "no-store" } },
     );
   }
 

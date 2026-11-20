@@ -16,6 +16,6 @@ class UserLogin(BaseModel):
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: UUID | str
+    id: UUID
     email: str
     is_active: bool

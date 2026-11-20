@@ -6,7 +6,6 @@ import {
   EMAIL_COOKIE,
   buildSessionCookieOptions,
 } from "@/lib/cookies";
-import { handleLocalBackendRequest } from "@/lib/local-backend";
 
 function clearCookies(request: NextRequest, response: NextResponse) {
   const expired = buildSessionCookieOptions(request, 0);
@@ -33,20 +32,6 @@ export async function POST(request: NextRequest) {
   const authorization = `Bearer ${accessToken}`;
 
   if (!baseUrl) {
-    if (!hasExplicitUrl) {
-      handleLocalBackendRequest({
-        method: "POST",
-        path: "auth/logout",
-        authorization,
-      });
-      const response = NextResponse.json(
-        { authenticated: false, revoked: true },
-        { headers: { "Cache-Control": "no-store" } },
-      );
-      clearCookies(request, response);
-      return response;
-    }
-
     const response = NextResponse.json(
       {
         authenticated: false,
@@ -72,20 +57,6 @@ export async function POST(request: NextRequest) {
       signal: AbortSignal.timeout(hasExplicitUrl ? 10_000 : 1_500),
     });
   } catch {
-    if (!hasExplicitUrl) {
-      handleLocalBackendRequest({
-        method: "POST",
-        path: "auth/logout",
-        authorization,
-      });
-      const response = NextResponse.json(
-        { authenticated: false, revoked: true },
-        { headers: { "Cache-Control": "no-store" } },
-      );
-      clearCookies(request, response);
-      return response;
-    }
-
     const response = NextResponse.json(
       {
         authenticated: false,
@@ -112,7 +83,7 @@ export async function POST(request: NextRequest) {
     {
       authenticated: false,
       revoked: false,
-      detail: `ล้างคุกกี้ในเบราว์เซอร์แล้ว แต่บริการ Backend ตอบกลับรหัสสถานะ ${upstream.status} ระหว่างเพิกถอน Token`,
+      detail: `Backend ปฏิเสธการเพิกถอน Token (รหัสสถานะ ${upstream.status})`,
     },
     { status: 502, headers: { "Cache-Control": "no-store" } },
   );

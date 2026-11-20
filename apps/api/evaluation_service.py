@@ -6,8 +6,8 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from evaluation_models import EvaluationRun
-from evaluation_schemas import EvaluationRunCreate
+from apps.api.evaluation_models import EvaluationRun
+from apps.api.evaluation_schemas import EvaluationRunCreate
 
 
 def _to_uuid(value: str | UUID) -> UUID:

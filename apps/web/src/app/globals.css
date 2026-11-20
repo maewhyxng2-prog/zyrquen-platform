@@ -660,6 +660,8 @@ a { color: inherit; text-decoration: none; }
 .send-button { display: grid; width: 31px; height: 31px; flex: 0 0 auto; place-items: center; border: 1px solid #287d8b; border-radius: 7px; background: #155663; color: #d8fcff; cursor: pointer; }
 .send-button:hover:not(:disabled) { background: #1b7080; }
 .send-button:disabled { cursor: not-allowed; opacity: .4; }
+.send-button-cancel { border-color: #704448; background: #40272a; color: #ffd1d1; }
+.send-button-cancel:hover { background: #583236; }
 .composer-disclaimer { margin: 6px 0 0; color: #607285; text-align: center; font-size: 9px; }
 .mobile-history-button { display: none; }
 

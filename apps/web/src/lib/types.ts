@@ -32,6 +32,7 @@ export type ConversationMessage = {
   role: "user" | "assistant";
   content: string;
   createdAt: string;
+  incomplete?: boolean;
 };
 
 export type Conversation = {

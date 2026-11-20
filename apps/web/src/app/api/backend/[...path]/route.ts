@@ -7,7 +7,6 @@ import {
   EMAIL_COOKIE,
   buildSessionCookieOptions,
 } from "@/lib/cookies";
-import { handleLocalBackendRequest } from "@/lib/local-backend";
 
 type RouteContext = {
   params: Promise<{ path: string[] }>;
@@ -51,44 +50,6 @@ function respondFromLogin(
   return response;
 }
 
-function respondFromLocalFallback(
-  request: NextRequest,
-  method: string,
-  path: string,
-  authorization: string | null,
-  rawBody: string | undefined,
-  accessToken: string | undefined,
-): NextResponse {
-  const local = handleLocalBackendRequest({
-    method,
-    path,
-    authorization,
-    rawBody,
-  });
-
-  if (path === "auth/login" && local.status >= 200 && local.status < 300) {
-    return respondFromLogin(request, local.body, rawBody);
-  }
-
-  const response = NextResponse.json(local.body, {
-    status: local.status,
-    headers: { "cache-control": "no-store" },
-  });
-
-  if (
-    local.status === 401 &&
-    accessToken &&
-    path !== "auth/login" &&
-    path !== "auth/register"
-  ) {
-    const expired = buildSessionCookieOptions(request, 0);
-    response.cookies.set(ACCESS_COOKIE, "", expired);
-    response.cookies.set(EMAIL_COOKIE, "", expired);
-  }
-
-  return response;
-}
-
 async function proxy(request: NextRequest, context: RouteContext) {
   const { path: segments } = await context.params;
   const path = segments.join("/");
@@ -101,9 +62,12 @@ async function proxy(request: NextRequest, context: RouteContext) {
   const configuredUrl = process.env.ZYRQUEN_API_BASE_URL;
   const baseUrl = resolveApiBaseUrl(configuredUrl, process.env.NODE_ENV);
   const hasExplicitUrl = Boolean(configuredUrl?.trim());
+  const isInferenceStream = path === "v1/native-ai/infer/stream";
 
   let body: string | undefined;
-  const headers = new Headers({ Accept: "application/json" });
+  const headers = new Headers({
+    Accept: isInferenceStream ? "text/event-stream" : "application/json",
+  });
   if (method === "POST") {
     body = await request.text();
     headers.set("Content-Type", request.headers.get("content-type") || "application/json");
@@ -114,50 +78,109 @@ async function proxy(request: NextRequest, context: RouteContext) {
   if (accessToken && path !== "auth/login" && path !== "auth/register") {
     headers.set("Authorization", `Bearer ${accessToken}`);
   }
-  const authorization = headers.get("Authorization");
-
   if (!baseUrl) {
-    if (hasExplicitUrl) {
+    return NextResponse.json(
+      {
+        detail:
+          "บริการ ZYRQUEN API ยังไม่ได้กำหนดค่าปลายทางที่ใช้งานได้",
+      },
+      { status: 503 },
+    );
+  }
+
+  if (isInferenceStream) {
+    const expectedUserId = request.headers
+      .get("x-zyrquen-expected-user-id")
+      ?.trim();
+    const authorizationHeader = headers.get("Authorization");
+    if (!expectedUserId || !authorizationHeader) {
       return NextResponse.json(
-        {
-          detail:
-            "ค่า ZYRQUEN_API_BASE_URL ที่กำหนดไว้ไม่ถูกต้องสำหรับสภาพแวดล้อมนี้ กรุณาตรวจสอบการตั้งค่าฝั่งเซิร์ฟเวอร์",
+        { detail: "ยืนยันบัญชีผู้ใช้ก่อนเริ่ม Native Inference" },
+        { status: 401 },
+      );
+    }
+
+    let identityResponse: Response;
+    try {
+      identityResponse = await fetch(`${baseUrl}/auth/me`, {
+        method: "GET",
+        headers: {
+          Authorization: authorizationHeader,
+          Accept: "application/json",
         },
+        cache: "no-store",
+        signal: AbortSignal.any([
+          request.signal,
+          AbortSignal.timeout(hasExplicitUrl ? 10_000 : 1_500),
+        ]),
+      });
+    } catch {
+      return NextResponse.json(
+        { detail: "ไม่สามารถยืนยันบัญชีกับ ZYRQUEN API ได้" },
         { status: 503 },
       );
     }
-    return respondFromLocalFallback(
-      request,
-      method,
-      path,
-      authorization,
-      body,
-      accessToken,
-    );
+
+    if (!identityResponse.ok) {
+      const response = new NextResponse(await identityResponse.text(), {
+        status: identityResponse.status,
+        headers: {
+          "content-type":
+            identityResponse.headers.get("content-type") ?? "application/json",
+          "cache-control": "no-store",
+        },
+      });
+      if (identityResponse.status === 401 || identityResponse.status === 403) {
+        const expired = buildSessionCookieOptions(request, 0);
+        response.cookies.set(ACCESS_COOKIE, "", expired);
+        response.cookies.set(EMAIL_COOKIE, "", expired);
+      }
+      return response;
+    }
+
+    const identityPayload = (await identityResponse.json().catch(() => null)) as
+      | { id?: unknown; is_active?: unknown }
+      | null;
+    if (
+      typeof identityPayload?.id !== "string" ||
+      identityPayload.is_active !== true
+    ) {
+      return NextResponse.json(
+        { detail: "ข้อมูลบัญชีจาก ZYRQUEN API ไม่สมบูรณ์" },
+        { status: 502 },
+      );
+    }
+    if (identityPayload.id !== expectedUserId) {
+      return NextResponse.json(
+        {
+          code: "session_mismatch",
+          detail: "บัญชีผู้ใช้เปลี่ยนระหว่างส่งข้อความ กรุณาลองอีกครั้ง",
+        },
+        { status: 409 },
+      );
+    }
   }
 
   const upstreamUrl = path ? `${baseUrl}/${path}` : `${baseUrl}/`;
 
   let upstream: Response;
   try {
+    const timeoutMs = isInferenceStream
+      ? 120_000
+      : hasExplicitUrl
+        ? 20_000
+        : 1_500;
     upstream = await fetch(upstreamUrl, {
       method,
       headers,
       body,
       cache: "no-store",
-      signal: AbortSignal.timeout(hasExplicitUrl ? 20_000 : 1_500),
+      signal: AbortSignal.any([
+        request.signal,
+        AbortSignal.timeout(timeoutMs),
+      ]),
     });
   } catch {
-    if (!hasExplicitUrl) {
-      return respondFromLocalFallback(
-        request,
-        method,
-        path,
-        authorization,
-        body,
-        accessToken,
-      );
-    }
     return NextResponse.json(
       {
         detail:
@@ -184,8 +207,11 @@ async function proxy(request: NextRequest, context: RouteContext) {
   const contentType = upstream.headers.get("content-type");
   if (contentType) responseHeaders.set("content-type", contentType);
   responseHeaders.set("cache-control", "no-store");
+  if (isInferenceStream) {
+    responseHeaders.set("x-accel-buffering", "no");
+  }
 
-  const response = new NextResponse(await upstream.text(), {
+  const response = new NextResponse(upstream.body, {
     status: upstream.status,
     headers: responseHeaders,
   });

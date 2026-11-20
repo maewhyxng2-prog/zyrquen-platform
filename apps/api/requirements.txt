@@ -8,6 +8,7 @@ psycopg[binary]
 pytest
 python-jose[cryptography]
 passlib[bcrypt]
+bcrypt<5
 alembic
 tokenizers
 transformers

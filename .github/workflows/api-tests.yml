@@ -13,6 +13,7 @@ jobs:
 
     env:
       DATABASE_URL: sqlite:///./test.db
+      ZYRQUEN_ENV: unit_test
       # main.py imports apps.core (repo root) and routers/database (apps/api)
       PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/apps/api
 

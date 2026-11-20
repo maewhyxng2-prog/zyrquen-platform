@@ -36,6 +36,12 @@ do not commit production values:
 |---|---|
 | `ZYRQUEN_API_BASE_URL` | Server-side API origin reachable by the web container. Use the deployed API's `https://` URL, or a provider-private service URL. Production rejects missing or loopback URLs. |
 | `DATABASE_URL` | Managed PostgreSQL SQLAlchemy URL, e.g. `postgresql+psycopg://USER:PASSWORD@HOST:5432/DB?sslmode=require`. URL-encode special characters in credentials. |
+| `ZYRQUEN_ENV` | Explicit runtime environment: `development`, `test`, or `production`. Unit-test SQLite is restricted to `unit_test`. |
+| `ZYRQUEN_DEVELOPMENT_DATABASE_HOST` / `ZYRQUEN_DEVELOPMENT_DATABASE_PORT` / `ZYRQUEN_DEVELOPMENT_DATABASE_NAME` | Exact local development database target. Compose supplies the local database service, port, and database name. |
+| `ZYRQUEN_TEST_DATABASE_HOST` / `ZYRQUEN_TEST_DATABASE_PORT` / `ZYRQUEN_TEST_DATABASE_NAME` | Exact host, port, and database name approved for the isolated Test database. |
+| `ZYRQUEN_TEST_DATABASE_ID` | Expected Test database identity recorded in the read-only identity table described below. |
+| `ZYRQUEN_PRODUCTION_DATABASE_HOST` / `ZYRQUEN_PRODUCTION_DATABASE_PORT` / `ZYRQUEN_PRODUCTION_DATABASE_NAME` | Exact production target approved for normal API runtime. Alembic refuses production targets. |
+| `ZYRQUEN_PRODUCTION_DATABASE_HOSTS` / `ZYRQUEN_PRODUCTION_DATABASE_NAMES` | Comma-separated production host and database deny-lists required in Test mode. |
 | `JWT_SECRET_KEY` | High-entropy secret stored in the provider secret manager. |
 | `ZYRQUEN_MODEL_PATH` | Persistent mount path to the native model artifact; default deployment path is `/data/models/zyrquen-native-v1`. |
 | `ZYRQUEN_TRAINING_ADMIN_EMAILS` | Comma-separated allowlist of authenticated administrator emails. Empty means training management is disabled. |
@@ -74,17 +80,40 @@ checkpoint lineage under `ZYRQUEN_MODEL_REGISTRY_ROOT` (default
 `/data/model-registry`); persist that directory across API restarts. Failed,
 cancelled, or early-stopped runs are not registered or activated.
 
-Before starting the API, apply the additive training schema migration against a
-database that already has the existing `users` table:
+Alembic migrations are restricted to the verified Test database. The previous
+authentication schema still has no baseline migration, so the existing
+`users` table must already exist in that isolated Test database. Configure the
+Test target and its read-only identity record before using
+`alembic -c apps/api/alembic.ini upgrade head`. Production migrations are
+intentionally rejected; a separate reviewed production migration procedure is
+required.
 
-```bash
-DATABASE_URL='postgresql+psycopg://USER:PASSWORD@HOST:5432/DB?sslmode=require' \
-  alembic -c apps/api/alembic.ini upgrade head
-```
+### Database environment safety
 
-The migration adds `training_runs` and does not alter `users`. This repository
-does not yet contain a baseline migration for the existing authentication
-schema.
+The API validates `DATABASE_URL` against an explicit `ZYRQUEN_ENV` target before
+creating its SQLAlchemy engine. Development and production runtime targets must
+match their configured host and database name. The `unit_test` environment is
+limited to SQLite and cannot run Alembic migrations.
+
+Alembic is test-only. It requires `ZYRQUEN_ENV=test`, a PostgreSQL target whose
+host, port, and database name exactly match the approved Test settings, and
+production host/database deny-lists. Before running any migration, it reads exactly one
+row from `public.zyrquen_environment_identity` and checks `current_database()`,
+`environment = test`, and the configured database identity. Missing, ambiguous,
+or mismatched identity data aborts the migration. Offline migrations are
+disabled because their target cannot be checked against the live database.
+
+An operator must create and protect this identity record out of band in the
+isolated Test database before it can be used. The application/migration role
+should have `SELECT` access only to the identity record; its owner should be a
+separate operator role. The identity record is not created by an Alembic
+migration. It must contain exactly one row with `environment` and `database_id`
+columns, and the configured ID must match that row. A matching environment
+variable alone never proves that a database is a Test database.
+
+Do not run Alembic until the Test database host, database name, identity record,
+and Production deny-lists have been independently confirmed. The repository
+does not contain these deployment values or a configured Test database.
 
 ## Production blockers
 

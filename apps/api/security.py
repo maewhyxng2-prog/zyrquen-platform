@@ -20,7 +20,7 @@ oauth2_scheme = OAuth2PasswordBearer(
 )
 
 pwd_context = CryptContext(
-    schemes=["bcrypt"],
+    schemes=["bcrypt_sha256", "bcrypt"],
     deprecated="auto",
 )
 
@@ -30,7 +30,10 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, hashed: str) -> bool:
-    return pwd_context.verify(password, hashed)
+    try:
+        return pwd_context.verify(password, hashed)
+    except ValueError:
+        return False
 
 
 def create_access_token(subject: str) -> str:

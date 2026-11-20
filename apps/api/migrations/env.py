@@ -4,7 +4,9 @@ from logging.config import fileConfig
 from pathlib import Path
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import create_engine
+from sqlalchemy.exc import ArgumentError, DBAPIError
+from sqlalchemy.pool import NullPool
 
 config = context.config
 if config.config_file_name and config.get_section("loggers"):
@@ -16,40 +18,47 @@ sys.path.insert(0, str(api_dir))
 sys.path.insert(0, str(repository_root))
 
 from apps.api.database import Base  # noqa: E402
+from apps.api.database_safety import (  # noqa: E402
+    DatabaseTarget,
+    validate_database_target,
+    verify_test_database_connection,
+)
 import models  # noqa: E402,F401
 import training_models  # noqa: E402,F401
 
 target_metadata = Base.metadata
 
 
-def database_url() -> str:
-    value = os.getenv("DATABASE_URL")
-    if not value:
-        raise RuntimeError("DATABASE_URL is required to run migrations.")
-    return value
-
-
-def run_migrations_offline() -> None:
-    context.configure(
-        url=database_url(),
-        target_metadata=target_metadata,
-        literal_binds=True,
-        dialect_opts={"paramstyle": "named"},
-        compare_type=True,
+def migration_target() -> DatabaseTarget:
+    return validate_database_target(
+        os.getenv("DATABASE_URL"),
+        os.environ,
+        for_migration=True,
     )
-    with context.begin_transaction():
-        context.run_migrations()
 
 
 def run_migrations_online() -> None:
-    section = config.get_section(config.config_ini_section) or {}
-    section["sqlalchemy.url"] = database_url()
-    connectable = engine_from_config(
-        section,
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
-    with connectable.connect() as connection:
+    target = migration_target()
+    try:
+        connectable = create_engine(
+            target.url,
+            poolclass=pool.NullPool,
+            hide_parameters=True,
+        )
+    except ArgumentError:
+        raise RuntimeError(
+            "Test database engine configuration is invalid; "
+            "connection details are suppressed"
+        ) from None
+    try:
+        connection = connectable.connect()
+    except DBAPIError:
+        raise RuntimeError(
+            "Test database connection failed; connection details are suppressed"
+        ) from None
+
+    with connection:
+        verify_test_database_connection(connection, target)
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
@@ -60,6 +69,9 @@ def run_migrations_online() -> None:
 
 
 if context.is_offline_mode():
-    run_migrations_offline()
-else:
-    run_migrations_online()
+    raise RuntimeError(
+        "Offline migrations are disabled because the Test database identity "
+        "cannot be verified."
+    )
+
+run_migrations_online()

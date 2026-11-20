@@ -1,14 +1,31 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  FormEvent,
+  KeyboardEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/Icon";
 import { PageHeader } from "@/components/PageHeader";
 import { StatusBadge } from "@/components/StatusBadge";
 import { usePlatformHealth } from "@/hooks/usePlatformHealth";
-import { apiRequest, conversationStorageKey, readSession } from "@/lib/api";
-import type { Conversation, ConversationMessage, InferenceResponse, Session } from "@/lib/types";
+import {
+  apiStreamRequest,
+  ApiError,
+  conversationStorageKey,
+  readSession,
+} from "@/lib/api";
+import {
+  buildNativeInferencePrompt,
+  consumeNativeInferenceStream,
+} from "@/lib/native-chat";
+import type { Conversation, ConversationMessage, Session } from "@/lib/types";
 
 const examples = [
   "สรุปความสามารถของ Native Model ในระบบปัจจุบัน",
@@ -22,18 +39,25 @@ function isConversation(value: unknown): value is Conversation {
   return typeof item.id === "string" && typeof item.title === "string" && Array.isArray(item.messages);
 }
 
+type RequestPhase = "verifying" | "connecting" | "generating" | null;
+
 export default function WorkspacePage() {
   const router = useRouter();
   const { nativeHealth, nativeError, loading: healthLoading } = usePlatformHealth();
   const [session, setSession] = useState<Session | null>(null);
   const [sessionReady, setSessionReady] = useState(false);
+  const sessionRef = useRef<Session | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [storageReady, setStorageReady] = useState(false);
+  const [loadedStorageKey, setLoadedStorageKey] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [maxTokens, setMaxTokens] = useState(256);
   const [temperature, setTemperature] = useState(0.7);
-  const [sending, setSending] = useState(false);
+  const [requestPhase, setRequestPhase] = useState<RequestPhase>(null);
+  const [streamingOutput, setStreamingOutput] = useState<{
+    conversationId: string;
+    content: string;
+  } | null>(null);
   const [error, setError] = useState("");
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -42,7 +66,11 @@ export default function WorkspacePage() {
   const [mobileHistory, setMobileHistory] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const copyTimerRef = useRef<number | null>(null);
+  const inferenceAbortControllerRef = useRef<AbortController | null>(null);
+  const sending = requestPhase !== null;
   const storageKey = useMemo(() => conversationStorageKey(session), [session]);
+  const storageReadyForCurrentUser =
+    storageKey !== null && loadedStorageKey === storageKey;
   const activeConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === activeId) ?? null,
     [conversations, activeId],
@@ -55,15 +83,25 @@ export default function WorkspacePage() {
     );
   }, [conversations, searchQuery]);
 
+  const applySession = useCallback((nextSession: Session) => {
+    const previousUserId = sessionRef.current?.userId ?? null;
+    const nextUserId = nextSession.authenticated ? nextSession.userId ?? null : null;
+    sessionRef.current = nextSession;
+    if (previousUserId && previousUserId !== nextUserId) {
+      inferenceAbortControllerRef.current?.abort();
+    }
+    setSession(nextSession);
+  }, []);
+
   useEffect(() => {
     const syncSession = () => {
       readSession()
         .then((current) => {
-          setSession(current);
+          applySession(current);
           setSessionReady(true);
         })
         .catch(() => {
-          setSession({
+          applySession({
             authenticated: false,
             email: null,
             error: "ไม่สามารถตรวจสอบสถานะเซสชันปัจจุบันได้",
@@ -74,12 +112,13 @@ export default function WorkspacePage() {
     syncSession();
     window.addEventListener("zyrquen:session-change", syncSession);
     return () => {
+      inferenceAbortControllerRef.current?.abort();
       if (copyTimerRef.current !== null) {
         window.clearTimeout(copyTimerRef.current);
       }
       window.removeEventListener("zyrquen:session-change", syncSession);
     };
-  }, []);
+  }, [applySession]);
 
   useEffect(() => {
     if (sessionReady && !session?.authenticated) {
@@ -93,7 +132,9 @@ export default function WorkspacePage() {
         setConversations([]);
         setActiveId(null);
         setDraft("");
-        setStorageReady(false);
+        setError("");
+        setStreamingOutput(null);
+        setLoadedStorageKey(null);
         return;
       }
 
@@ -118,7 +159,10 @@ export default function WorkspacePage() {
         setConversations([]);
         setActiveId(null);
       }
-      setStorageReady(true);
+      setDraft("");
+      setError("");
+      setStreamingOutput(null);
+      setLoadedStorageKey(storageKey);
     }, 0);
 
     const clearHistory = () => {
@@ -145,10 +189,10 @@ export default function WorkspacePage() {
   }, [mobileHistory]);
 
   useEffect(() => {
-    if (storageReady && storageKey) {
+    if (storageReadyForCurrentUser && storageKey) {
       window.localStorage.setItem(storageKey, JSON.stringify(conversations));
     }
-  }, [conversations, storageReady, storageKey]);
+  }, [conversations, storageKey, storageReadyForCurrentUser]);
 
   useEffect(() => {
     const scroller = scrollRef.current;
@@ -214,7 +258,7 @@ export default function WorkspacePage() {
   function deleteConversation(id: string) {
     const remaining = conversations.filter((conversation) => conversation.id !== id);
     setConversations(remaining);
-    if (storageReady && storageKey) {
+    if (storageReadyForCurrentUser && storageKey) {
       if (remaining.length === 0) {
         window.localStorage.removeItem(storageKey);
       } else {
@@ -268,7 +312,7 @@ export default function WorkspacePage() {
   async function sendPrompt(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     const prompt = draft.trim();
-    if (!prompt || sending) return;
+    if (!prompt || inferenceAbortControllerRef.current) return;
     if (!session?.authenticated) {
       router.push("/login");
       return;
@@ -282,53 +326,156 @@ export default function WorkspacePage() {
       return;
     }
 
-    const conversation = activeConversation ?? createConversation();
-    const userMessage: ConversationMessage = {
-      id: crypto.randomUUID(),
-      role: "user",
-      content: prompt,
-      createdAt: new Date().toISOString(),
-    };
-    updateConversation(conversation.id, (current) => ({
-      ...current,
-      title: current.messages.length === 0 ? prompt.slice(0, 48) : current.title,
-      updatedAt: userMessage.createdAt,
-      messages: [...current.messages, userMessage],
-    }));
-    setDraft("");
-    setSending(true);
+    const controller = new AbortController();
+    inferenceAbortControllerRef.current = controller;
+    setRequestPhase("verifying");
     setError("");
+    let conversation: Conversation | null = null;
+    let responseText = "";
+    const expectedUserId = session.userId?.trim();
 
     try {
-      const response = await apiRequest<InferenceResponse>("v1/native-ai/infer", {
+      if (!expectedUserId) {
+        throw new ApiError("ไม่พบรหัสบัญชีที่ยืนยันตัวตนแล้ว", 401);
+      }
+
+      const verifiedSession = await readSession(controller.signal);
+      if (
+        !verifiedSession.authenticated ||
+        verifiedSession.userId !== expectedUserId
+      ) {
+        applySession(verifiedSession);
+        throw new ApiError(
+          "เซสชันเปลี่ยนหรือหมดอายุ กรุณาตรวจสอบบัญชีก่อนส่งข้อความ",
+          401,
+        );
+      }
+
+      const requestConversation = activeConversation ?? createConversation();
+      conversation = requestConversation;
+      const inferencePrompt = buildNativeInferencePrompt(
+        requestConversation.messages,
+        prompt,
+      );
+      const userMessage: ConversationMessage = {
+        id: crypto.randomUUID(),
+        role: "user",
+        content: prompt,
+        createdAt: new Date().toISOString(),
+      };
+      updateConversation(requestConversation.id, (current) => ({
+        ...current,
+        title: current.messages.length === 0 ? prompt.slice(0, 48) : current.title,
+        updatedAt: userMessage.createdAt,
+        messages: [...current.messages, userMessage],
+      }));
+      setDraft("");
+      setRequestPhase("connecting");
+
+      const response = await apiStreamRequest("v1/native-ai/infer/stream", {
         method: "POST",
-        body: JSON.stringify({ prompt, max_tokens: maxTokens, temperature }),
+        headers: {
+          "X-Zyrquen-Expected-User-ID": expectedUserId,
+        },
+        body: JSON.stringify({
+          prompt: inferencePrompt,
+          max_tokens: maxTokens,
+          temperature,
+        }),
+        signal: controller.signal,
       });
+      if (sessionRef.current?.userId !== expectedUserId) {
+        throw new DOMException("Session changed", "AbortError");
+      }
+      setRequestPhase("generating");
+      if (!response.body) {
+        throw new ApiError("Native inference stream is unavailable", 502);
+      }
+      setStreamingOutput({ conversationId: requestConversation.id, content: "" });
+      responseText = await consumeNativeInferenceStream(
+        response.body,
+        (content) => {
+          responseText = content;
+          setStreamingOutput({
+            conversationId: requestConversation.id,
+            content,
+          });
+        },
+      );
+      if (!responseText.trim()) {
+        throw new ApiError("Native Model returned an empty response", 502);
+      }
+      if (sessionRef.current?.userId !== expectedUserId) {
+        throw new DOMException("Session changed", "AbortError");
+      }
       const assistantMessage: ConversationMessage = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: response.result,
+        content: responseText,
         createdAt: new Date().toISOString(),
       };
-      updateConversation(conversation.id, (current) => ({
+      updateConversation(requestConversation.id, (current) => ({
         ...current,
         updatedAt: assistantMessage.createdAt,
         messages: [...current.messages, assistantMessage],
       }));
     } catch (reason) {
-      const message =
-        reason instanceof Error
-          ? reason.message
-          : "ส่งคำขอประมวลผลไม่สำเร็จ กรุณาตรวจสอบสถานะการเชื่อมต่อ API แล้วลองใหม่อีกครั้ง";
-      if (reason && typeof reason === "object" && "status" in reason && reason.status === 401) {
-        setSession({ authenticated: false, email: null });
-        setError("เซสชันของคุณหมดอายุหรือไม่ถูกต้อง กรุณาเข้าสู่ระบบใหม่อีกครั้งเพื่อใช้งานต่อ");
+      const sessionStillMatches =
+        expectedUserId !== undefined &&
+        sessionRef.current?.userId === expectedUserId;
+      if (conversation && responseText.trim() && sessionStillMatches) {
+        const partialMessage: ConversationMessage = {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: responseText,
+          createdAt: new Date().toISOString(),
+          incomplete: true,
+        };
+        updateConversation(conversation.id, (current) => ({
+          ...current,
+          updatedAt: partialMessage.createdAt,
+          messages: [...current.messages, partialMessage],
+        }));
+      }
+
+      if (
+        reason instanceof ApiError &&
+        (reason.status === 401 || reason.status === 403)
+      ) {
+        applySession({
+          authenticated: false,
+          email: null,
+          verified: true,
+        });
+        setError(
+          "เซสชันของคุณหมดอายุหรือไม่ถูกต้อง กรุณาเข้าสู่ระบบใหม่อีกครั้งเพื่อใช้งานต่อ",
+        );
+      } else if (controller.signal.aborted) {
+        setError(
+          responseText.trim()
+            ? "ยกเลิกคำขอแล้ว คำตอบที่แสดงเป็นข้อความที่ Native Model ส่งมาก่อนยกเลิก"
+            : "ยกเลิกคำขอ Native Inference แล้ว",
+        );
+      } else if (reason instanceof ApiError && reason.status === 409) {
+        setError(reason.message);
       } else {
+        const message =
+          reason instanceof Error
+            ? reason.message
+            : "ส่งคำขอประมวลผลไม่สำเร็จ กรุณาตรวจสอบสถานะการเชื่อมต่อ API แล้วลองใหม่อีกครั้ง";
         setError(message);
       }
     } finally {
-      setSending(false);
+      setStreamingOutput(null);
+      if (inferenceAbortControllerRef.current === controller) {
+        inferenceAbortControllerRef.current = null;
+      }
+      setRequestPhase(null);
     }
+  }
+
+  function cancelInference() {
+    inferenceAbortControllerRef.current?.abort();
   }
 
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -346,6 +493,28 @@ export default function WorkspacePage() {
         : nativeError
           ? "รันไทม์ตรวจสอบไม่สำเร็จ"
           : "รันไทม์ไม่พร้อมใช้งาน";
+  const requestStatusLabel =
+    requestPhase === "verifying"
+      ? "กำลังตรวจสอบเซสชัน"
+      : requestPhase === "connecting"
+        ? "กำลังเชื่อมต่อ Native Inference API"
+        : "กำลังรับข้อความจาก Native Model";
+
+  if (sessionReady && session?.authenticated && !storageReadyForCurrentUser) {
+    return (
+      <div className="page-stack">
+        <PageHeader
+          description="กำลังโหลดประวัติที่แยกตามบัญชีผู้ใช้"
+          eyebrow="NATIVE AI / พื้นที่ทำงาน"
+          icon="lock"
+          title="กำลังตรวจสอบพื้นที่ส่วนตัว"
+        />
+        <div className="panel notice-panel" role="status">
+          กำลังโหลดข้อมูลของบัญชีที่ยืนยันตัวตนแล้ว...
+        </div>
+      </div>
+    );
+  }
 
   if (!sessionReady || !session?.authenticated) {
     return (
@@ -551,6 +720,9 @@ export default function WorkspacePage() {
                         <div className="message-meta">
                           <strong>{message.role === "assistant" ? "ZYRQUEN Ω∞" : "คุณ"}</strong>
                           <time>{new Date(message.createdAt).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}</time>
+                          {message.incomplete && (
+                            <span className="typing-status-label">หยุดก่อนจบ</span>
+                          )}
                           {message.role === "assistant" && (
                             <button
                               aria-label={isCopied ? "คัดลอกลงคลิปบอร์ดแล้ว" : "คัดลอกข้อความตอบกลับลงคลิปบอร์ด"}
@@ -569,6 +741,21 @@ export default function WorkspacePage() {
                     </article>
                   );
                 })}
+                {streamingOutput?.conversationId === activeConversation.id &&
+                  streamingOutput.content && (
+                    <article className="message-row message-assistant">
+                      <span className="message-avatar message-avatar-assistant">
+                        <Icon name="sparkles" size={16} />
+                      </span>
+                      <div className="message-content">
+                        <div className="message-meta">
+                          <strong>ZYRQUEN Ω∞</strong>
+                          <span className="typing-status-label">กำลังรับคำตอบ</span>
+                        </div>
+                        <p>{streamingOutput.content}</p>
+                      </div>
+                    </article>
+                  )}
                 <div
                   aria-hidden={!sending}
                   aria-live="polite"
@@ -580,9 +767,9 @@ export default function WorkspacePage() {
                       <div className="message-content">
                         <div className="message-meta">
                           <strong>ZYRQUEN Ω∞</strong>
-                          <span className="typing-status-label">กำลังสร้างคำตอบ</span>
+                          <span className="typing-status-label">{requestStatusLabel}</span>
                         </div>
-                        <div aria-label="กำลังสร้างคำตอบ" className="typing-indicator"><i /><i /><i /></div>
+                        <div aria-label={requestStatusLabel} className="typing-indicator"><i /><i /><i /></div>
                       </div>
                     </div>
                   </div>
@@ -617,10 +804,28 @@ export default function WorkspacePage() {
                     <input id="temperature" max="1" min="0" onChange={(event) => setTemperature(Number(event.target.value))} step="0.1" type="range" value={temperature} />
                   </div>
                 </details>
-                <span className="composer-hint">{draft.length}/4096 · กด Enter เพื่อส่งข้อความ</span>
-                <button aria-label="ส่งข้อความ" className="send-button" disabled={!draft.trim() || sending || !nativeHealth?.inference_available || !session?.authenticated} type="submit">
-                  {sending ? <span className="spinner" /> : <Icon name="send" size={17} />}
-                </button>
+                <span className="composer-hint">
+                  {sending ? requestStatusLabel : `${draft.length}/4096 · กด Enter เพื่อส่งข้อความ`}
+                </span>
+                {sending ? (
+                  <button
+                    aria-label="ยกเลิกคำขอ Native Inference"
+                    className="send-button send-button-cancel"
+                    onClick={cancelInference}
+                    type="button"
+                  >
+                    <Icon name="close" size={17} />
+                  </button>
+                ) : (
+                  <button
+                    aria-label="ส่งข้อความ"
+                    className="send-button"
+                    disabled={!draft.trim() || !nativeHealth?.inference_available || !session?.authenticated}
+                    type="submit"
+                  >
+                    <Icon name="send" size={17} />
+                  </button>
+                )}
               </div>
             </form>
             <p className="composer-disclaimer">คำตอบจากโมเดลอาจยังไม่สมบูรณ์ ประวัติการสนทนาถูกบันทึกไว้เฉพาะในเบราว์เซอร์นี้ และไม่ได้ซิงค์ขึ้นเซิร์ฟเวอร์</p>
