@@ -444,7 +444,24 @@ export default function WorkspacePage() {
                     </article>
                   );
                 })}
-                {sending && <div className="message-row message-assistant"><span className="message-avatar message-avatar-assistant"><Icon name="sparkles" size={16} /></span><div className="message-content"><div className="message-meta"><strong>ZYRQUEN Ω∞</strong><span>กำลังสร้างคำตอบ</span></div><div aria-label="กำลังสร้างคำตอบ" className="typing-indicator"><i /><i /><i /></div></div></div>}
+                <div
+                  aria-hidden={!sending}
+                  aria-live="polite"
+                  className={`message-generating${sending ? " message-generating-active" : ""}`}
+                >
+                  <div className="message-generating-inner">
+                    <div className="message-row message-assistant">
+                      <span className="message-avatar message-avatar-assistant"><Icon name="sparkles" size={16} /></span>
+                      <div className="message-content">
+                        <div className="message-meta">
+                          <strong>ZYRQUEN Ω∞</strong>
+                          <span className="typing-status-label">กำลังสร้างคำตอบ</span>
+                        </div>
+                        <div aria-label="กำลังสร้างคำตอบ" className="typing-indicator"><i /><i /><i /></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
           </div>
