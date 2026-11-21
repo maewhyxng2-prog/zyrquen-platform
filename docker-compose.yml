@@ -34,7 +34,6 @@ services:
       ZYRQUEN_DEVELOPMENT_DATABASE_PORT: "5432"
       ZYRQUEN_DEVELOPMENT_DATABASE_NAME: ${POSTGRES_DB:?set in .env}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set in .env}
-      ZYRQUEN_MODEL_PATH: ${ZYRQUEN_MODEL_PATH:-/data/models/zyrquen-native-v1}
       ZYRQUEN_DATASET_DIR: ${ZYRQUEN_DATASET_DIR:-/data/datasets/current}
       ZYRQUEN_TOKENIZER_PATH: ${ZYRQUEN_TOKENIZER_PATH:-/data/tokenizers/tokenizer.json}
       ZYRQUEN_TRAINING_ROOT: ${ZYRQUEN_TRAINING_ROOT:-/data/training}
@@ -66,7 +65,6 @@ services:
           cpus: "2.0"
           memory: 2G
     volumes:
-      - models:/data/models
       - datasets:/data/datasets:ro
       - tokenizers:/data/tokenizers:ro
       - training:/data/training
@@ -97,7 +95,6 @@ services:
 
 volumes:
   pgdata:
-  models:
   datasets:
   tokenizers:
   training:

@@ -550,6 +550,233 @@ def test_16_checkpoint_dataset_version_mismatch_rejected(tmp_path: Path | None =
     assert loader.health_state() == "degraded"
 
 
+def test_17_atomic_version_reservation_and_multiprocess_concurrency(tmp_path: Path | None = None):
+    if tmp_path is None:
+        with tempfile.TemporaryDirectory() as td:
+            return test_17_atomic_version_reservation_and_multiprocess_concurrency(Path(td))
+    import subprocess
+    from concurrent.futures import ThreadPoolExecutor
+    from apps.core.native.registry import ModelRegistry, RegistryError
+
+    src = tmp_path / "corpus.jsonl"
+    docs = [{"text": f"hello world zyrquen concurrency {i}"} for i in range(40)]
+    src.write_text("\n".join(json.dumps(d) for d in docs), encoding="utf-8")
+    ds_dir = tmp_path / "dataset"
+    prepare_dataset([Source(str(src), "test-fixture")], ds_dir, PrepConfig(val_fraction=0.1, test_fraction=0.1, version="0.1.0"))
+    tok = ZyrquenTokenizer.train([d["text"] for d in docs], BASE_VOCAB + 24, version="0.1.0")
+    tok_path = tmp_path / "tokenizer.json"
+    tok.save(tok_path)
+    cfg = ZyrquenConfig(vocab_size=tok.vocab_size, max_seq_len=32, n_layers=2, n_heads=2, d_model=32, d_ff=64)
+    ckpt_dir = tmp_path / "checkpoints"
+    CheckpointManager(ckpt_dir, save_fn=_json_save, load_fn=_json_load).save(
+        1,
+        {
+            "model": {"embed.weight": [[0.0]]},
+            "step": 1,
+            "config": {"max_steps": 1},
+            "model_config": cfg.to_dict(),
+            "tokenizer_sha256": tok.fingerprint(),
+            "dataset_version": "0.1.0",
+        },
+    )
+
+    reg_root = tmp_path / "registry"
+    reg = ModelRegistry(reg_root, load_fn=_json_load)
+    res0 = reg.reserve_next_native_version(training_run_id="run-0")
+    assert res0.version == "ZYRQUEN-Native-0.1.0"
+    _assert_raises(RegistryError, reg.register, res0.version, ckpt_dir, tok_path, ds_dir)
+    _assert_raises(RegistryError, reg.register, res0.version, ckpt_dir, tok_path, ds_dir, reservation_token="bad")
+    assert reg.release_reservation(res0.version, res0.token) is True
+
+    def thread_worker(idx: int):
+        worker_reg = ModelRegistry(reg_root, load_fn=_json_load)
+        return worker_reg.register_next_native_version(
+            ckpt_dir,
+            tok_path,
+            ds_dir,
+            notes=f"training_run_id=thread-{idx}",
+            training_run_id=f"thread-{idx}",
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        thread_records = list(pool.map(thread_worker, range(4)))
+    assert sorted(r["version"] for r in thread_records) == [
+        "ZYRQUEN-Native-0.1.0",
+        "ZYRQUEN-Native-0.1.1",
+        "ZYRQUEN-Native-0.1.2",
+        "ZYRQUEN-Native-0.1.3",
+    ]
+
+    # Real multi-process OS concurrency via subprocess workers sharing the same registry root.
+    worker_code = (
+        "import json, sys; from pathlib import Path; "
+        "from apps.core.native.registry import ModelRegistry; "
+        "load = lambda p: json.loads(Path(p).read_text(encoding='utf-8')); "
+        "r = ModelRegistry(sys.argv[1], load_fn=load); "
+        "rec = r.register_next_native_version(sys.argv[2], sys.argv[3], sys.argv[4], notes=f'training_run_id=proc-{sys.argv[5]}', training_run_id=f'proc-{sys.argv[5]}'); "
+        "print(rec['version'])"
+    )
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", worker_code, str(reg_root), str(ckpt_dir), str(tok_path), str(ds_dir), str(i)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for i in range(4)
+    ]
+    proc_versions = []
+    for p in procs:
+        out, err = p.communicate(timeout=20)
+        assert p.returncode == 0, f"subprocess failed: {err}"
+        proc_versions.append(out.strip())
+
+    all_versions = [r["version"] for r in thread_records] + proc_versions
+    assert sorted(all_versions) == [f"ZYRQUEN-Native-0.1.{i}" for i in range(8)]
+    assert reg.active_version() is None
+    for i, ver in enumerate(sorted(all_versions)):
+        assert reg.verify(ver)
+        expected_parent = None if i == 0 else f"ZYRQUEN-Native-0.1.{i - 1}"
+        assert reg.get(ver)["parent"] == expected_parent
+
+
+def test_18_train_checkpoint_payload_loads_with_weights_only_true(tmp_path: Path | None = None):
+    if tmp_path is None:
+        with tempfile.TemporaryDirectory() as td:
+            return test_18_train_checkpoint_payload_loads_with_weights_only_true(Path(td))
+    import random
+    import torch
+    from apps.core.native.model import ZyrquenModel
+    from apps.core.native.registry import ModelRegistry
+    from apps.core.native.train import TrainConfig
+    from apps.core.training_infrastructure.recovery.checkpoint_recovery import capture_rng_state
+
+    src = tmp_path / "corpus.jsonl"
+    docs = [{"text": f"hello world zyrquen checkpoint payload {i}"} for i in range(40)]
+    src.write_text("\n".join(json.dumps(d) for d in docs), encoding="utf-8")
+    ds_dir = tmp_path / "dataset"
+    prepare_dataset([Source(str(src), "test-fixture")], ds_dir, PrepConfig(val_fraction=0.1, test_fraction=0.1, version="0.1.0"))
+    tok = ZyrquenTokenizer.train([d["text"] for d in docs], BASE_VOCAB + 24, version="0.1.0")
+    tok_path = tmp_path / "tokenizer.json"
+    tok.save(tok_path)
+
+    cfg = ZyrquenConfig(vocab_size=tok.vocab_size, max_seq_len=32, n_layers=2, n_heads=2, d_model=32, d_ff=64)
+    model = ZyrquenModel(cfg)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    tcfg = TrainConfig(block_size=16, batch_size=2, max_steps=10, warmup_steps=2)
+    rng = random.Random(tcfg.seed)
+
+    ckpt_dir = tmp_path / "checkpoints"
+    CheckpointManager(ckpt_dir).save(
+        1,
+        {
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "step": 1,
+            "batch_rng": rng.getstate(),
+            "rng": capture_rng_state(),
+            "config": tcfg.__dict__,
+            "model_config": model.cfg.to_dict(),
+            "tokenizer_sha256": tok.fingerprint(),
+            "dataset_version": "0.1.0",
+        },
+    )
+
+    reg_root = tmp_path / "registry"
+    registry = ModelRegistry(reg_root)
+    record = registry.register_next_native_version(
+        ckpt_dir, tok_path, ds_dir, metrics={"val_loss": 2.5}, notes="train-format-check"
+    )
+    registry.promote(record["version"])
+
+    loader = NativeModelLoader(registry_root=reg_root)
+    loader.load()
+    assert loader.is_ready() is True
+    assert loader.model_version == "ZYRQUEN-Native-0.1.0"
+    assert loader.is_trained is True
+
+
+def test_19_checkpoint_recovery_security_boundary_and_rng_resume(tmp_path: Path | None = None):
+    if tmp_path is None:
+        with tempfile.TemporaryDirectory() as td:
+            return test_19_checkpoint_recovery_security_boundary_and_rng_resume(Path(td))
+    import inspect
+    import os
+    import random
+    from apps.core.native.registry import ModelRegistry
+    from apps.core.training_infrastructure.recovery.checkpoint_recovery import (
+        CheckpointManager,
+        _safe_torch_load,
+        capture_rng_state,
+        restore_rng_state,
+    )
+
+    mgr = CheckpointManager(tmp_path / "default")
+    assert mgr._load is _safe_torch_load
+    assert mgr._allow_unsafe_pickle is False
+    assert "weights_only=True" in inspect.getsource(_safe_torch_load)
+
+    reg = ModelRegistry(tmp_path / "reg")
+    assert reg._load is _safe_torch_load
+
+    called = []
+    sym_mgr = CheckpointManager(
+        tmp_path / "sym",
+        save_fn=_json_save,
+        load_fn=lambda p: called.append(p) or _json_load(p),
+    )
+    ckpt = sym_mgr.save(1, {"step": 1})
+    outside = tmp_path / "outside.pt"
+    outside.write_bytes(ckpt.read_bytes())
+    ckpt.unlink()
+    os.symlink(outside, ckpt)
+    assert sym_mgr.latest_valid() is None
+    assert sym_mgr.load_latest() is None
+    assert called == []
+
+    rng_state = capture_rng_state()
+    expected = random.random()
+    restore_rng_state(rng_state)
+    assert random.random() == expected
+    v, internal, gauss = rng_state["python"]
+    restore_rng_state({"python": [v, list(internal), gauss]})
+    assert random.random() == expected
+
+
+def test_20_phase10_8_config_and_dependency_remediation():
+    import ast
+    import inspect
+
+    repo_root = Path(__file__).resolve().parents[2]
+    compose_text = (repo_root / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "ZYRQUEN_MODEL_PATH" not in compose_text
+    assert "ZYRQUEN_MODEL_REGISTRY_ROOT" in compose_text
+
+    req_lines = [
+        line.strip().lower()
+        for line in (repo_root / "apps" / "api" / "requirements.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    assert "transformers" not in req_lines
+    assert "tokenizers" not in req_lines
+
+    ops_path = repo_root / "apps" / "api" / "operations.py"
+    ops_tree = ast.parse(ops_path.read_text(encoding="utf-8"), filename=str(ops_path))
+    imported = {
+        alias.asname or alias.name
+        for node in ast.walk(ops_tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+    assert "JSONResponse" in imported
+    called_names = {
+        node.func.id
+        for node in ast.walk(ops_tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "JSONResponse" in called_names
+
+
 if __name__ == "__main__":
     pure_tests = [
         test_01_not_configured_when_env_unset_and_missing_registry,
@@ -563,6 +790,9 @@ if __name__ == "__main__":
         test_14_symlink_and_path_traversal_rejected,
         test_15_safe_torch_load_uses_weights_only_true,
         test_16_checkpoint_dataset_version_mismatch_rejected,
+        test_17_atomic_version_reservation_and_multiprocess_concurrency,
+        test_19_checkpoint_recovery_security_boundary_and_rng_resume,
+        test_20_phase10_8_config_and_dependency_remediation,
     ]
     torch_tests = [
         test_09_registry_active_version_baseline_not_marked_trained,
@@ -570,6 +800,7 @@ if __name__ == "__main__":
         test_11_native_inference_and_token_counting,
         test_12_streaming_stops_at_eos,
         test_13_context_window_boundary,
+        test_18_train_checkpoint_payload_loads_with_weights_only_true,
     ]
     passed = 0
     skipped = 0

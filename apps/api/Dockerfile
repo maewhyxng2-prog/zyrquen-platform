@@ -10,7 +10,7 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app:/app/apps/api \
-    ZYRQUEN_MODEL_PATH=/data/models/zyrquen-native-v1 \
+    ZYRQUEN_MODEL_REGISTRY_ROOT=/data/model-registry \
     PORT=8000
 
 WORKDIR /app
@@ -41,8 +41,8 @@ RUN groupadd --system --gid 10001 zyrquen \
 # 4. เปิดพอร์ต API
 EXPOSE 8000
 
-# 5. Healthcheck - ใช้ endpoint เดิมที่มีอยู่แล้วใน main.py
-# main.py เดิมมี / และ /health อยู่แล้ว ไม่ต้องสร้าง endpoint ใหม่
+# 5. Healthcheck - /livez ตรวจ process liveness ส่วน /readyz และ /health
+#    จะรายงาน fail-closed (503) เมื่อยังไม่มี active native model version ใน registry
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8000/livez || exit 1
 

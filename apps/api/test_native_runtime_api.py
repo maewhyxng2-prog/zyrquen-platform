@@ -202,3 +202,53 @@ def test_api_enforces_max_seq_len_and_records_real_usage_and_version(api_db, tmp
         runtime.loader = old_loader
         runtime.engine = old_engine
         runtime._initialized = old_init
+
+
+def test_api_readiness_fail_closed_with_registry_without_active_version(api_db, tmp_path, monkeypatch):
+    import json
+
+    client, *_ = api_db
+    old_loader = runtime.loader
+    old_engine = runtime.engine
+    old_init = runtime._initialized
+    try:
+        reg_root = tmp_path / "model-registry"
+        reg_root.mkdir()
+        (reg_root / "registry.json").write_text(
+            json.dumps(
+                {
+                    "schema": "zyrquen.model-registry.v1",
+                    "versions": {},
+                    "active": None,
+                    "history": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("ZYRQUEN_MODEL_REGISTRY_ROOT", str(reg_root))
+        monkeypatch.delenv("ZYRQUEN_MODEL_PATH", raising=False)
+        monkeypatch.delenv("ZYRQUEN_MODEL_VERSION", raising=False)
+
+        loader = NativeModelLoader()
+        runtime.loader = loader
+        runtime.engine = NativeInferenceEngine(loader)
+        runtime._initialized = False
+        assert runtime.initialize() is False
+
+        livez = client.get("/livez")
+        assert livez.status_code == 200
+        assert livez.json()["status"] == "healthy"
+
+        readyz = client.get("/readyz")
+        assert readyz.status_code == 503
+        assert readyz.json()["status"] != "healthy"
+        assert readyz.json()["native_ai"]["runtime_status"] == "not_configured"
+        assert readyz.json()["native_ai"]["inference_available"] is False
+
+        health = client.get("/health")
+        assert health.status_code == 503
+        assert health.json()["native_ai"]["runtime_status"] == "not_configured"
+    finally:
+        runtime.loader = old_loader
+        runtime.engine = old_engine
+        runtime._initialized = old_init

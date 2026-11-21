@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from apps.api.database_safety import verify_test_database_connection

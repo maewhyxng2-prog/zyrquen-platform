@@ -211,3 +211,52 @@ def test_corrupt_checkpoint_does_not_register(training_env):
     assert "valid integrity" in run.error_message
     assert registry.list_versions() == []
     assert registry.active_version() is None
+
+
+def test_concurrent_workers_do_not_collide_on_native_versions(training_env, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    session_factory, _, user_id, prepared, registry = training_env
+
+    def run_worker(_idx: int):
+        svc = TrainingJobService(
+            session_factory,
+            orchestrator=_TrainingStub(prepared, "success"),
+            registry=ModelRegistry(registry.root, load_fn=_load_json),
+        )
+        try:
+            with session_factory() as db:
+                run = svc.submit(
+                    db,
+                    owner_id=user_id,
+                    dataset_version="dataset-v1",
+                    training_config={"max_steps": 10},
+                    model_config={"n_layers": 1},
+                )
+                run_id = run.id
+            svc._future.result(timeout=15)
+            with session_factory() as db:
+                return db.get(TrainingRun, run_id)
+        finally:
+            svc._executor.shutdown(wait=True)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        runs = list(pool.map(run_worker, range(4)))
+
+    assert all(r.status == "completed" for r in runs)
+    versions = [r.result["model_version"] for r in runs]
+    run_ids = [r.result["training_run_id"] for r in runs]
+    assert sorted(versions) == [
+        "ZYRQUEN-Native-0.1.0",
+        "ZYRQUEN-Native-0.1.1",
+        "ZYRQUEN-Native-0.1.2",
+        "ZYRQUEN-Native-0.1.3",
+    ]
+    assert len(set(run_ids)) == 4
+    assert all(rid != ver for rid, ver in zip(run_ids, versions))
+    assert registry.active_version() is None
+    for i, ver in enumerate(sorted(versions)):
+        assert registry.verify(ver)
+        expected_parent = None if i == 0 else f"ZYRQUEN-Native-0.1.{i - 1}"
+        assert registry.get(ver)["parent"] == expected_parent
+

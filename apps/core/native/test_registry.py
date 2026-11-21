@@ -134,3 +134,76 @@ def test_rollback_with_no_history(tmp_path):
     reg.promote("v1")
     with pytest.raises(RegistryError):
         reg.rollback()
+
+
+def test_atomic_version_reservation_and_token_enforcement(tmp_path):
+    ck, tok, ds = _env(tmp_path)
+    reg = _reg(tmp_path)
+
+    res0 = reg.reserve_next_native_version(training_run_id="run-a")
+    res1 = reg.reserve_next_native_version(training_run_id="run-b")
+    assert res0.version == "ZYRQUEN-Native-0.1.0"
+    assert res1.version == "ZYRQUEN-Native-0.1.1"
+    assert res0.parent is None
+    assert res1.parent is None
+
+    # Registering without token or with wrong token must fail without overwriting.
+    with pytest.raises(RegistryError, match="reserved"):
+        reg.register(res0.version, ck, tok, ds)
+    with pytest.raises(RegistryError, match="reserved"):
+        reg.register(res0.version, ck, tok, ds, reservation_token="wrong-token")
+
+    # Release res1 cleanly and verify it is no longer held.
+    assert reg.release_reservation(res1.version, res1.token) is True
+    assert [r["version"] for r in reg.list_reservations()] == ["ZYRQUEN-Native-0.1.0"]
+
+    rec0 = reg.register(
+        res0.version,
+        ck,
+        tok,
+        ds,
+        parent=res0.parent,
+        reservation_token=res0.token,
+    )
+    assert rec0["version"] == "ZYRQUEN-Native-0.1.0"
+    assert reg.list_reservations() == []
+    assert reg.active_version() is None
+
+    # Next reservation now skips 0.1.0 and sets parent to committed 0.1.0.
+    res_next = reg.reserve_next_native_version(training_run_id="run-c")
+    assert res_next.version == "ZYRQUEN-Native-0.1.1"
+    assert res_next.parent == "ZYRQUEN-Native-0.1.0"
+
+
+def test_concurrent_threads_allocate_and_register_distinct_versions(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    ck, tok, ds = _env(tmp_path)
+    reg_root = tmp_path / "concurrent-reg"
+
+    def worker(idx: int):
+        worker_reg = ModelRegistry(reg_root, load_fn=_load)
+        return worker_reg.register_next_native_version(
+            ck,
+            tok,
+            ds,
+            notes=f"training_run_id=worker-{idx}",
+            training_run_id=f"worker-{idx}",
+        )
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        records = list(pool.map(worker, range(6)))
+
+    versions = [r["version"] for r in records]
+    assert sorted(versions) == [
+        f"ZYRQUEN-Native-0.1.{i}" for i in range(6)
+    ]
+    assert len(set(versions)) == 6
+
+    check_reg = ModelRegistry(reg_root, load_fn=_load)
+    assert check_reg.active_version() is None
+    for i, version in enumerate(sorted(versions)):
+        assert check_reg.verify(version)
+        expected_parent = None if i == 0 else f"ZYRQUEN-Native-0.1.{i - 1}"
+        assert check_reg.get(version)["parent"] == expected_parent
+

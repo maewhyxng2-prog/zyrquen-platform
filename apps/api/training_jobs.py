@@ -7,8 +7,10 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from apps.core.model_loader import NATIVE_MODEL_VERSION_RE
-from apps.core.native.registry import ModelRegistry
+from apps.core.native.registry import (
+    ModelRegistry,
+    NativeVersionReservation,
+)
 from apps.core.training_infrastructure.recovery.checkpoint_recovery import (
     CheckpointManager,
 )
@@ -26,36 +28,23 @@ class TrainingJobBusy(RuntimeError):
 def allocate_next_native_version(
     registry: ModelRegistry,
 ) -> tuple[str, str | None]:
-    """Allocate the next unused ZYRQUEN-Native-MAJOR.MINOR.PATCH version.
+    """Compute the next unused ZYRQUEN-Native-MAJOR.MINOR.PATCH candidate safely under lock.
 
-    Starts at ZYRQUEN-Native-0.1.0, increments PATCH for subsequent verified
-    training runs, never overwrites an existing registry or artifact path, and
-    never promotes the registered version automatically.
+    For concurrent workers that also write to the registry, prefer
+    reserve_next_native_version() or registry.register_next_native_version() so the
+    chosen version is atomically reserved on disk before registration.
     """
-    records = registry.list_versions()
-    existing_names = {
-        rec["version"] for rec in records if isinstance(rec.get("version"), str)
-    }
-    parsed: list[tuple[int, int, int, str]] = []
-    for name in existing_names:
-        match = NATIVE_MODEL_VERSION_RE.match(name)
-        if match:
-            major, minor, patch = (int(part) for part in match.groups())
-            parsed.append((major, minor, patch, name))
+    with registry._registry_lock():
+        return registry._next_native_candidate_unlocked(registry._read())
 
-    if not parsed:
-        major, minor, patch = 0, 1, 0
-        parent: str | None = None
-    else:
-        major, minor, patch, parent = max(parsed)
-        patch += 1
 
-    while True:
-        candidate = f"ZYRQUEN-Native-{major}.{minor}.{patch}"
-        artifact_dir = registry.root / "artifacts" / candidate
-        if candidate not in existing_names and not artifact_dir.exists():
-            return candidate, parent
-        patch += 1
+def reserve_next_native_version(
+    registry: ModelRegistry,
+    *,
+    training_run_id: str | None = None,
+) -> NativeVersionReservation:
+    """Atomically reserve the next unused ZYRQUEN-Native-MAJOR.MINOR.PATCH version."""
+    return registry.reserve_next_native_version(training_run_id=training_run_id)
 
 
 class TrainingJobService:
@@ -177,16 +166,15 @@ class TrainingJobService:
                 )
                 self._registry = registry
 
-            model_version, parent_version = allocate_next_native_version(registry)
-            record = registry.register(
-                model_version,
+            record = registry.register_next_native_version(
                 checkpoint_dir,
                 prepared.tokenizer_path,
                 prepared.dataset_dir,
                 metrics=result,
                 notes=f"training_run_id={run_id}",
-                parent=parent_version,
+                training_run_id=str(run_id),
             )
+            model_version = record["version"]
             registered = True
             result = {
                 **result,

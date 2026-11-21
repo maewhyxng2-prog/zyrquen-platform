@@ -46,3 +46,20 @@ def test_request_observability_headers():
     assert response.headers["x-correlation-id"] == "test-correlation"
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["x-frame-options"] == "DENY"
+
+
+def test_unhandled_exception_returns_500_json_without_name_error():
+    from fastapi import FastAPI
+    from apps.api.operations import install_exception_logging
+
+    probe_app = FastAPI()
+    install_exception_logging(probe_app)
+
+    @probe_app.get("/_probe_error")
+    async def _probe_error():
+        raise RuntimeError("boom")
+
+    probe_client = TestClient(probe_app, raise_server_exceptions=False)
+    response = probe_client.get("/_probe_error")
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Internal server error"}
