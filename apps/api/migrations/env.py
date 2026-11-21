@@ -45,7 +45,7 @@ def run_migrations_online() -> None:
     try:
         connectable = create_engine(
             target.url,
-            poolclass=pool.NullPool,
+            poolclass=NullPool,
             hide_parameters=True,
         )
     except ArgumentError:
