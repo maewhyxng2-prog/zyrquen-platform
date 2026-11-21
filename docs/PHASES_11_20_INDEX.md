@@ -11,8 +11,8 @@
 
 | ส่วน | อยู่ที่ไหน |
 |---|---|
-| โค้ด Phase 11-20 | `phase11.py` - `phase20.py` (root — อย่าย้าย จะพัง import) |
-| เทส Phase 11-20 | `test_phase11.py` - `test_phase20.py` (root) |
+| โค้ด Phase 11-20 | `phases/phase11.py` - `phases/phase20.py` (phases/) |
+| เทส Phase 11-20 | `tests_phases/test_phase11.py` - `tests_phases/test_phase20.py` (phases/ + tests_phases/) |
 | Spec Phase 11-20 | `docs/PHASE_11_SPEC.md` - `docs/PHASE_20_SPEC.md` |
 | สารบัญนี้ | `docs/PHASES_11_20_INDEX.md` |
 
@@ -20,7 +20,7 @@
 
 | Phase | โค้ด | เทส | Spec | Commit | ผล |
 |---|---|---|---|---|---|
-| 11 Workspace Intelligence | `phase11.py` | `test_phase11.py` | `PHASE_11_SPEC.md` | `ade8e2f` | `6 passed` |
+| 11 Workspace Intelligence | `phases/phase11.py` | `tests_phases/test_phase11.py` | `PHASE_11_SPEC.md` | `ade8e2f` | `6 passed` |
 | 12 Native Intelligence Foundation | `phase12.py` | `test_phase12.py` | `PHASE_12_SPEC.md` | `93dbbf8` | `6 passed` |
 | 13 Knowledge & Data Pipeline | `phase13.py` | `test_phase13.py` | `PHASE_13_SPEC.md` | `7b32fb7` | `6 passed` |
 | 14 Evaluation & Capability Measurement | `phase14.py` | `test_phase14.py` | `PHASE_14_SPEC.md` | `b710c57` | `6 passed` |
@@ -33,4 +33,4 @@
 
 ## รันเช็คทีเดียวจบ
 ```bash
-python -m pytest test_phase11.py test_phase12.py test_phase13.py test_phase14.py test_phase15.py test_phase16.py test_phase17.py test_phase18.py test_phase19.py test_phase20.py -v
+python -m pytest tests_phases/ -v
