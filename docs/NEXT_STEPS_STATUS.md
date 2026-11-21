@@ -24,3 +24,11 @@
 | 3.3–3.6 | ยังไม่ได้เริ่ม | |
 
 หมายเหตุ 3.2: โค้ดฝึก vocabulary จาก corpus ที่ส่งเข้าไปเท่านั้น ยังไม่ได้ฝึกกับ Dataset จริง (ยังไม่มี Dataset) จึงยังไม่มีไฟล์ tokenizer.json จริง
+
+## NEXT STEPS — Phase 10.9.9 CLOSED
+
+- **Phase 10.9.9 Gate:** `PASSED`
+- **CI Verification:** `4/4 SUCCESS` on SHA `466b58a75419708a86469f59a903e322d85081d2` / Run `44893016007`
+- **Phase 11–20:** `NOT APPROVED / DO NOT START`
+- **Phase 11:** `DO NOT START`
+- **Training / Deployment:** `ยังไม่ได้อนุมัติ`
