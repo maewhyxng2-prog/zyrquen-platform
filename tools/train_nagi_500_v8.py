@@ -49,7 +49,7 @@ class PointerDecoder(nn.Module):
         # Pointer mechanism: p_gen = sigmoid(W * [context, state, input])
         self.p_gen = nn.Linear(hid_dim * 3 + emb_dim, 1)
 
-    def forward(self, input, hidden, encoder_outputs, src_mask):
+    def forward(self, input, hidden, encoder_outputs):
         input = input.unsqueeze(1) # [batch, 1]
         embedded = self.embedding(input) # [batch, 1, emb_dim]
         
@@ -72,7 +72,6 @@ class PointerDecoder(nn.Module):
         # Extend vocab distribution with copy distribution
         attn_dist = a.squeeze(1) # [batch, src_len]
         # Scatter attention weights to vocab space
-        # (Assuming src sequences contain token indices < vocab_size)
         copy_dist = torch.zeros_like(vocab_dist).scatter_add(1, input, attn_dist)
         
         final_dist = p_gen * vocab_dist + (1 - p_gen) * copy_dist
@@ -95,7 +94,7 @@ class Seq2Seq(nn.Module):
         input = trg[:, 0]
         
         for t in range(1, trg_len):
-            output, hidden, _ = self.decoder(input, hidden, encoder_outputs, None)
+            output, hidden, _ = self.decoder(input, hidden, encoder_outputs)
             outputs[:, t, :] = output
             teacher_force = random.random() < teacher_forcing_ratio
             top1 = output.argmax(1)
@@ -110,7 +109,7 @@ class Seq2Seq(nn.Module):
         
         preds = []
         for _ in range(max_len):
-            output, hidden, _ = self.decoder(input, hidden, encoder_outputs, None)
+            output, hidden, _ = self.decoder(input, hidden, encoder_outputs)
             top1 = output.argmax(1)
             preds.append(top1)
             input = top1
@@ -149,7 +148,7 @@ def main():
     
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     
-    # 4. Training Loop
+    # 4. Training Loop (Mocked)
     best_val_loss = float('inf')
     for step in range(args.steps):
         model.train()
