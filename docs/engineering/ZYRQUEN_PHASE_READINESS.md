@@ -4,6 +4,7 @@
 * **Branch ที่คาดหวัง:** `main`
 * **วันที่จัดทำ:** 2026-11-21
 * **สถานะเอกสาร:** เอกสารเตรียมความพร้อมเชิงวิศวกรรม (Non-Implementation / No Source Code Changes)
+* **เอกสารแผนระยะยาวที่เกี่ยวข้อง:** [`docs/engineering/ZYRQUEN_PHASE_11_20_MASTER_ROADMAP.md`](./ZYRQUEN_PHASE_11_20_MASTER_ROADMAP.md) (`PROPOSED / NOT APPROVED / PLANNING ONLY`)
 * **ทิศทางสถาปัตยกรรมหลัก:** ZYRQUEN เป็น **Native Intelligence System** ที่พัฒนาขีดความสามารถของตนเองผ่าน Native Model, Tokenizer, Dataset Manifest, Model Registry และ Evaluation Gates — ไม่ใช่ Chatbot-only หรือ External AI API Wrapper
 
 ---
