@@ -78,6 +78,50 @@
    * ห้าม Auto-Promotion หลัง Training เสร็จสิ้นทุกกรณี ต้องผ่าน Evaluation Gate และคำสั่ง Promote ที่ตรวจสอบ `verify()` ซ้ำก่อนเปลี่ยน `active` pointer
    * กำหนดขั้นตอน Rollback กลับไปยัง Version ก่อนหน้าใน Registry และยืนยัน Fail-Closed readiness (`/readyz` คืน `503` หาก active artifact เสียหายหรือไม่ผ่าน checksum)
 
+### 2.2 Follow-up Suggestions — WorkspacePage
+
+* **สถานะ:** **`PROPOSED / NOT APPROVED`** *(รอปิด Phase 10.9.9 และรอการอนุมัติ Scope Phase 11 อย่างเป็นลายลักษณ์อักษร)*
+* **ขอบเขตไฟล์เป้าหมายในอนาคต:** `apps/web/src/app/workspace/page.tsx` (`WorkspacePage`) — *ในรอบเอกสารนี้ไม่มีการแก้ไขไฟล์ซอร์สโค้ด*
+
+#### Objective
+เพิ่มความสามารถในการเสนอคำถามต่อยอด (Context-aware Follow-up Suggestions) บนหน้า `WorkspacePage` โดยวิเคราะห์จากข้อความ Assistant ล่าสุดในบทสนทนา เพื่อช่วยให้ผู้ใช้สามารถสนทนาต่อได้อย่างลื่นไหล เพิ่มการมีปฏิสัมพันธ์ใน Workspace และยังคงยึดสถาปัตยกรรม **Native Intelligence System** ของ ZYRQUEN โดยไม่พึ่งพา External AI API Wrapper
+
+#### Functional Requirements
+1. **Context-aware Generation (3–4 ข้อ):** วิเคราะห์ข้อความ Assistant ล่าสุดในบทสนทนาปัจจุบัน (`activeConversation?.messages`) และสร้างคำถามแนะนำต่อยอดที่สอดคล้องกับบริบทล่าสุดจำนวน **3–4 ข้อ**
+2. **ตำแหน่งการแสดงผล:** แสดงคำถามแนะนำต่อยอดเฉพาะส่วนท้ายของข้อความ Assistant ล่าสุดเท่านั้น (ไม่แสดงซ้ำใต้ข้อความ Assistant ก่อนหน้า)
+3. **Interactive Auto-send:** ผู้ใช้สามารถคลิกเลือกคำถามแนะนำเพื่อส่งเข้าสู่บทสนทนาได้ทันที (Auto-send) โดยต้องป้องกันการส่งซ้อนกับรอบที่กำลังทำงานอยู่ (`sending`)
+4. **Auto-clear ระหว่างส่งข้อความใหม่:** ซ่อนหรือล้างคำถามแนะนำชุดเดิมทันทีเมื่อผู้ใช้เริ่มส่งข้อความใหม่ หรือเมื่อ `streamingOutput` กำลังทำงาน เพื่อป้องกันการกดซ้ำหรือบริบทคลาดเคลื่อน
+5. **ครบทุก UI State:** รองรับสถานะ **Loading** (กำลังเตรียมคำถามแนะนำ), **Empty** (ไม่มีคำถามแนะนำที่เหมาะสม), **Error** (สร้างคำถามไม่สำเร็จแบบ Fail-soft โดยไม่รบกวนการแชทหลัก), และ **Success** (แสดง 3–4 ข้อ)
+6. **เงื่อนไขการซ่อน/ไม่ทำงาน (Guard Rules):**
+   * ไม่มีข้อความ Assistant ในบทสนทนา (หรืออยู่ใน Empty State ของ Workspace ที่ใช้ `.suggestion-list` / `examples` เริ่มต้นอยู่แล้ว)
+   * ข้อความ Assistant ล่าสุดยังไม่เสร็จสมบูรณ์ (กำลัง Streaming หรือมีสถานะ `incomplete: true`)
+   * ระบบ Inference ยังไม่พร้อมใช้งาน (`!nativeHealth?.inference_available`) หรือกำลังโหลดข้อความบทสนทนา (`messagesLoading`)
+7. **Responsive Desktop & Mobile:** ออกแบบการจัดวางและปุ่ม/ชิปคำถามให้รองรับทั้ง Desktop และ Mobile (ขนาด Touch target เหมาะสม, Wrap/Scroll สะดวก, ไม่บังช่องพิมพ์หรือทำให้ Layout แตก)
+8. **Native-Only Compliance:** การสร้างคำถามแนะนำต้องอาศัยความสามารถภายในของ ZYRQUEN (เช่น Native Inference / Context-aware Endpoint ภายในระบบ) และต้องไม่มีการเรียก External AI API Wrapper (เช่น OpenAI, Gemini, Claude)
+
+#### Engineering Considerations
+* **ผูกกับ State จริงของ `WorkspacePage` (`apps/web/src/app/workspace/page.tsx`):**
+  * ปัจจุบัน `WorkspacePage` จัดการ `activeConversation?.messages`, `streamingOutput`, `requestPhase` (`sending = requestPhase !== null`), `messagesLoading`, `nativeHealth?.inference_available` และมีฟิลด์ `incomplete?: boolean` บนข้อความ
+  * ฟังก์ชัน `sendPrompt(event?)` ปัจจุบันอ่านข้อความจาก State `draft.trim()` โดยตรง เมื่อพัฒนาจริงควร Refactor ให้รับพารามิเตอร์ `overridePrompt?: string` เพื่อรองรับการคลิก Auto-send จากคำถามแนะนำได้อย่างปลอดภัยโดยไม่ต้องพึ่ง Timing ของ `setDraft`
+* **Concurrency, Latency & Token Cost กับ Native Runtime:**
+  * Workflow การสนทนาหลักเรียก `readSession` -> `saveConversationMessage` -> `apiStreamRequest("v1/native-ai/infer/stream")` -> `consumeNativeInferenceStream` -> `getConversation`
+  * หากสร้าง Follow-up Suggestions ด้วยการเรียก Native Model เพิ่มหลังจบคำตอบ อาจเกิดต้นทุน Latency, Token, Quota และการรอคิว `_semaphore = Semaphore(1)` ร่วมกับ Inference หลัก — จึงควรประเมิน Trade-off ระหว่าง Lightweight Rule/Context Extraction กับ Dedicated Non-blocking Follow-up Call และต้องบังคับใช้ Cancellation (`AbortController`) + Conversation ID Check เมื่อผู้ใช้สลับบทสนทนากลางคัน
+* **Fail-soft UX & Message Integrity:**
+  * Error ของ Follow-up Suggestions ต้องไม่ขวางการใช้งาน Chat Input หรือ `streamingOutput` หลัก และต้องไม่นับข้อความ `incomplete: true` เป็นคำตอบที่สมบูรณ์เพื่อสร้างคำถามแนะนำ
+* **กลยุทธ์การทดสอบ:** ต้องครอบคลุมทั้ง **Unit Tests** (Logic การคัดข้อความ Assistant ล่าสุด, Guard State, จำกัด 3–4 ข้อ, กันซ้ำ) และ **UI Tests** (Vitest/Testing Library ทดสอบ Loading, Empty, Error, Success, Auto-send, การหายไปหลังส่ง และการแสดงผล Responsive บน Desktop และ Mobile)
+
+#### Acceptance Criteria
+1. เมื่อข้อความ Assistant ล่าสุดเสร็จสมบูรณ์ (`!sending`, `!streamingOutput`, `!incomplete`) ระบบแสดงคำถามแนะนำต่อยอดที่เกี่ยวข้อง 3–4 ข้อที่ท้ายข้อความล่าสุด
+2. การคลิกคำถามแนะนำส่งข้อความเข้าสู่บทสนทนาทันที (Auto-send) และซ่อนคำถามแนะนำชุดเดิมทันทีเมื่อเริ่มส่ง
+3. ขณะไม่มีข้อความ Assistant, กำลัง Loading บทสนทนา (`messagesLoading`), กำลัง Streaming/Sending, ข้อความล่าสุดมี `incomplete: true`, หรือ `!nativeHealth?.inference_available` จะไม่แสดงคำถามแนะนำ
+4. UI แยกแสดง Loading / Empty / Error (Fail-soft ไม่กระทบแชทหลัก) / Success ได้ถูกต้องทั้งบนหน้าจอ Desktop และ Mobile
+5. มี Unit Tests และ UI Tests ผ่านครบทุกเงื่อนไข โดยไม่เรียก External AI API ภายนอก และไม่กระทบ Database Schema หรือ API Contract ของระบบหลัก
+
+#### Restrictions
+* **Documentation Only:** รอบงานปัจจุบันจำกัดเฉพาะการบันทึกข้อกำหนดลงใน `docs/engineering/ZYRQUEN_PHASE_READINESS.md` เท่านั้น
+* **ห้ามแก้ไข Code:** ห้ามแก้ไข `apps/web/`, `WorkspacePage`, Backend API, Database Schema, หรือ Dependencies ใดๆ ทั้งสิ้น
+* **ห้าม Implement / Train / Provision:** ห้ามเริ่มเขียนโค้ดฟีเจอร์นี้ ห้ามเปลี่ยนแปลง Atomic Version Reservation / No Auto-Promotion rules ของ `ModelRegistry` และห้าม Train หรือดาวน์โหลด Dataset/Weights
+
 ---
 
 ## 3. Phase 11.x — Future Work Packages (Long-Term Unapproved Roadmap)
