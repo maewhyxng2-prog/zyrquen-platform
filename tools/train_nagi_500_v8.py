@@ -184,9 +184,22 @@ def main():
     data_dir = Path(args.data)
     train_rows = load_jsonl(data_dir / "train.jsonl")
     val_rows = load_jsonl(data_dir / "val.jsonl")
+    test_rows = load_jsonl(data_dir / "test.jsonl")
     if not train_rows or not val_rows:
         print(f"BLOCKED empty dataset in {data_dir}")
         return
+
+    empty_tgt = sum(1 for r in train_rows + val_rows if not r.get("target", "").strip())
+    if empty_tgt > 0:
+        print(f"BLOCKED empty target count: {empty_tgt}")
+        return
+
+    if test_rows:
+        train_ids = {r["id"] for r in train_rows if "id" in r}
+        test_ids = {r["id"] for r in test_rows if "id" in r}
+        if train_ids & test_ids:
+            print("BLOCKED train/test ID overlap detected")
+            return
 
     vocab = build_vocab(train_rows)
     stoi = {tok: idx for idx, tok in enumerate(vocab)}
@@ -220,6 +233,7 @@ def main():
     dec = PointerDecoder(VOCAB_SIZE, EMB_DIM, HID_DIM)
     model = Seq2Seq(enc, dec, device).to(device)
     total_params = sum(p.numel() for p in model.parameters())
+    print(f"Model: seq2seq_attn_pointer | hid_dim={HID_DIM} | vocab={VOCAB_SIZE} | params={total_params}")
 
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
     criterion = nn.NLLLoss(ignore_index=pad_id)
@@ -240,6 +254,7 @@ def main():
     best_val_loss = float("inf")
     best_step = 0
     best_val_state = None
+    best_optimizer_state = None
     train_losses = []
 
     for step in range(1, args.steps + 1):
@@ -261,23 +276,88 @@ def main():
 
         if step % args.eval_every == 0 or step == args.steps:
             val_loss = eval_val_loss()
+            print(f"step {step}/{args.steps} | train_loss={float(loss.item()):.4f} | val_loss={val_loss:.4f}")
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 best_step = step
                 best_val_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                best_optimizer_state = optimizer.state_dict()
 
     if best_val_state is not None:
         model.load_state_dict(best_val_state)
         print(f"Restored best_val_state from step {best_step} | best_val_loss: {best_val_loss:.4f}")
+    else:
+        best_val_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        best_optimizer_state = optimizer.state_dict()
+
+    final_val_loss = eval_val_loss()
+    last10 = train_losses[-10:] if train_losses else [0.0]
+    avg_train_loss = sum(last10) / max(1, len(last10))
 
     elapsed_sec = round(time.time() - t0, 2)
     max_rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_tmp = out_dir / f"step_{args.steps}.pt.tmp"
     ckpt_path = out_dir / f"step_{args.steps}.pt"
 
     save_checkpoint(
         {
+            "arch": "seq2seq_attn_pointer",
+            "hid_dim": HID_DIM,
+            "emb_dim": EMB_DIM,
+            "vocab": vocab,
+            "vocab_source": "train-only",
+            "tokenizer": "token-level",
+            "dataset": str(data_dir),
+            "seed": args.seed,
+            "from_scratch": True,
             "step": args.steps,
             "best_step": best_step,
+            "best_val_loss": best_val_loss,
+            "val_loss": final_val_loss,
+            "train_loss_last10": avg_train_loss,
+            "params": total_params,
+            "elapsed_sec": elapsed_sec,
+            "max_rss_kb": max_rss_kb,
+            "model_state": model.state_dict(),
+            "best_val_state": best_val_state,
+            "optimizer_state": best_optimizer_state,
+        },
+        ckpt_tmp,
+    )
+    ckpt_tmp.rename(ckpt_path)
+    ckpt_sha = sha256_file(ckpt_path)
+
+    metrics = {
+        "arch": "seq2seq_attn_pointer",
+        "hid_dim": HID_DIM,
+        "emb_dim": EMB_DIM,
+        "vocab_size": VOCAB_SIZE,
+        "vocab_source": "train-only",
+        "tokenizer": "token-level",
+        "dataset": str(data_dir),
+        "seed": args.seed,
+        "from_scratch": True,
+        "step": args.steps,
+        "best_step": best_step,
+        "best_val_loss": best_val_loss,
+        "val_loss": final_val_loss,
+        "train_loss_last10": avg_train_loss,
+        "params": total_params,
+        "elapsed_sec": elapsed_sec,
+        "max_rss_kb": max_rss_kb,
+        "sha256": ckpt_sha,
+    }
+    metrics_tmp = out_dir / "metrics.json.tmp"
+    metrics_path = out_dir / "metrics.json"
+    metrics_tmp.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
+    metrics_tmp.rename(metrics_path)
+
+    print(f"Saved {ckpt_path} (sha256={ckpt_sha})")
+    print(f"Params: {total_params} | Elapsed: {elapsed_sec}s | Peak RAM KB: {max_rss_kb}")
+
+
+if __name__ == "__main__":
+    main()
