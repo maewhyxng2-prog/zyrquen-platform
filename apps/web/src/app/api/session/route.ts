@@ -6,6 +6,7 @@ import {
   EMAIL_COOKIE,
   buildSessionCookieOptions,
 } from "@/lib/cookies";
+import { verifyInMemorySession } from "@/lib/in-memory-backend";
 
 function clearSessionCookies(request: NextRequest, response: NextResponse) {
   const expiredCookie = buildSessionCookieOptions(request, 0);
@@ -124,16 +125,20 @@ export async function GET(request: NextRequest) {
   const authorization = `Bearer ${accessToken}`;
 
   if (!baseUrl) {
-    return NextResponse.json(
-      {
-        authenticated: false,
-        email: null,
-        userId: null,
-        verified: false,
-        error: "ค่า ZYRQUEN_API_BASE_URL ไม่ถูกต้องสำหรับตรวจสอบเซสชัน",
-      },
-      { status: 503, headers: { "Cache-Control": "no-store" } },
-    );
+    if (hasExplicitUrl) {
+      return NextResponse.json(
+        {
+          authenticated: false,
+          email: null,
+          userId: null,
+          verified: false,
+          error: "ค่า ZYRQUEN_API_BASE_URL ไม่ถูกต้องสำหรับตรวจสอบเซสชัน",
+        },
+        { status: 503, headers: { "Cache-Control": "no-store" } },
+      );
+    }
+    const localSession = verifyInMemorySession(accessToken);
+    return buildSessionResponse(request, localSession.status, localSession.payload);
   }
 
   let upstream: Response;
@@ -145,9 +150,13 @@ export async function GET(request: NextRequest) {
         Accept: "application/json",
       },
       cache: "no-store",
-      signal: AbortSignal.timeout(hasExplicitUrl ? 10_000 : 1_500),
+      signal: AbortSignal.timeout(hasExplicitUrl ? 10_000 : 300),
     });
   } catch {
+    if (!hasExplicitUrl) {
+      const localSession = verifyInMemorySession(accessToken);
+      return buildSessionResponse(request, localSession.status, localSession.payload);
+    }
     return NextResponse.json(
       {
         authenticated: false,

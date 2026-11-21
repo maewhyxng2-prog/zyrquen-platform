@@ -941,6 +941,26 @@ a { color: inherit; text-decoration: none; }
   font-size: 11px;
   line-height: 1.55;
 }
+.progress-chart-box {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #1e2b37;
+  border-radius: var(--radius-sm);
+  background: #0d161f;
+  padding: 15px 16px;
+}
+.progress-chart-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.progress-chart-stage {
+  width: 100%;
+  height: 148px;
+  min-width: 0;
+}
 
 .radar-panel { display: grid; gap: 16px; }
 .radar-description {

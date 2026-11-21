@@ -7,6 +7,10 @@ import {
   EMAIL_COOKIE,
   buildSessionCookieOptions,
 } from "@/lib/cookies";
+import {
+  handleInMemoryBackendRequest,
+  verifyInMemorySession,
+} from "@/lib/in-memory-backend";
 
 type RouteContext = {
   params: Promise<{ path: string[] }>;
@@ -149,7 +153,7 @@ async function proxy(request: NextRequest, context: RouteContext) {
   if (accessToken && path !== "auth/login" && path !== "auth/register") {
     headers.set("Authorization", `Bearer ${accessToken}`);
   }
-  if (!baseUrl) {
+  if (!baseUrl && hasExplicitUrl) {
     return NextResponse.json(
       {
         detail:
@@ -158,6 +162,8 @@ async function proxy(request: NextRequest, context: RouteContext) {
       { status: 503 },
     );
   }
+
+  let useInMemory = !baseUrl;
 
   if (requiresExpectedIdentity) {
     const expectedUserId = request.headers
@@ -176,34 +182,50 @@ async function proxy(request: NextRequest, context: RouteContext) {
     let identityErrorText = "";
     let identityContentType = "application/json";
 
-    try {
-      const identityResponse = await fetch(`${baseUrl}/auth/me`, {
-        method: "GET",
-        headers: {
-          Authorization: authorizationHeader,
-          Accept: "application/json",
-        },
-        cache: "no-store",
-        signal: AbortSignal.any([
-          request.signal,
-          AbortSignal.timeout(hasExplicitUrl ? 10_000 : 1_500),
-        ]),
-      });
-      identityStatus = identityResponse.status;
-      identityContentType =
-        identityResponse.headers.get("content-type") ?? "application/json";
-      if (identityResponse.ok) {
-        identityPayload = (await identityResponse.json().catch(() => null)) as
-          | { id?: unknown; is_active?: unknown }
-          | null;
-      } else {
-        identityErrorText = await identityResponse.text();
+    if (!useInMemory && baseUrl) {
+      try {
+        const identityResponse = await fetch(`${baseUrl}/auth/me`, {
+          method: "GET",
+          headers: {
+            Authorization: authorizationHeader,
+            Accept: "application/json",
+          },
+          cache: "no-store",
+          signal: AbortSignal.any([
+            request.signal,
+            AbortSignal.timeout(hasExplicitUrl ? 10_000 : 300),
+          ]),
+        });
+        identityStatus = identityResponse.status;
+        identityContentType =
+          identityResponse.headers.get("content-type") ?? "application/json";
+        if (identityResponse.ok) {
+          identityPayload = (await identityResponse.json().catch(() => null)) as
+            | { id?: unknown; is_active?: unknown }
+            | null;
+        } else {
+          identityErrorText = await identityResponse.text();
+        }
+      } catch {
+        if (!hasExplicitUrl) {
+          useInMemory = true;
+        } else {
+          return NextResponse.json(
+            { detail: "ไม่สามารถยืนยันบัญชีกับ ZYRQUEN API ได้" },
+            { status: 503 },
+          );
+        }
       }
-    } catch {
-      return NextResponse.json(
-        { detail: "ไม่สามารถยืนยันบัญชีกับ ZYRQUEN API ได้" },
-        { status: 503 },
-      );
+    }
+
+    if (useInMemory) {
+      const localIdentity = verifyInMemorySession(accessToken);
+      identityStatus = localIdentity.status;
+      identityPayload = localIdentity.payload as {
+        id?: unknown;
+        is_active?: unknown;
+      };
+      identityErrorText = JSON.stringify(localIdentity.payload);
     }
 
     if (identityStatus < 200 || identityStatus >= 300) {
@@ -242,32 +264,47 @@ async function proxy(request: NextRequest, context: RouteContext) {
     }
   }
 
-  let upstream: Response;
-  const upstreamUrl = path ? `${baseUrl}/${path}` : `${baseUrl}/`;
-  try {
-    const timeoutMs = isInferenceRequest
-      ? 120_000
-      : hasExplicitUrl
-        ? 20_000
-        : 1_500;
-    upstream = await fetch(upstreamUrl, {
+  let upstream: Response | null = null;
+  const upstreamUrl = baseUrl ? (path ? `${baseUrl}/${path}` : `${baseUrl}/`) : "";
+  if (!useInMemory && upstreamUrl) {
+    try {
+      const timeoutMs = isInferenceRequest
+        ? 120_000
+        : hasExplicitUrl
+          ? 20_000
+          : 300;
+      upstream = await fetch(upstreamUrl, {
+        method,
+        headers,
+        body,
+        cache: "no-store",
+        signal: AbortSignal.any([
+          request.signal,
+          AbortSignal.timeout(timeoutMs),
+        ]),
+      });
+    } catch {
+      if (!hasExplicitUrl) {
+        useInMemory = true;
+      } else {
+        return NextResponse.json(
+          {
+            detail:
+              "ไม่สามารถเชื่อมต่อกับ ZYRQUEN API ที่กำหนดไว้ได้ กรุณาตรวจสอบว่าบริการ API กำลังทำงานอยู่",
+          },
+          { status: 503 },
+        );
+      }
+    }
+  }
+
+  if (useInMemory || !upstream) {
+    upstream = await handleInMemoryBackendRequest({
       method,
-      headers,
-      body,
-      cache: "no-store",
-      signal: AbortSignal.any([
-        request.signal,
-        AbortSignal.timeout(timeoutMs),
-      ]),
+      path,
+      authorizationHeader: headers.get("Authorization"),
+      rawBody: body,
     });
-  } catch {
-    return NextResponse.json(
-      {
-        detail:
-          "ไม่สามารถเชื่อมต่อกับ ZYRQUEN API ที่กำหนดไว้ได้ กรุณาตรวจสอบว่าบริการ API กำลังทำงานอยู่",
-      },
-      { status: 503 },
-    );
   }
 
   if (path === "auth/login" && upstream.ok) {

@@ -2,6 +2,17 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { PageHeader } from "@/components/PageHeader";
 import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -20,6 +31,43 @@ function valueForHealth(ok: boolean | null, label: string, hasError = false) {
   return ok
     ? { text: label, tone: "good" as const }
     : { text: "ทำงานไม่สมบูรณ์", tone: "warn" as const };
+}
+
+type ProgressDatum = {
+  metric: string;
+  score: number;
+  target: number | null;
+  fill: string;
+};
+
+function ProgressTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload?: ProgressDatum }>;
+}) {
+  if (!active || !payload || payload.length === 0) {
+    return null;
+  }
+  const item = payload[0]?.payload;
+  if (!item) return null;
+
+  return (
+    <div className="radar-tooltip">
+      <strong>{item.metric}</strong>
+      <div className="radar-tooltip-row">
+        <span>คะแนนจาก Backend</span>
+        <span className="tabular-nums">{item.score.toFixed(1)}%</span>
+      </div>
+      {item.target !== null && (
+        <div className="radar-tooltip-row">
+          <span>เป้าหมาย</span>
+          <span className="tabular-nums">{item.target.toFixed(1)}%</span>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function DashboardPage() {
@@ -241,7 +289,15 @@ export default function DashboardPage() {
           {(() => {
             const pm = nativeHealth?.progress_metrics ?? null;
             const genScore = pm?.generalization_score ?? null;
+            const genTarget =
+              typeof pm?.generalization_target === "number"
+                ? pm.generalization_target
+                : null;
             const relScore = pm?.relational_reasoning_success_rate ?? null;
+            const relTarget =
+              typeof pm?.relational_reasoning_target === "number"
+                ? pm.relational_reasoning_target
+                : null;
             const hasAnyMetric = genScore !== null || relScore !== null;
 
             if (!hasAnyMetric) {
@@ -262,64 +318,185 @@ export default function DashboardPage() {
               );
             }
 
+            const chartData: ProgressDatum[] = [
+              ...(genScore !== null
+                ? [
+                    {
+                      metric: "Generalization Score",
+                      score: Math.min(100, Math.max(0, genScore)),
+                      target: genTarget,
+                      fill: "#45d6e8",
+                    },
+                  ]
+                : []),
+              ...(relScore !== null
+                ? [
+                    {
+                      metric: "Relational Reasoning",
+                      score: Math.min(100, Math.max(0, relScore)),
+                      target: relTarget,
+                      fill: "#5e9cff",
+                    },
+                  ]
+                : []),
+            ];
+
+            const sharedTarget =
+              genTarget !== null && relTarget !== null && genTarget === relTarget
+                ? genTarget
+                : genTarget ?? relTarget;
+
             return (
-              <div className="progress-metrics-grid">
-                <div className="progress-metric-block">
-                  <div className="progress-metric-head">
-                    <span className="metric-label">GENERALIZATION SCORE</span>
-                  </div>
-                  <div className="progress-metric-value tabular-nums">
-                    {genScore !== null ? `${genScore.toFixed(1)}%` : "ไม่ระบุ"}
-                  </div>
-                  {genScore !== null && (
-                    <div
-                      aria-label="แถบความคืบหน้า Generalization Score"
-                      className="progress-track"
-                    >
-                      <div
-                        className="progress-fill"
-                        style={{
-                          width: `${Math.min(100, Math.max(0, genScore))}%`,
-                        }}
-                      />
+              <>
+                <div className="progress-metrics-grid">
+                  <div className="progress-metric-block">
+                    <div className="progress-metric-head">
+                      <span className="metric-label">GENERALIZATION SCORE</span>
+                      {genTarget !== null && (
+                        <span className="progress-target tabular-nums">
+                          เป้าหมาย {genTarget.toFixed(1)}%
+                        </span>
+                      )}
                     </div>
-                  )}
-                  <p className="progress-metric-note">
-                    {pm?.metrics_source
-                      ? `แหล่งข้อมูลจาก Backend: ${pm.metrics_source}`
-                      : "ค่าที่รายงานจาก Backend"}
-                  </p>
+                    <div className="progress-metric-value tabular-nums">
+                      {genScore !== null ? `${genScore.toFixed(1)}%` : "ไม่ระบุ"}
+                    </div>
+                    {genScore !== null && (
+                      <div
+                        aria-label="แถบความคืบหน้า Generalization Score"
+                        className="progress-track"
+                      >
+                        <div
+                          className="progress-fill"
+                          style={{
+                            width: `${Math.min(100, Math.max(0, genScore))}%`,
+                          }}
+                        />
+                        {genTarget !== null && (
+                          <span
+                            className="progress-target-marker"
+                            style={{
+                              left: `${Math.min(100, Math.max(0, genTarget))}%`,
+                            }}
+                            title={`เป้าหมาย ${genTarget.toFixed(1)}%`}
+                          />
+                        )}
+                      </div>
+                    )}
+                    <p className="progress-metric-note">
+                      {pm?.metrics_source
+                        ? `แหล่งข้อมูลจาก Backend: ${pm.metrics_source}`
+                        : "ค่าที่รายงานจาก Backend"}
+                    </p>
+                  </div>
+
+                  <div className="progress-metric-block">
+                    <div className="progress-metric-head">
+                      <span className="metric-label">
+                        RELATIONAL REASONING SUCCESS RATE
+                      </span>
+                      {relTarget !== null && (
+                        <span className="progress-target tabular-nums">
+                          เป้าหมาย {relTarget.toFixed(1)}%
+                        </span>
+                      )}
+                    </div>
+                    <div className="progress-metric-value tabular-nums">
+                      {relScore !== null ? `${relScore.toFixed(1)}%` : "ไม่ระบุ"}
+                    </div>
+                    {relScore !== null && (
+                      <div
+                        aria-label="แถบความคืบหน้า Relational Reasoning Success Rate"
+                        className="progress-track"
+                      >
+                        <div
+                          className="progress-fill progress-fill-blue"
+                          style={{
+                            width: `${Math.min(100, Math.max(0, relScore))}%`,
+                          }}
+                        />
+                        {relTarget !== null && (
+                          <span
+                            className="progress-target-marker"
+                            style={{
+                              left: `${Math.min(100, Math.max(0, relTarget))}%`,
+                            }}
+                            title={`เป้าหมาย ${relTarget.toFixed(1)}%`}
+                          />
+                        )}
+                      </div>
+                    )}
+                    <p className="progress-metric-note">
+                      {pm?.metrics_source
+                        ? `แหล่งข้อมูลจาก Backend: ${pm.metrics_source}`
+                        : "ค่าที่รายงานจาก Backend"}
+                    </p>
+                  </div>
                 </div>
 
-                <div className="progress-metric-block">
-                  <div className="progress-metric-head">
+                <div className="progress-chart-box">
+                  <div className="progress-chart-head">
                     <span className="metric-label">
-                      RELATIONAL REASONING SUCCESS RATE
+                      PROGRESS COMPARISON · /v1/native-ai/health
                     </span>
+                    {sharedTarget !== null && (
+                      <span className="progress-target tabular-nums">
+                        เส้นอ้างอิงเป้าหมาย {sharedTarget.toFixed(1)}%
+                      </span>
+                    )}
                   </div>
-                  <div className="progress-metric-value tabular-nums">
-                    {relScore !== null ? `${relScore.toFixed(1)}%` : "ไม่ระบุ"}
+                  <div
+                    aria-label="กราฟเปรียบเทียบ Generalization Score และ Relational Reasoning Success Rate"
+                    className="progress-chart-stage"
+                  >
+                    <ResponsiveContainer height="100%" width="100%">
+                      <BarChart
+                        data={chartData}
+                        layout="vertical"
+                        margin={{ top: 6, right: 20, left: 10, bottom: 4 }}
+                      >
+                        <CartesianGrid
+                          horizontal={false}
+                          stroke="#223242"
+                          strokeDasharray="3 3"
+                        />
+                        <XAxis
+                          domain={[0, 100]}
+                          tick={{ fill: "#647589", fontSize: 10 }}
+                          tickFormatter={(value: number) => `${value}%`}
+                          type="number"
+                        />
+                        <YAxis
+                          dataKey="metric"
+                          tick={{ fill: "#9aaabc", fontSize: 11 }}
+                          type="category"
+                          width={150}
+                        />
+                        <Tooltip
+                          content={<ProgressTooltip />}
+                          cursor={{ fill: "rgba(69, 214, 232, 0.06)" }}
+                        />
+                        {sharedTarget !== null && (
+                          <ReferenceLine
+                            stroke="#a5eef7"
+                            strokeDasharray="4 4"
+                            x={sharedTarget}
+                          />
+                        )}
+                        <Bar
+                          barSize={22}
+                          dataKey="score"
+                          radius={[0, 6, 6, 0]}
+                        >
+                          {chartData.map((entry) => (
+                            <Cell fill={entry.fill} key={entry.metric} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
                   </div>
-                  {relScore !== null && (
-                    <div
-                      aria-label="แถบความคืบหน้า Relational Reasoning Success Rate"
-                      className="progress-track"
-                    >
-                      <div
-                        className="progress-fill progress-fill-blue"
-                        style={{
-                          width: `${Math.min(100, Math.max(0, relScore))}%`,
-                        }}
-                      />
-                    </div>
-                  )}
-                  <p className="progress-metric-note">
-                    {pm?.metrics_source
-                      ? `แหล่งข้อมูลจาก Backend: ${pm.metrics_source}`
-                      : "ค่าที่รายงานจาก Backend"}
-                  </p>
                 </div>
-              </div>
+              </>
             );
           })()}
 

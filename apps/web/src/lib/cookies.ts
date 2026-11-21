@@ -25,7 +25,7 @@ export function buildSessionCookieOptions(request?: NextRequest, maxAge = SESSIO
   const https = isHttpsRequest(request);
   return {
     httpOnly: true,
-    sameSite: "lax" as const,
+    sameSite: (https ? "none" : "lax") as "none" | "lax",
     secure: https,
     path: "/",
     maxAge,

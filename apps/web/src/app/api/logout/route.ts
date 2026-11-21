@@ -6,6 +6,7 @@ import {
   EMAIL_COOKIE,
   buildSessionCookieOptions,
 } from "@/lib/cookies";
+import { logoutInMemorySession } from "@/lib/in-memory-backend";
 
 function clearCookies(request: NextRequest, response: NextResponse) {
   const expired = buildSessionCookieOptions(request, 0);
@@ -32,15 +33,23 @@ export async function POST(request: NextRequest) {
   const authorization = `Bearer ${accessToken}`;
 
   if (!baseUrl) {
-    const response = NextResponse.json(
-      {
-        authenticated: false,
-        revoked: false,
-        detail:
-          "ล้างคุกกี้ในเบราว์เซอร์แล้ว แต่ค่า ZYRQUEN_API_BASE_URL ไม่ถูกต้อง จึงไม่สามารถเพิกถอน Token ฝั่ง Backend ได้",
-      },
-      { status: 503, headers: { "Cache-Control": "no-store" } },
-    );
+    if (hasExplicitUrl) {
+      const response = NextResponse.json(
+        {
+          authenticated: false,
+          revoked: false,
+          detail:
+            "ล้างคุกกี้ในเบราว์เซอร์แล้ว แต่ค่า ZYRQUEN_API_BASE_URL ไม่ถูกต้อง จึงไม่สามารถเพิกถอน Token ฝั่ง Backend ได้",
+        },
+        { status: 503, headers: { "Cache-Control": "no-store" } },
+      );
+      clearCookies(request, response);
+      return response;
+    }
+    const result = logoutInMemorySession(accessToken);
+    const response = NextResponse.json(result, {
+      headers: { "Cache-Control": "no-store" },
+    });
     clearCookies(request, response);
     return response;
   }
@@ -54,9 +63,17 @@ export async function POST(request: NextRequest) {
         Accept: "application/json",
       },
       cache: "no-store",
-      signal: AbortSignal.timeout(hasExplicitUrl ? 10_000 : 1_500),
+      signal: AbortSignal.timeout(hasExplicitUrl ? 10_000 : 300),
     });
   } catch {
+    if (!hasExplicitUrl) {
+      const result = logoutInMemorySession(accessToken);
+      const response = NextResponse.json(result, {
+        headers: { "Cache-Control": "no-store" },
+      });
+      clearCookies(request, response);
+      return response;
+    }
     const response = NextResponse.json(
       {
         authenticated: false,
