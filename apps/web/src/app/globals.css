@@ -80,18 +80,10 @@ a { color: inherit; text-decoration: none; }
   transition: margin 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .brand-mark {
-  display: grid;
-  width: 34px;
-  height: 34px;
+  display: block;
+  width: 38px;
+  height: 38px;
   flex: 0 0 auto;
-  place-items: center;
-  border: 1px solid #2b8392;
-  border-radius: 9px;
-  background: linear-gradient(145deg, #123540, #101c27);
-  color: #83eff7;
-  font-family: var(--font-display);
-  font-size: 23px;
-  font-weight: 700;
 }
 .brand-copy {
   display: grid;
@@ -688,7 +680,7 @@ a { color: inherit; text-decoration: none; }
 .auth-orbit-two { right: -24%; bottom: -50%; width: min(72vw, 820px); }
 .auth-card { position: relative; z-index: 1; width: min(100%, 420px); border: 1px solid #293a47; border-radius: 14px; background: linear-gradient(145deg, rgb(17 27 37 / 98%), rgb(11 19 27 / 99%)); box-shadow: 0 28px 90px rgb(0 0 0 / 35%); padding: 28px; }
 .auth-card-brand { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #22313d; padding-bottom: 18px; }
-.brand-mark-large { width: 39px; height: 39px; font-size: 27px; }
+.brand-mark-large { width: 44px; height: 44px; }
 .auth-card-brand > div { display: grid; gap: 2px; }
 .auth-card-brand strong { color: #bbc9d7; font-size: 10px; font-weight: 550; }
 .auth-heading { margin-top: 22px; }

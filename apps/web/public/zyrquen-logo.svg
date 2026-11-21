@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="64" viewBox="0 0 320 64" role="img" aria-labelledby="title">
+  <title id="title">ZYRQUEN</title>
+  <defs>
+    <linearGradient id="wordmark" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#102b46"/>
+      <stop offset=".55" stop-color="#176a9b"/>
+      <stop offset="1" stop-color="#25a3c4"/>
+    </linearGradient>
+    <linearGradient id="metal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#c5fbff"/><stop offset=".28" stop-color="#56d7e8"/><stop offset=".62" stop-color="#1685b8"/><stop offset="1" stop-color="#b6f8ff"/>
+    </linearGradient>
+    <linearGradient id="glass" x1=".12" y1="0" x2=".88" y2="1">
+      <stop offset="0" stop-color="#183d59"/><stop offset=".48" stop-color="#10263e"/><stop offset="1" stop-color="#07111d"/>
+    </linearGradient>
+    <radialGradient id="core-light" cx=".35" cy=".2" r=".95">
+      <stop offset="0" stop-color="#efffff"/><stop offset=".34" stop-color="#6ceaff"/><stop offset="1" stop-color="#1684c8"/>
+    </radialGradient>
+    <filter id="soft-glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="2.1" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <style>
+      .orbit { transform-box: fill-box; transform-origin: center; animation: orbit-turn 34s linear infinite; }
+      .core { transform-box: fill-box; transform-origin: center; animation: core-turn 26s linear infinite; }
+      .pulse { transform-box: fill-box; transform-origin: center; animation: soft-pulse 4.8s ease-in-out infinite; }
+      .trace { stroke-dasharray: 14 150; stroke-dashoffset: 164; animation: trace-run 6.4s linear infinite; }
+      .wordmark { fill: url(#wordmark); font: 750 32px/1 "Inter", "Segoe UI", Arial, sans-serif; letter-spacing: 4px; }
+      @keyframes orbit-turn { to { transform: rotate(360deg); } }
+      @keyframes core-turn { to { transform: rotate(-360deg); } }
+      @keyframes soft-pulse { 0%, 100% { opacity: .25; transform: scale(.96); } 50% { opacity: .62; transform: scale(1.035); } }
+      @keyframes trace-run { to { stroke-dashoffset: 0; } }
+      @media (prefers-reduced-motion: reduce) {
+        .orbit, .core, .pulse, .trace { animation: none !important; }
+        .pulse { opacity: .4; }
+        .trace { stroke-dasharray: none; stroke-dashoffset: 0; }
+      }
+    </style>
+  </defs>
+  <svg x="0" y="0" width="64" height="64" viewBox="0 0 64 64" aria-hidden="true">
+    <circle class="pulse" cx="32" cy="32" r="28" fill="none" stroke="#52dff3" stroke-width="1.2" filter="url(#soft-glow)"/>
+    <g class="orbit" fill="none">
+      <ellipse cx="32" cy="32" rx="27" ry="13" transform="rotate(-34 32 32)" stroke="#59cde2" stroke-opacity=".48" stroke-width="1"/>
+      <circle cx="55.3" cy="20.2" r="2" fill="#c4fbff" filter="url(#soft-glow)"/><circle cx="8.7" cy="43.8" r="1.5" fill="#44b9e2"/>
+    </g>
+    <path d="M32 5.5 54.5 18.5v27L32 58.5 9.5 45.5v-27L32 5.5Z" fill="url(#glass)" stroke="url(#metal)" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="m32 11.5 17 9.8v19.4l-17 9.8-17-9.8V21.3l17-9.8Z" fill="#0b1c2b" fill-opacity=".72" stroke="#7eeaff" stroke-opacity=".62" stroke-width="1"/>
+    <path d="m32 14.5 13.5 7.8v15.4L32 45.5l-13.5-7.8V22.3L32 14.5Z" fill="url(#glass)" stroke="#a9f5ff" stroke-opacity=".42" stroke-width=".8"/>
+    <g class="core" filter="url(#soft-glow)">
+      <path d="M22.5 23.2h19L22.5 35h19" fill="none" stroke="url(#core-light)" stroke-width="3.1" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="32" cy="29.1" r="2" fill="#f3ffff"/>
+    </g>
+    <path class="trace" d="M32 5.5 54.5 18.5v27L32 58.5 9.5 45.5v-27L32 5.5Z" fill="none" stroke="#f1ffff" stroke-opacity=".92" stroke-width="1.2" stroke-linecap="round" filter="url(#soft-glow)"/>
+  </svg>
+  <text class="wordmark" x="80" y="42">ZYRQUEN</text>
+</svg>

@@ -1,8 +1,78 @@
 # ZYRQUEN Ω∞
 
-Independent online AI platform and native intelligence infrastructure.
+Software for an AI platform under development. The repository includes a web
+client, API, native-model infrastructure, and contract-level intelligence
+components; it does not include trained model weights or prove production
+readiness.
 
-## What is in this repository
+<picture>
+  <source media="(forced-colors: active)" srcset="apps/web/public/zyrquen-logo-mono.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="apps/web/public/zyrquen-logo-mono.svg">
+  <img src="apps/web/public/zyrquen-logo.svg" width="640" height="128" alt="ZYRQUEN animated geometric logo">
+</picture>
+
+The logo is native vector SVG with CSS motion and a `prefers-reduced-motion`
+fallback. See the [brand assets](#brand-assets) for icon and monochrome variants.
+
+## Status by evidence
+
+| Category | Current status |
+| --- | --- |
+| **Implemented** | Next.js web application; FastAPI routes for account access, inference, conversations, usage, training/evaluation, and administration; native tokenizer/model/training source; Phase 9 intelligence contracts. |
+| **Validated** | Phase 9 contract tests and SVG safety/accessibility checks are run separately. The complete repository suite still has known failures; see [verification](#verification). |
+| **Blocked** | Native inference requires a local compatible model artifact, which is not included. Production database concurrency/migrations and public deployment require separately provisioned, approved infrastructure. |
+| **Not implemented** | A trained ZYRQUEN model, model-backed reasoning or learning, real tool execution, generated-code execution, application file creation/build, and public cloud deployment. |
+
+Implemented source code does not by itself mean a feature is operational or
+validated. The [Phase 9 status](docs/PHASE_9_STATUS.md) distinguishes contract
+validation from model capability. The [known limitations](docs/operations/KNOWN_LIMITATIONS.md)
+document tracks production blockers.
+
+## Architecture at a glance
+
+| Layer | Repository location | Current boundary |
+| --- | --- | --- |
+| Web client | `apps/web/` | Next.js dashboard, login, workspace, settings, and status views. |
+| API | `apps/api/` | FastAPI routes, authentication, authorization, quotas, and database access. |
+| Native runtime | `apps/core/` | Local model loader/runtime, tokenizer, dataset and training code. Inference is unavailable without a compatible local artifact. |
+| Intelligence contracts | `apps/core/intelligence/` | Knowledge lookup, structural reasoning/planning, feedback, permission, coding/application contracts, evaluation evidence, and contract-level integration. Not model-backed. |
+| Infrastructure | `docker-compose.yml`, `apps/api/Dockerfile` | Local/single-host container configuration; not proof of a cloud deployment. |
+
+Browser requests go through an allowlisted same-origin Next.js proxy before
+reaching the FastAPI service. Phase 9's `IntelligenceRuntime` is a software
+contract layer; it is not connected as a native model reasoning engine.
+
+## Roadmap
+
+- **Current:** stabilize and verify the existing web/API and native-core code;
+  close the production blockers listed in
+  [known limitations](docs/operations/KNOWN_LIMITATIONS.md).
+- **Native model:** prepare data and training infrastructure, then train and
+  evaluate an actual model artifact before claiming native intelligence.
+- **Intelligence:** evolve Phase 9 contracts only after trusted evidence,
+  permissions, and safe execution backends exist.
+- **Production:** validate PostgreSQL migrations/concurrency, then provision and
+  test a real deployment; none is currently claimed.
+
+See the [development roadmap](docs/roadmap/01_ZYRQUEN_Roadmap.md) and
+[next-steps snapshot](docs/NEXT_STEPS_STATUS.md) for additional context.
+
+## Brand assets
+
+All assets are transparent, hand-authored vector SVGs with no embedded bitmap,
+script, or external resource:
+
+| Asset | Color | Monochrome |
+| --- | --- | --- |
+| Animated lockup | [zyrquen-logo.svg](apps/web/public/zyrquen-logo.svg) | [zyrquen-logo-mono.svg](apps/web/public/zyrquen-logo-mono.svg) |
+| Animated symbol | [zyrquen-icon.svg](apps/web/public/zyrquen-icon.svg) | [zyrquen-icon-mono.svg](apps/web/public/zyrquen-icon-mono.svg) |
+| Wordmark | [zyrquen-wordmark.svg](apps/web/public/zyrquen-wordmark.svg) | [zyrquen-wordmark-mono.svg](apps/web/public/zyrquen-wordmark-mono.svg) |
+
+The icon is used in the dashboard, login header, and browser tab. Motion is
+disabled by each animated SVG when the operating system requests reduced motion.
+Monochrome assets use the system text color for dark mode and forced-colors mode.
+
+## Repository contents
 
 - `apps/web/`: Next.js App Router frontend for login, the AI workspace, account
   settings, training/evaluation views, and administration.
@@ -16,10 +86,10 @@ Independent online AI platform and native intelligence infrastructure.
   startup.
 - `docker-compose.yml`: local Web, API, and PostgreSQL services.
 
-The API uses the configured local ZYRQUEN model artifact. Model weights are
-not included in this repository. Without a loadable artifact, the API can start
-in degraded mode, but native inference is unavailable. Inference also fails
-closed when the account has no active quota policy.
+The API uses a configured local ZYRQUEN model artifact. Model weights are not
+included in this repository. Without a loadable artifact, the API can start in
+degraded mode, but native inference is unavailable. Inference also fails closed
+when the account has no active quota policy.
 
 ## Local development
 
@@ -101,9 +171,15 @@ to connect as a trusted proxy or pass through an unsanitized forwarded header.
 Login failures are limited per account identifier and globally per derived
 client IP. Failed-login responses do not disclose whether an account exists.
 
-## Checks
+## Verification
 
-Web tests and static checks:
+The Phase 9 contract suite and SVG asset checks:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD:$PWD/apps/api" pytest -q tests
+```
+
+Web tests and static checks (dependencies are managed by the root npm workspace):
 
 ```bash
 npm run test
@@ -128,6 +204,13 @@ SQLite is used only for unit tests. PostgreSQL-specific migration and
 row-locking behavior must be validated against an explicitly identified
 non-production Test database. Native PyTorch-dependent tests may be skipped
 when PyTorch is not installed.
+
+The full repository suite is not currently all-green: the known failures are
+`apps/api/test_auth_gate.py::test_multi_user_isolation_and_backend_authorization`
+(the test passes an unsupported `user_id` to `EvaluationRun`) and four tests in
+`apps/core/native/test_evaluation.py` (the tests pass unsupported
+`max_val_loss`/`max_perplexity` constructor arguments). These are outside the
+Phase 9 and branding changes.
 
 ## Phase 7 production operations
 

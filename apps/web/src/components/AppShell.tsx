@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -184,10 +185,18 @@ export function AppShell({ children }: { children: ReactNode }) {
               href="/"
               onClick={() => setMobileOpen(false)}
             >
-              <span className="brand-mark">Ω</span>
+              <Image
+                alt=""
+                className="brand-mark"
+                height={40}
+                priority
+                src="/zyrquen-icon.svg"
+                unoptimized
+                width={40}
+              />
               <span className="brand-copy">
                 <strong>ZYRQUEN Ω∞</strong>
-                <small>แพลตฟอร์ม AI ออนไลน์</small>
+                <small>แพลตฟอร์ม AI ระหว่างพัฒนา</small>
               </span>
             </Link>
 
@@ -353,10 +362,18 @@ export function AppShell({ children }: { children: ReactNode }) {
               className="brand-lockup"
               href="/"
             >
-              <span className="brand-mark">Ω</span>
+              <Image
+                alt=""
+                className="brand-mark"
+                height={40}
+                priority
+                src="/zyrquen-icon.svg"
+                unoptimized
+                width={40}
+              />
               <span className="brand-copy">
                 <strong>ZYRQUEN Ω∞</strong>
-                <small>แพลตฟอร์ม AI ออนไลน์</small>
+                <small>แพลตฟอร์ม AI ระหว่างพัฒนา</small>
               </span>
             </Link>
 

@@ -4,10 +4,11 @@ import { AppShell } from "@/components/AppShell";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "ZYRQUEN Ω∞ · แพลตฟอร์มอัจฉริยะ",
+  title: "ZYRQUEN Ω∞ · แพลตฟอร์ม AI ระหว่างพัฒนา",
   description:
-    "แพลตฟอร์ม AI ที่พัฒนาขึ้นเพื่อให้คุณสามารถใช้งานระบบปัญญาประดิษฐ์ผ่านเครือข่ายออนไลน์ได้อย่างสะดวกและเป็นระบบ",
+    "ส่วนติดต่อเว็บและ API สำหรับแพลตฟอร์ม AI ระหว่างพัฒนา การอนุมาน Native Model ต้องมีการกำหนด model artifact",
   applicationName: "ZYRQUEN Ω∞",
+  icons: { icon: "/zyrquen-icon.svg" },
 };
 
 export const viewport: Viewport = {

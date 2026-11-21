@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -156,8 +157,15 @@ export default function LoginPage() {
       <div className="auth-orbit auth-orbit-two" />
       <section aria-labelledby="auth-title" className="auth-card">
         <div className="auth-card-brand">
-          <span className="brand-mark brand-mark-large">Ω</span>
-          <div><span className="eyebrow">ZYRQUEN Ω∞</span><strong>แพลตฟอร์ม AI ออนไลน์</strong></div>
+          <Image
+            alt=""
+            className="brand-mark brand-mark-large"
+            height={44}
+            src="/zyrquen-icon.svg"
+            unoptimized
+            width={44}
+          />
+          <div><span className="eyebrow">ZYRQUEN Ω∞</span><strong>แพลตฟอร์ม AI ระหว่างพัฒนา</strong></div>
         </div>
         {signedIn ? (
           <div className="auth-signed-in">

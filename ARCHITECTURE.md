@@ -83,5 +83,10 @@ Native AI Core: Not yet implemented.
 Cloud deployment: Not yet implemented.
 Public launch: Not yet implemented.
 
+The Phase 9 intelligence package contains contract-level implementations and a
+runtime integration validator. This does not constitute native model inference,
+training, production integrations, or generated application execution; see
+[`docs/PHASE_9_STATUS.md`](docs/PHASE_9_STATUS.md) for verified scope and limits.
+
 ## 9. Long-term Objective
 Deliver ZYRQUEN Ω∞ as an independent, scalable, internet-connected AI platform that can serve multiple users and evolve its own native intelligence capabilities.

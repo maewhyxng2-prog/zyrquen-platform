@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="64" viewBox="0 0 320 64" role="img" aria-labelledby="title">
+  <title id="title">ZYRQUEN, monochrome</title>
+  <style>
+    svg { color: #17212b; }
+    .orbit { transform-box: fill-box; transform-origin: center; animation: orbit-turn 34s linear infinite; }
+    .core { transform-box: fill-box; transform-origin: center; animation: core-turn 26s linear infinite; }
+    .pulse { transform-box: fill-box; transform-origin: center; animation: soft-pulse 4.8s ease-in-out infinite; }
+    .trace { stroke-dasharray: 14 150; stroke-dashoffset: 164; animation: trace-run 6.4s linear infinite; }
+    .wordmark { fill: currentColor; font: 750 32px/1 "Inter", "Segoe UI", Arial, sans-serif; letter-spacing: 4px; }
+    @keyframes orbit-turn { to { transform: rotate(360deg); } }
+    @keyframes core-turn { to { transform: rotate(-360deg); } }
+    @keyframes soft-pulse { 0%, 100% { opacity: .12; transform: scale(.96); } 50% { opacity: .5; transform: scale(1.035); } }
+    @keyframes trace-run { to { stroke-dashoffset: 0; } }
+    @media (prefers-color-scheme: dark) { svg { color: #f3f8fc; } }
+    @media (forced-colors: active) { svg { color: CanvasText; } }
+    @media (prefers-reduced-motion: reduce) {
+      .orbit, .core, .pulse, .trace { animation: none !important; }
+      .pulse { opacity: .3; }
+      .trace { stroke-dasharray: none; stroke-dashoffset: 0; }
+    }
+  </style>
+  <svg x="0" y="0" width="64" height="64" viewBox="0 0 64 64" aria-hidden="true">
+    <circle class="pulse" cx="32" cy="32" r="28" fill="none" stroke="currentColor" stroke-width="1.2"/>
+    <g class="orbit" fill="none">
+      <ellipse cx="32" cy="32" rx="27" ry="13" transform="rotate(-34 32 32)" stroke="currentColor" stroke-opacity=".5" stroke-width="1"/>
+      <circle cx="55.3" cy="20.2" r="2" fill="currentColor"/><circle cx="8.7" cy="43.8" r="1.5" fill="currentColor"/>
+    </g>
+    <path d="M32 5.5 54.5 18.5v27L32 58.5 9.5 45.5v-27L32 5.5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+    <path d="m32 11.5 17 9.8v19.4l-17 9.8-17-9.8V21.3l17-9.8Z" fill="currentColor" fill-opacity=".08" stroke="currentColor" stroke-opacity=".65" stroke-width="1"/>
+    <path d="m32 14.5 13.5 7.8v15.4L32 45.5l-13.5-7.8V22.3L32 14.5Z" fill="none" stroke="currentColor" stroke-opacity=".7" stroke-width=".8"/>
+    <g class="core">
+      <path d="M22.5 23.2h19L22.5 35h19" fill="none" stroke="currentColor" stroke-width="3.1" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="32" cy="29.1" r="2" fill="currentColor"/>
+    </g>
+    <path class="trace" d="M32 5.5 54.5 18.5v27L32 58.5 9.5 45.5v-27L32 5.5Z" fill="none" stroke="currentColor" stroke-opacity=".75" stroke-width="1.2" stroke-linecap="round"/>
+  </svg>
+  <text class="wordmark" x="80" y="42">ZYRQUEN</text>
+</svg>
