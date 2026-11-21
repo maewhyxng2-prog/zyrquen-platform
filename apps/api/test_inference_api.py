@@ -1,7 +1,6 @@
-"""Phase 5.6 - Inference API.
+"""Phase 5.6 / Phase 10 - Inference API.
 Real-only, no mock engine.
-Tiny fixture is pipeline check.
-Not production weights.
+Tiny native fixture is pipeline check. Not ZYRQUEN trained production weights.
 """
 import json
 from pathlib import Path
@@ -17,7 +16,13 @@ from apps.api.main import app
 from apps.api.usage_models import UserQuotaPolicy
 from apps.core.inference import NativeInferenceEngine
 from apps.core.model_loader import NativeModelLoader
+from apps.core.native.config import ZyrquenConfig
+from apps.core.native.dataset import PrepConfig, Source, prepare_dataset
+from apps.core.native.registry import ModelRegistry
+from apps.core.native.tokenizer import BASE_VOCAB, N_SPECIAL, ZyrquenTokenizer
 from apps.core.runtime import runtime
+from apps.core.training_infrastructure.recovery.checkpoint_recovery import CheckpointManager
+
 
 def _init_loader(loader):
     if hasattr(loader, "initialize"):
@@ -26,74 +31,78 @@ def _init_loader(loader):
         return loader.load()
     raise AssertionError("no init")
 
-def _make_tiny_model_dir(path: Path) -> Path:
-    from tokenizers import Tokenizer
-    from tokenizers.models import WordLevel
-    from tokenizers.pre_tokenizers import Whitespace
-    from transformers import GPT2Config
-    from transformers import GPT2LMHeadModel
-    from transformers import PreTrainedTokenizerFast
+
+def _make_tiny_model_dir(
+    path: Path,
+    *,
+    max_seq_len: int = 128,
+    version: str = "ZYRQUEN-Native-0.1.0",
+) -> Path:
+    import torch
+    from apps.core.native.model import ZyrquenModel
 
     path.mkdir(parents=True, exist_ok=True)
-    base = [
-        "<|endoftext|>",
-        "[PAD]",
-        "[UNK]",
-        "hello",
-        "world",
-        "test",
-        "zyrquen",
-        "hi",
+    src = path / "corpus.jsonl"
+    docs = [
+        {"text": f"hello world test zyrquen hi sample document {i} สวัสดี"}
+        for i in range(40)
     ]
-    vocab = {}
-    for i, tok in enumerate(base):
-        vocab[tok] = i
-    idx = len(base)
-    while len(vocab) < 64:
-        tok = f"tok{idx}"
-        vocab[tok] = idx
-        idx += 1
+    src.write_text(
+        "\n".join(json.dumps(doc, ensure_ascii=False) for doc in docs),
+        encoding="utf-8",
+    )
+    ds_dir = path / "dataset"
+    prepare_dataset(
+        [Source(str(src), "test-fixture")],
+        ds_dir,
+        PrepConfig(val_fraction=0.1, test_fraction=0.1, version="0.1.0"),
+    )
 
-    wl = WordLevel(
-        vocab=vocab,
-        unk_token="[UNK]",
+    tok = ZyrquenTokenizer.train(
+        [doc["text"] for doc in docs],
+        BASE_VOCAB + 32,
+        version="0.1.0",
     )
-    tok_obj = Tokenizer(wl)
-    tok_obj.pre_tokenizer = Whitespace()
-    fast = PreTrainedTokenizerFast(
-        tokenizer_object=tok_obj,
-        unk_token="[UNK]",
-        pad_token="[PAD]",
-        eos_token="<|endoftext|>",
-        bos_token="<|endoftext|>",
-    )
-    fast.save_pretrained(str(path))
+    tok_path = path / "tokenizer.json"
+    tok.save(tok_path)
 
-    cfg = GPT2Config(
-        vocab_size=len(vocab),
-        n_layer=2,
-        n_head=2,
-        n_embd=32,
-        n_positions=128,
-        n_ctx=128,
-        pad_token_id=vocab["[PAD]"],
-        eos_token_id=vocab["<|endoftext|>"],
-        bos_token_id=vocab["<|endoftext|>"],
+    torch.manual_seed(7)
+    cfg = ZyrquenConfig(
+        vocab_size=tok.vocab_size,
+        max_seq_len=max_seq_len,
+        n_layers=2,
+        n_heads=2,
+        d_model=32,
+        d_ff=64,
     )
-    model = GPT2LMHeadModel(cfg)
-    model.save_pretrained(str(path))
-    return path
+    model = ZyrquenModel(cfg)
+    with torch.no_grad():
+        model.embed.weight[:N_SPECIAL].zero_()
+
+    ckpt_dir = path / "checkpoints"
+    CheckpointManager(ckpt_dir).save(
+        0,
+        {
+            "model": model.state_dict(),
+            "step": 0,
+            "model_config": cfg.to_dict(),
+            "tokenizer_sha256": tok.fingerprint(),
+            "dataset_version": "0.1.0",
+        },
+    )
+
+    reg_root = path / "registry"
+    registry = ModelRegistry(reg_root)
+    registry.register(version, ckpt_dir, tok_path, ds_dir, metrics={})
+    registry.promote(version)
+    return reg_root
+
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    mdir = _make_tiny_model_dir(
-        tmp_path / "tiny-56",
-    )
-    loader = NativeModelLoader(
-        model_path=str(mdir),
-    )
+    mdir = _make_tiny_model_dir(tmp_path / "tiny-56")
+    loader = NativeModelLoader(model_path=str(mdir))
     _init_loader(loader)
-    loader.tokenizer.eos_token_id = None
     old_loader = runtime.loader
     old_engine = runtime.engine
     runtime.loader = loader
@@ -105,6 +114,7 @@ def client(tmp_path, monkeypatch):
         f"sqlite:///{tmp_path / 'inference-api.db'}",
         connect_args={"check_same_thread": False},
     )
+
     @event.listens_for(database_engine, "connect")
     def enable_foreign_keys(connection, _record):
         cursor = connection.cursor()
@@ -151,15 +161,14 @@ def client(tmp_path, monkeypatch):
                 )
             )
             db.commit()
-        c.headers.update(
-            {"Authorization": f"Bearer {login.json()['access_token']}"}
-        )
+        c.headers.update({"Authorization": f"Bearer {login.json()['access_token']}"})
         yield c
     app.dependency_overrides.clear()
     runtime.loader = old_loader
     runtime.engine = old_engine
     runtime._initialized = old_initialized
     database_engine.dispose()
+
 
 def _parse_sse(text: str):
     out = []
@@ -201,11 +210,10 @@ def test_01_health(client):
     assert r.status_code == 200
     data = r.json()
     assert isinstance(data, dict)
-    assert (
-        "native_model_loaded" in data
-        or "runtime_status" in data
-        or "status" in data
-    )
+    assert data["runtime_status"] == "ready"
+    assert data["native_model_loaded"] is True
+    assert data["model_version"] == "ZYRQUEN-Native-0.1.0"
+
 
 def test_02_infer(client):
     r = client.post(
@@ -221,8 +229,10 @@ def test_02_infer(client):
     data = r.json()
     assert data["status"] == "success"
     assert data["provider"] == "ZYRQUEN_NATIVE_CORE"
+    assert data["model_version"] == "ZYRQUEN-Native-0.1.0"
     assert isinstance(data["result"], str)
     assert data["result"].strip() != ""
+
 
 def test_03_stream(client):
     conversation_id = _create_stream_conversation(client, "hello world")
@@ -242,14 +252,13 @@ def test_03_stream(client):
     assert "text/event-stream" in r.headers["content-type"]
     assert "[DONE]" in r.text
     chunks = _parse_sse(r.text)
-    content = [
-        c for c in chunks if not c.get("is_final")
-    ]
+    content = [c for c in chunks if not c.get("is_final")]
     assert len(content) >= 1
     assert len(content) <= 8
     assert chunks[-1].get("is_final") is True
     joined = "".join(c.get("text", "") for c in content)
     assert joined.strip() != ""
+
 
 def test_04_validation_and_max_tokens(client):
     r = client.post(
@@ -276,8 +285,6 @@ def test_04_validation_and_max_tokens(client):
     )
     assert r2.status_code == 200
     chunks = _parse_sse(r2.text)
-    content = [
-        c for c in chunks if not c.get("is_final")
-    ]
+    content = [c for c in chunks if not c.get("is_final")]
     assert len(content) <= 4
     assert chunks[-1].get("is_final") is True

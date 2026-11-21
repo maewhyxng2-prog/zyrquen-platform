@@ -7,6 +7,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from apps.core.model_loader import NATIVE_MODEL_VERSION_RE
 from apps.core.native.registry import ModelRegistry
 from apps.core.training_infrastructure.recovery.checkpoint_recovery import (
     CheckpointManager,
@@ -20,6 +21,41 @@ logger = logging.getLogger(__name__)
 
 class TrainingJobBusy(RuntimeError):
     pass
+
+
+def allocate_next_native_version(
+    registry: ModelRegistry,
+) -> tuple[str, str | None]:
+    """Allocate the next unused ZYRQUEN-Native-MAJOR.MINOR.PATCH version.
+
+    Starts at ZYRQUEN-Native-0.1.0, increments PATCH for subsequent verified
+    training runs, never overwrites an existing registry or artifact path, and
+    never promotes the registered version automatically.
+    """
+    records = registry.list_versions()
+    existing_names = {
+        rec["version"] for rec in records if isinstance(rec.get("version"), str)
+    }
+    parsed: list[tuple[int, int, int, str]] = []
+    for name in existing_names:
+        match = NATIVE_MODEL_VERSION_RE.match(name)
+        if match:
+            major, minor, patch = (int(part) for part in match.groups())
+            parsed.append((major, minor, patch, name))
+
+    if not parsed:
+        major, minor, patch = 0, 1, 0
+        parent: str | None = None
+    else:
+        major, minor, patch, parent = max(parsed)
+        patch += 1
+
+    while True:
+        candidate = f"ZYRQUEN-Native-{major}.{minor}.{patch}"
+        artifact_dir = registry.root / "artifacts" / candidate
+        if candidate not in existing_names and not artifact_dir.exists():
+            return candidate, parent
+        patch += 1
 
 
 class TrainingJobService:
@@ -117,6 +153,10 @@ class TrainingJobService:
                     "Training stopped before successful completion: "
                     f"{result['stopped_reason']}."
                 )
+            if result.get("parameter_changed") is False:
+                raise TrainingUnavailable(
+                    "Training completed without modifying model weights."
+                )
 
             checkpoint_dir = prepared.training_root / str(run_id) / "checkpoints"
             if CheckpointManager(checkpoint_dir).latest_valid() is None:
@@ -137,18 +177,20 @@ class TrainingJobService:
                 )
                 self._registry = registry
 
-            model_version = f"run-{run_id.hex}"
+            model_version, parent_version = allocate_next_native_version(registry)
             record = registry.register(
                 model_version,
                 checkpoint_dir,
                 prepared.tokenizer_path,
                 prepared.dataset_dir,
                 metrics=result,
-                notes=f"Training run {run_id}",
+                notes=f"training_run_id={run_id}",
+                parent=parent_version,
             )
             registered = True
             result = {
                 **result,
+                "training_run_id": str(run_id),
                 "model_version": model_version,
                 "lineage": {
                     "model_version": model_version,

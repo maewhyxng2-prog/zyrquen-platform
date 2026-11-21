@@ -161,8 +161,12 @@ def test_successful_training_registers_verified_lineage(training_env):
 
     assert run.status == "completed"
     model_version = run.result["model_version"]
+    assert model_version == "ZYRQUEN-Native-0.1.0"
+    assert run.result["training_run_id"] == str(run.id)
+    assert run.result["training_run_id"] != model_version
     record = registry.get(model_version)
     assert registry.verify(model_version)
+    assert record["parent"] is None
     assert record["tokenizer"]["version"] == "tokenizer-v1"
     assert record["dataset"]["version"] == "dataset-v1"
     assert record["checkpoint"]["path"] == f"artifacts/{model_version}/checkpoint.pt"
@@ -175,6 +179,15 @@ def test_successful_training_registers_verified_lineage(training_env):
         "checkpoint_path": f"artifacts/{model_version}/checkpoint.pt",
         "checkpoint_sha256": record["checkpoint"]["sha256"],
     }
+    assert registry.active_version() is None
+
+    second_run = _run_job(training_env)
+    assert second_run.status == "completed"
+    assert second_run.result["model_version"] == "ZYRQUEN-Native-0.1.1"
+    assert second_run.result["training_run_id"] == str(second_run.id)
+    assert registry.get("ZYRQUEN-Native-0.1.1")["parent"] == "ZYRQUEN-Native-0.1.0"
+    assert registry.verify("ZYRQUEN-Native-0.1.0")
+    assert registry.verify("ZYRQUEN-Native-0.1.1")
     assert registry.active_version() is None
 
 

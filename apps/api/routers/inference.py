@@ -9,8 +9,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from apps.api.database import get_db
 from apps.api.api_access import get_inference_user
+from apps.api.database import get_db
 from apps.api.models import ConversationMessage, User
 from apps.api.usage import (
     complete_inference,
@@ -19,15 +19,14 @@ from apps.api.usage import (
     reserve_inference,
 )
 from apps.api.usage_models import InferenceUsage
-from routers.conversations import (
-    _owned_conversation,
-    persist_completed_assistant_message,
-)
-
 from apps.core.context import InferenceContext
 from apps.core.exceptions import InferenceError, ResourceLimitExceeded
 from apps.core.runtime import runtime
 from apps.core.streaming import StreamingInferenceEngine
+from routers.conversations import (
+    _owned_conversation,
+    persist_completed_assistant_message,
+)
 
 router = APIRouter(prefix="/v1/native-ai", tags=["ZYRQUEN Native AI"])
 logger = logging.getLogger(__name__)
@@ -50,13 +49,19 @@ class StreamInferenceRequest(InferenceRequest):
 
 def _token_count(text: str) -> int:
     tokenizer = runtime.loader.tokenizer
-    if callable(tokenizer):
-        encoded = tokenizer(text, return_tensors="pt", truncation=False)
-        input_ids = encoded["input_ids"]
-        return int(input_ids.shape[-1])
-    if hasattr(tokenizer, "encode"):
-        return len(tokenizer.encode(text))
-    raise TypeError("Native tokenizer does not expose token encoding")
+    if tokenizer is None or not hasattr(tokenizer, "encode"):
+        raise TypeError("Native tokenizer does not expose encode()")
+    return len(tokenizer.encode(text, add_bos=False, add_eos=False))
+
+
+def _max_context_tokens() -> int:
+    max_seq_len = getattr(runtime.loader, "max_seq_len", None)
+    if max_seq_len is None:
+        cfg = getattr(getattr(runtime.loader, "model", None), "cfg", None)
+        max_seq_len = getattr(cfg, "max_seq_len", None)
+    if not isinstance(max_seq_len, int) or max_seq_len <= 0:
+        raise ValueError("Native model max_seq_len is unavailable")
+    return max_seq_len
 
 
 def _context(request: InferenceRequest, user_id: UUID) -> InferenceContext:
@@ -97,22 +102,30 @@ def _reserve(
         except SQLAlchemyError:
             raise _storage_unavailable(db) from None
     if not runtime.is_ready():
+        health = runtime.get_health_status()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="ZYRQUEN Native Model ยังไม่พร้อมใช้งาน",
+            detail={
+                "status": health.get("runtime_status", "degraded"),
+                "detail": "ZYRQUEN Native Model ยังไม่พร้อมใช้งาน",
+            },
         )
     try:
         input_tokens = _token_count(request.prompt)
+        max_seq_len = _max_context_tokens()
     except Exception:
-        logger.error("Native tokenizer is unavailable for usage measurement")
+        logger.error("Native tokenizer or model config is unavailable for usage measurement")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="ข้อมูล Token จาก Native Tokenizer ยังไม่พร้อมใช้งาน",
+            detail={
+                "status": "degraded",
+                "detail": "ข้อมูล Token หรือการตั้งค่า Native Model ยังไม่พร้อมใช้งาน",
+            },
         ) from None
-    if input_tokens > 2048:
+    if input_tokens > max_seq_len:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Input เกินจำนวน Token ที่ Native Model รองรับ",
+            detail=f"Input เกินจำนวน Token ที่ Native Model รองรับ (max_seq_len={max_seq_len})",
         )
 
     fingerprint = request_fingerprint(
@@ -133,7 +146,7 @@ def _reserve(
         request_hash=fingerprint,
         input_tokens=input_tokens,
         reserved_tokens=request.max_tokens,
-        model_version=None,
+        model_version=getattr(runtime.loader, "model_version", None),
         api_key_id=api_key_id,
     )
 
@@ -242,6 +255,7 @@ async def native_inference(
             "status": "success",
             "request_id": str(request.request_id),
             "provider": "ZYRQUEN_NATIVE_CORE",
+            "model_version": usage.model_version or getattr(runtime.loader, "model_version", None),
             "result": replay.content,
         }
 
@@ -261,6 +275,7 @@ async def native_inference(
             "status": "success",
             "request_id": str(request.request_id),
             "provider": "ZYRQUEN_NATIVE_CORE",
+            "model_version": usage.model_version or getattr(runtime.loader, "model_version", None),
             "result": result,
         }
     except asyncio.CancelledError:

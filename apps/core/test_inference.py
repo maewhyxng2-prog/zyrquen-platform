@@ -1,43 +1,28 @@
-"""Phase 5.1 - Native Inference.
+"""Phase 5.1 / Phase 10 - Native Inference.
 Real-only, no mock.
-Loader -> Engine -> model.generate()
-Tiny fixture is only pipeline check.
-Not ZYRQUEN production weights.
+Loader -> Registry Verification -> ZyrquenModel / ZyrquenTokenizer.
+Tiny fixture is only pipeline check. Not ZYRQUEN trained production weights.
 """
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
 
-try:
-    from apps.core.inference import (
-        InferenceContext,
-        NativeInferenceEngine,
-    )
-except ImportError:
-    from apps.api.routers.inference import (
-        InferenceContext,
-    )
-    from apps.core.inference import (
-        NativeInferenceEngine,
-    )
-
-try:
-    from apps.core.inference import (
-        InferenceError,
-        ResourceLimitExceeded,
-    )
-except ImportError:
-    from apps.core.errors import (
-        InferenceError,
-        ResourceLimitExceeded,
-    )
-
+from apps.core.context import InferenceContext
+from apps.core.exceptions import InferenceError, ResourceLimitExceeded
+from apps.core.inference import NativeInferenceEngine
 from apps.core.model_loader import (
     ModelLoadError,
     ModelNotFoundError,
     NativeModelLoader,
 )
+from apps.core.native.config import ZyrquenConfig
+from apps.core.native.dataset import PrepConfig, Source, prepare_dataset
+from apps.core.native.registry import ModelRegistry
+from apps.core.native.tokenizer import BASE_VOCAB, N_SPECIAL, ZyrquenTokenizer
+from apps.core.training_infrastructure.recovery.checkpoint_recovery import CheckpointManager
+
 
 def _init_loader(loader):
     if hasattr(loader, "initialize"):
@@ -46,88 +31,88 @@ def _init_loader(loader):
         return loader.load()
     raise AssertionError("no init")
 
-def _make_engine(loader):
-    try:
-        return NativeInferenceEngine(loader)
-    except TypeError:
-        return NativeInferenceEngine(
-            loader=loader,
-        )
 
-def _make_tiny_model_dir(path: Path) -> Path:
-    from tokenizers import Tokenizer
-    from tokenizers.models import WordLevel
-    from tokenizers.pre_tokenizers import Whitespace
-    from transformers import GPT2Config
-    from transformers import GPT2LMHeadModel
-    from transformers import PreTrainedTokenizerFast
+def _make_engine(loader):
+    return NativeInferenceEngine(loader)
+
+
+def _make_tiny_model_dir(
+    path: Path,
+    *,
+    max_seq_len: int = 128,
+    version: str = "ZYRQUEN-Native-0.1.0",
+) -> Path:
+    import torch
+    from apps.core.native.model import ZyrquenModel
 
     path.mkdir(parents=True, exist_ok=True)
-    base = [
-        "<|endoftext|>",
-        "[PAD]",
-        "[UNK]",
-        "hello",
-        "world",
-        "test",
-        "zyrquen",
-        "hi",
+    src = path / "corpus.jsonl"
+    docs = [
+        {"text": f"hello world test zyrquen hi sample document {i} สวัสดี"}
+        for i in range(40)
     ]
-    vocab = {}
-    for i, tok in enumerate(base):
-        vocab[tok] = i
-    idx = len(base)
-    while len(vocab) < 64:
-        tok = f"tok{idx}"
-        vocab[tok] = idx
-        idx += 1
+    src.write_text(
+        "\n".join(json.dumps(doc, ensure_ascii=False) for doc in docs),
+        encoding="utf-8",
+    )
+    ds_dir = path / "dataset"
+    prepare_dataset(
+        [Source(str(src), "test-fixture")],
+        ds_dir,
+        PrepConfig(val_fraction=0.1, test_fraction=0.1, version="0.1.0"),
+    )
 
-    wl = WordLevel(
-        vocab=vocab,
-        unk_token="[UNK]",
+    tok = ZyrquenTokenizer.train(
+        [doc["text"] for doc in docs],
+        BASE_VOCAB + 32,
+        version="0.1.0",
     )
-    tok_obj = Tokenizer(wl)
-    tok_obj.pre_tokenizer = Whitespace()
-    fast = PreTrainedTokenizerFast(
-        tokenizer_object=tok_obj,
-        unk_token="[UNK]",
-        pad_token="[PAD]",
-        eos_token="<|endoftext|>",
-        bos_token="<|endoftext|>",
-    )
-    fast.save_pretrained(str(path))
+    tok_path = path / "tokenizer.json"
+    tok.save(tok_path)
 
-    cfg = GPT2Config(
-        vocab_size=len(vocab),
-        n_layer=2,
-        n_head=2,
-        n_embd=32,
-        n_positions=128,
-        n_ctx=128,
-        pad_token_id=vocab["[PAD]"],
-        eos_token_id=vocab["<|endoftext|>"],
-        bos_token_id=vocab["<|endoftext|>"],
+    torch.manual_seed(7)
+    cfg = ZyrquenConfig(
+        vocab_size=tok.vocab_size,
+        max_seq_len=max_seq_len,
+        n_layers=2,
+        n_heads=2,
+        d_model=32,
+        d_ff=64,
     )
-    model = GPT2LMHeadModel(cfg)
-    model.save_pretrained(str(path))
-    return path
+    model = ZyrquenModel(cfg)
+    with torch.no_grad():
+        model.embed.weight[:N_SPECIAL].zero_()
+
+    ckpt_dir = path / "checkpoints"
+    CheckpointManager(ckpt_dir).save(
+        0,
+        {
+            "model": model.state_dict(),
+            "step": 0,
+            "model_config": cfg.to_dict(),
+            "tokenizer_sha256": tok.fingerprint(),
+            "dataset_version": "0.1.0",
+        },
+    )
+
+    reg_root = path / "registry"
+    registry = ModelRegistry(reg_root)
+    registry.register(version, ckpt_dir, tok_path, ds_dir, metrics={})
+    registry.promote(version)
+    return reg_root
+
 
 def test_01_missing_dir(tmp_path):
     bad = tmp_path / "does-not-exist"
-    loader = NativeModelLoader(
-        model_path=str(bad),
-    )
+    loader = NativeModelLoader(model_path=str(bad))
     assert loader.is_ready() is False
-    with pytest.raises(
-        (ModelNotFoundError, ModelLoadError),
-    ):
+    with pytest.raises((ModelNotFoundError, ModelLoadError)):
         _init_loader(loader)
+
 
 def test_02_not_ready(tmp_path):
     bad = tmp_path / "does-not-exist"
-    loader = NativeModelLoader(
-        model_path=str(bad),
-    )
+    loader = NativeModelLoader(model_path=str(bad))
     engine = _make_engine(loader)
     ctx = InferenceContext(
         user_id="00000000-0000-0000-0000-000000000001",
@@ -138,17 +123,15 @@ def test_02_not_ready(tmp_path):
     with pytest.raises(InferenceError):
         asyncio.run(engine.execute(ctx))
 
+
 def test_03_real_generate(tmp_path):
-    mdir = _make_tiny_model_dir(
-        tmp_path / "tiny-native",
-    )
-    loader = NativeModelLoader(
-        model_path=str(mdir),
-    )
+    mdir = _make_tiny_model_dir(tmp_path / "tiny-native")
+    loader = NativeModelLoader(model_path=str(mdir))
     _init_loader(loader)
     assert loader.is_ready() is True
     assert loader.model is not None
     assert loader.tokenizer is not None
+    assert loader.model_version == "ZYRQUEN-Native-0.1.0"
 
     engine = _make_engine(loader)
     ctx = InferenceContext(
@@ -162,16 +145,13 @@ def test_03_real_generate(tmp_path):
     assert result.strip() != ""
     assert "mock" not in result.lower()
 
-def test_04_over_2048(tmp_path):
-    mdir = _make_tiny_model_dir(
-        tmp_path / "tiny-native",
-    )
-    loader = NativeModelLoader(
-        model_path=str(mdir),
-    )
+
+def test_04_over_max_seq_len(tmp_path):
+    mdir = _make_tiny_model_dir(tmp_path / "tiny-native", max_seq_len=128)
+    loader = NativeModelLoader(model_path=str(mdir))
     _init_loader(loader)
     engine = _make_engine(loader)
-    long_prompt = "hello " * 2100
+    long_prompt = "hello " * 200
     ctx = InferenceContext.model_construct(
         user_id="00000000-0000-0000-0000-000000000001",
         prompt=long_prompt,
