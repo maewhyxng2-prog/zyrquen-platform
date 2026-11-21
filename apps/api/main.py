@@ -19,8 +19,10 @@ from apps.api.routers.users import router as users_router
 from apps.api.routers.usage import router as usage_router
 from apps.api.routers.api_access import router as api_access_router
 from apps.api.routers.admin import router as admin_router
+from apps.api.routers.workflows import get_workflow_engine, router as workflows_router
 from apps.api import api_access_models  # noqa: F401
 from apps.api import usage_models  # noqa: F401
+from apps.api import workflow_models  # noqa: F401
 
 from apps.core.runtime import runtime
 from apps.api.database import DATABASE_TARGET, engine
@@ -121,8 +123,12 @@ async def lifespan(app: FastAPI):
             "ZYRQUEN API started, but Native AI Model is unavailable"
         )
 
+    workflow_engine = get_workflow_engine()
+    workflow_engine.start(enable_scheduler=os.getenv("ZYRQUEN_WORKFLOW_SCHEDULER", "1") != "0")
+
     yield
 
+    workflow_engine.shutdown()
     runtime.shutdown()
     engine.dispose()
 
@@ -159,6 +165,7 @@ app.include_router(users_router)
 app.include_router(usage_router)
 app.include_router(api_access_router)
 app.include_router(admin_router)
+app.include_router(workflows_router)
 
 
 @app.get("/")

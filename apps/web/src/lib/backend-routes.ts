@@ -1,19 +1,38 @@
 const routes: Record<string, ReadonlySet<string>> = {
-  GET: new Set(["", "health", "v1/native-ai/health", "auth/me", "users/me", "users/me/usage", "users/me/quota", "admin/overview"]),
+  GET: new Set([
+    "",
+    "health",
+    "v1/native-ai/health",
+    "auth/me",
+    "users/me",
+    "users/me/usage",
+    "users/me/quota",
+    "admin/overview",
+    "v1/workflows/definitions",
+    "v1/workflows/runs",
+    "v1/workflows/approvals",
+    "v1/workflows/audit-logs",
+    "v1/models/registry",
+    "v1/models/registry/compare",
+  ]),
   POST: new Set([
     "auth/login",
     "auth/register",
     "auth/logout",
     "v1/native-ai/infer",
     "v1/native-ai/infer/stream",
+    "v1/workflows/runs",
+    "v1/models/registry/rollback",
   ]),
   PATCH: new Set(["users/me"]),
 };
 
 export function isAllowedBackendRoute(method: string, path: string): boolean {
+  if (path.includes("..")) return false;
   const normalizedMethod = method.toUpperCase();
   if (routes[normalizedMethod]?.has(path)) return true;
   const id = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+  const version = "[A-Za-z0-9][A-Za-z0-9._-]{0,63}";
   if (path === "conversations") {
     return normalizedMethod === "GET" || normalizedMethod === "POST";
   }
@@ -31,6 +50,18 @@ export function isAllowedBackendRoute(method: string, path: string): boolean {
   }
   if (path === "admin/users" || path === "admin/audit-logs") {
     return normalizedMethod === "GET";
+  }
+  if (new RegExp(`^v1/workflows/runs/${id}$`, "i").test(path)) {
+    return normalizedMethod === "GET";
+  }
+  if (new RegExp(`^v1/workflows/runs/${id}/cancel$`, "i").test(path)) {
+    return normalizedMethod === "POST";
+  }
+  if (new RegExp(`^v1/workflows/approvals/${id}/decision$`, "i").test(path)) {
+    return normalizedMethod === "POST";
+  }
+  if (new RegExp(`^v1/models/registry/${version}/promote$`, "i").test(path)) {
+    return normalizedMethod === "POST";
   }
   return (
     normalizedMethod === "POST" &&

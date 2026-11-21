@@ -63,6 +63,26 @@ describe("backend proxy route allowlist", () => {
         "conversations/123e4567-e89b-42d3-a456-426614174000/messages",
       ),
     ).toBe(true);
+    expect(isAllowedBackendRoute("GET", "v1/workflows/definitions")).toBe(true);
+    expect(isAllowedBackendRoute("GET", "v1/workflows/runs")).toBe(true);
+    expect(isAllowedBackendRoute("POST", "v1/workflows/runs")).toBe(true);
+    expect(
+      isAllowedBackendRoute(
+        "GET",
+        "v1/workflows/runs/123e4567-e89b-42d3-a456-426614174000",
+      ),
+    ).toBe(true);
+    expect(
+      isAllowedBackendRoute(
+        "POST",
+        "v1/workflows/approvals/123e4567-e89b-42d3-a456-426614174000/decision",
+      ),
+    ).toBe(true);
+    expect(isAllowedBackendRoute("GET", "v1/models/registry")).toBe(true);
+    expect(
+      isAllowedBackendRoute("POST", "v1/models/registry/ZYRQUEN-Native-0.1.0/promote"),
+    ).toBe(true);
+    expect(isAllowedBackendRoute("POST", "v1/models/registry/rollback")).toBe(true);
   });
 
   it("rejects unknown paths and method/path combinations", () => {
@@ -78,6 +98,9 @@ describe("backend proxy route allowlist", () => {
     expect(isAllowedBackendRoute("GET", "../health")).toBe(false);
     expect(isAllowedBackendRoute("PATCH", "conversations")).toBe(false);
     expect(isAllowedBackendRoute("GET", "conversations/not-a-uuid")).toBe(false);
+    expect(isAllowedBackendRoute("GET", "v1/workflows/runs/not-a-uuid")).toBe(false);
+    expect(isAllowedBackendRoute("DELETE", "v1/models/registry/ZYRQUEN-Native-0.1.0/promote")).toBe(false);
+    expect(isAllowedBackendRoute("POST", "v1/models/registry/../secret/promote")).toBe(false);
   });
 });
 

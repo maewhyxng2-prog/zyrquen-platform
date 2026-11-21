@@ -112,6 +112,16 @@ def validate_security_configuration(environment: str) -> None:
             "Production startup rejected: JWT_SECRET_KEY is too short"
         )
 
+    approval_secret = os.getenv("ZYRQUEN_APPROVAL_SECRET", "")
+    if not approval_secret:
+        raise RuntimeError(
+            "Production startup rejected: ZYRQUEN_APPROVAL_SECRET is not configured"
+        )
+    if len(approval_secret) < 32:
+        raise RuntimeError(
+            "Production startup rejected: ZYRQUEN_APPROVAL_SECRET is too short"
+        )
+
     origins = {
         origin.strip()
         for origin in os.getenv("ZYRQUEN_CORS_ALLOW_ORIGINS", "").split(",")

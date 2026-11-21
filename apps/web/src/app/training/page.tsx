@@ -1,4 +1,5 @@
 import { CapabilityRadarChart } from "@/components/CapabilityRadarChart";
+import { WorkflowConsole } from "@/components/WorkflowConsole";
 import { PageHeader } from "@/components/PageHeader";
 import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -19,7 +20,7 @@ function CapabilityPanel({
     <Panel className="capability-panel">
       <div className="capability-top">
         <span className="phase-label">{phase}</span>
-        <StatusBadge tone="info">มีโค้ดหลักในระบบ · ยังไม่เปิดผ่าน API</StatusBadge>
+        <StatusBadge tone="info">มีโค้ดหลักในระบบ</StatusBadge>
       </div>
       <h2>{title}</h2>
       <p>{description}</p>
@@ -32,22 +33,24 @@ export default function TrainingPage() {
   return (
     <div className="page-stack">
       <PageHeader
-        description="แสดงโมดูลการเตรียมชุดข้อมูลและการฝึกโมเดล (Phase 3.3–3.4) ที่มีอยู่ใน Repository พร้อมแผนภาพความสามารถของรุ่นปัจจุบันจาก Backend โดยไม่สร้างข้อมูลจำลองการรันที่ไม่มีอยู่จริง"
-        eyebrow="NATIVE AI / เครื่องมือจัดการ NATIVE MODEL"
+        description="แสดงโมดูลการเตรียมชุดข้อมูล การฝึกโมเดล (Phase 3.3–3.4) และตัวจัดการ Workflow กลาง + Model Registry โดยไม่สร้างข้อมูลจำลอง"
+        eyebrow="NATIVE AI / WORKFLOW & MODEL MANAGEMENT"
         icon="layers"
-        title="พื้นที่ทำงานสำหรับการฝึกอบรม"
+        title="พื้นที่ทำงานสำหรับการฝึกอบรมและ Workflow กลาง"
       />
 
       <Panel className="training-banner">
         <div className="training-banner-icon"><Icon name="file-check" size={21} /></div>
         <div>
-          <StatusBadge tone="good">มีโมดูลต้นฉบับในระบบ</StatusBadge>
-          <h2>ไปป์ไลน์เตรียมชุดข้อมูลและการฝึกโมเดล</h2>
-          <p>โค้ดหลักพร้อมใช้งานในรูปแบบโมดูล Python แต่แอปพลิเคชัน API ปัจจุบันยังไม่ได้เปิดเส้นทางสำหรับจัดการชุดข้อมูล สั่งฝึกโมเดล ดูค่าชี้วัด หรือดูประวัติงานผ่านหน้าเว็บ</p>
+          <StatusBadge tone="good">มีโมดูลต้นฉบับและ Workflow Engine กลาง</StatusBadge>
+          <h2>ไปป์ไลน์เตรียมชุดข้อมูล, การฝึกโมเดล และ Central Workflow Orchestrator</h2>
+          <p>ควบคุมงาน 8 กลุ่มผ่าน Orchestrator กลางเพียงตัวเดียว พร้อม Resource Guard, Tier-2 Approval Gate, Audit Trail และ Model Registry Lifecycle</p>
         </div>
       </Panel>
 
       <CapabilityRadarChart />
+
+      <WorkflowConsole />
 
       <section className="capability-grid" aria-label="ความสามารถที่พัฒนาไว้ในโค้ดหลัก">
         <CapabilityPanel

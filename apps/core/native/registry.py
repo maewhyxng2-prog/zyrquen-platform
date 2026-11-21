@@ -43,6 +43,17 @@ NATIVE_MODEL_VERSION_RE = re.compile(
     r"^ZYRQUEN-Native-(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$"
 )
 SPLITS = ("train", "validation", "test")
+LIFECYCLE_STATES = (
+    "development",
+    "registered",
+    "evaluated",
+    "verified",
+    "staging",
+    "production",
+    "quarantined",
+    "archived",
+)
+PROMOTABLE_LIFECYCLE_STATES = ("verified", "staging", "production")
 
 @dataclass
 class _InProcessLockState:
@@ -372,6 +383,7 @@ class ModelRegistry:
                 "version": version,
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "parent": parent,
+                "lifecycle_status": "registered",
                 "checkpoint": {"step": entry["step"], "sha256": entry["sha256"],
                                "size_bytes": entry["size_bytes"], "path": f"artifacts/{version}/checkpoint.pt"},
                 "tokenizer": {"version": tok.version, "sha256": tok.fingerprint(),
@@ -382,6 +394,8 @@ class ModelRegistry:
                 "training_config": state.get("config"),
                 "model_config": state.get("model_config"),
                 "metrics": metrics or {},
+                "evaluation_evidence": None,
+                "workflow_lineage": {},
                 "notes": notes,
             }
             data["versions"][version] = record
@@ -448,28 +462,183 @@ class ModelRegistry:
         except json.JSONDecodeError:
             return False
 
+    # ---- lifecycle & evaluation gate ----
+    def attach_evaluation_evidence(
+        self,
+        version: str,
+        *,
+        eval_run_id: str,
+        report_sha256: str,
+        metrics: dict[str, Any],
+        passed: bool,
+        zero_regression: bool = True,
+        workflow_run_id: str | None = None,
+        reason: str = "",
+    ) -> dict:
+        """Attach verified evaluation evidence and transition version to verified or quarantined."""
+        with self._registry_lock():
+            data = self._read()
+            if version not in data["versions"]:
+                raise RegistryError(f"unknown version: {version}")
+            rec = data["versions"][version]
+            next_status = "verified" if (passed and zero_regression) else "quarantined"
+            rec["lifecycle_status"] = next_status
+            rec["evaluation_evidence"] = {
+                "eval_run_id": eval_run_id,
+                "report_sha256": report_sha256,
+                "passed": bool(passed),
+                "zero_regression": bool(zero_regression),
+                "evaluated_at": datetime.now(timezone.utc).isoformat(),
+                "reason": reason,
+                "summary": metrics,
+            }
+            if metrics:
+                merged = dict(rec.get("metrics") or {})
+                merged.update(metrics)
+                rec["metrics"] = merged
+            lineage = dict(rec.get("workflow_lineage") or {})
+            if workflow_run_id:
+                lineage["eval_workflow_run_id"] = workflow_run_id
+            rec["workflow_lineage"] = lineage
+            self._write(data)
+            return rec
+
+    def set_lifecycle_status(
+        self,
+        version: str,
+        lifecycle_status: str,
+        *,
+        approval_id: str | None = None,
+        approved_by: str | None = None,
+        reason: str = "",
+    ) -> dict:
+        if lifecycle_status not in LIFECYCLE_STATES:
+            raise RegistryError(f"unsupported lifecycle status: {lifecycle_status}")
+        with self._registry_lock():
+            data = self._read()
+            if version not in data["versions"]:
+                raise RegistryError(f"unknown version: {version}")
+            rec = data["versions"][version]
+            if lifecycle_status == "staging" and rec.get("lifecycle_status") != "verified":
+                raise RegistryError(f"version {version} must be verified before staging")
+            rec["lifecycle_status"] = lifecycle_status
+            lineage = dict(rec.get("workflow_lineage") or {})
+            if approval_id:
+                lineage["approval_id"] = approval_id
+            if approved_by:
+                lineage["approved_by"] = approved_by
+            if reason:
+                lineage["status_reason"] = reason
+            rec["workflow_lineage"] = lineage
+            self._write(data)
+            return rec
+
+    def compare_versions(self, base_version: str, candidate_version: str) -> dict:
+        """Compare numeric evaluation metrics and capability deltas between two versions."""
+        base = self.get(base_version)
+        cand = self.get(candidate_version)
+        base_m = base.get("metrics") or {}
+        cand_m = cand.get("metrics") or {}
+
+        numeric_deltas: dict[str, dict[str, float | None]] = {}
+        regressed_metrics: list[str] = []
+        all_keys = sorted(set(base_m.keys()) | set(cand_m.keys()))
+        for key in all_keys:
+            b_val = base_m.get(key)
+            c_val = cand_m.get(key)
+            if isinstance(b_val, (int, float)) and not isinstance(b_val, bool) and isinstance(c_val, (int, float)) and not isinstance(c_val, bool):
+                delta = round(float(c_val) - float(b_val), 6)
+                numeric_deltas[key] = {
+                    "base": float(b_val),
+                    "candidate": float(c_val),
+                    "delta": delta,
+                }
+                if key.endswith("loss"):
+                    if delta > 0.01:
+                        regressed_metrics.append(key)
+                elif delta < -0.01:
+                    regressed_metrics.append(key)
+
+        return {
+            "base_version": base_version,
+            "candidate_version": candidate_version,
+            "base_lifecycle": base.get("lifecycle_status", "registered"),
+            "candidate_lifecycle": cand.get("lifecycle_status", "registered"),
+            "metric_deltas": numeric_deltas,
+            "regressed_metrics": regressed_metrics,
+            "zero_regression": len(regressed_metrics) == 0,
+        }
+
     # ---- promote / rollback ----
-    def promote(self, version: str) -> None:
+    def promote(
+        self,
+        version: str,
+        *,
+        enforce_evaluation_gate: bool = False,
+        approval_id: str | None = None,
+        approved_by: str | None = None,
+    ) -> None:
         with self._registry_lock():
             if not self.verify(version):
                 raise RegistryError(f"integrity check failed, refusing to activate {version}")
             data = self._read()
+            rec = data["versions"][version]
+            if enforce_evaluation_gate:
+                lifecycle = rec.get("lifecycle_status", "registered")
+                ev = rec.get("evaluation_evidence")
+                if lifecycle not in PROMOTABLE_LIFECYCLE_STATES:
+                    raise RegistryError(
+                        f"promotion blocked: version {version} has lifecycle_status={lifecycle!r} "
+                        f"(expected one of {PROMOTABLE_LIFECYCLE_STATES})"
+                    )
+                if not isinstance(ev, dict) or not ev.get("passed") or not ev.get("zero_regression"):
+                    raise RegistryError(
+                        f"promotion blocked: version {version} lacks passing evaluation evidence"
+                    )
+                if not approval_id:
+                    raise RegistryError(
+                        f"promotion blocked: Tier-2 approval_id is required to promote {version}"
+                    )
+
             if data["active"] == version:
+                if enforce_evaluation_gate:
+                    rec["lifecycle_status"] = "production"
+                    self._write(data)
                 return
             if data["active"] is not None:
-                data["history"].append(data["active"])
+                prev_ver = data["active"]
+                data["history"].append(prev_ver)
+                if prev_ver in data["versions"] and data["versions"][prev_ver].get("lifecycle_status") == "production":
+                    data["versions"][prev_ver]["lifecycle_status"] = "archived"
             data["active"] = version
+            if enforce_evaluation_gate or "lifecycle_status" in rec:
+                rec["lifecycle_status"] = "production"
+            if approval_id or approved_by:
+                lineage = dict(rec.get("workflow_lineage") or {})
+                if approval_id:
+                    lineage["approval_id"] = approval_id
+                if approved_by:
+                    lineage["approved_by"] = approved_by
+                rec["workflow_lineage"] = lineage
             self._write(data)
 
-    def rollback(self, to_version: str | None = None) -> str:
+    def rollback(self, to_version: str | None = None, *, approval_id: str | None = None) -> str:
         """Re-activate the previous active version (or a specific registered one)."""
         with self._registry_lock():
             data = self._read()
+            prev_active = data["active"]
             if to_version is None:
                 while data["history"]:
                     candidate = data["history"].pop()
                     if candidate in data["versions"] and candidate != data["active"] and self.verify(candidate):
                         data["active"] = candidate
+                        if prev_active and prev_active in data["versions"] and data["versions"][prev_active].get("lifecycle_status") == "production":
+                            data["versions"][prev_active]["lifecycle_status"] = "archived"
+                        data["versions"][candidate]["lifecycle_status"] = "production"
+                        if approval_id:
+                            lineage = dict(data["versions"][candidate].get("workflow_lineage") or {})
+                            lineage["rollback_approval_id"] = approval_id
+                            data["versions"][candidate]["workflow_lineage"] = lineage
                         self._write(data)
                         return candidate
                 raise RegistryError("no earlier verified version to roll back to")
@@ -479,6 +648,13 @@ class ModelRegistry:
                 raise RegistryError(f"integrity check failed, refusing to activate {to_version}")
             if data["active"] not in (None, to_version):
                 data["history"].append(data["active"])
+                if prev_active and prev_active in data["versions"] and data["versions"][prev_active].get("lifecycle_status") == "production":
+                    data["versions"][prev_active]["lifecycle_status"] = "archived"
             data["active"] = to_version
+            data["versions"][to_version]["lifecycle_status"] = "production"
+            if approval_id:
+                lineage = dict(data["versions"][to_version].get("workflow_lineage") or {})
+                lineage["rollback_approval_id"] = approval_id
+                data["versions"][to_version]["workflow_lineage"] = lineage
             self._write(data)
             return to_version
