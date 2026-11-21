@@ -48,22 +48,70 @@ type WorkflowApprovalItem = {
   expires_at: string;
 };
 
+type CompatibilityResult = {
+  version: string;
+  compatible: boolean;
+  checks: {
+    artifacts_sha256: boolean;
+    tokenizer_sha256: boolean;
+    architecture_config: boolean;
+  };
+  reasons: string[];
+};
+
 type ModelVersionItem = {
   version: string;
   parent?: string | null;
   lifecycle_status?: string;
   created_at: string;
+  frozen?: boolean;
+  checkpoint?: { step?: number; sha256?: string } | null;
+  dataset?: { version?: string; content_sha256?: string } | null;
   evaluation_evidence?: {
     passed?: boolean;
     zero_regression?: boolean;
+    report_sha256?: string;
   } | null;
+  compatibility?: CompatibilityResult | null;
 };
 
 type ModelRegistryPayload = {
   configured: boolean;
   detail?: string;
   active_version: string | null;
+  registered_count?: number;
+  baseline_policy?: Record<string, { status: string; note: string }>;
   versions: ModelVersionItem[];
+};
+
+type VersionComparisonPayload = {
+  base_version: string;
+  candidate_version: string;
+  base_lifecycle: string;
+  candidate_lifecycle: string;
+  metric_deltas: Record<string, { base: number; candidate: number; delta: number }>;
+  capability_deltas: Record<string, { base: number; candidate: number; delta: number }>;
+  regressed_metrics: string[];
+  regressed_capabilities: string[];
+  zero_regression: boolean;
+};
+
+type LineagePayload = {
+  record: ModelVersionItem;
+  lineage: {
+    version: string;
+    depth: number;
+    ancestors: Array<{
+      version: string;
+      parent?: string | null;
+      lifecycle_status: string;
+      dataset_version?: string | null;
+      checkpoint_sha256?: string | null;
+      eval_report_sha256?: string | null;
+      eval_passed?: boolean | null;
+    }>;
+  };
+  compatibility: CompatibilityResult;
 };
 
 function statusToneFor(status: string): "good" | "warn" | "bad" | "info" | "neutral" {
@@ -79,10 +127,13 @@ function statusToneFor(status: string): "good" | "warn" | "bad" | "info" | "neut
     case "NOT RUN":
     case "pending":
     case "staging":
+    case "evaluated":
       return "warn";
     case "FAILED":
     case "BLOCKED":
     case "quarantined":
+    case "blocked":
+    case "failed":
     case "rejected":
       return "bad";
     case "RUNNING":
@@ -101,11 +152,18 @@ export function WorkflowConsole() {
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [definitions, setDefinitions] = useState<WorkflowDefinitionItem[]>([]);
   const [runs, setRuns] = useState<WorkflowRunItem[]>([]);
   const [approvals, setApprovals] = useState<WorkflowApprovalItem[]>([]);
   const [registry, setRegistry] = useState<ModelRegistryPayload | null>(null);
   const [schedulerActive, setSchedulerActive] = useState(false);
+
+  const [baseVersion, setBaseVersion] = useState("");
+  const [candidateVersion, setCandidateVersion] = useState("");
+  const [comparison, setComparison] = useState<VersionComparisonPayload | null>(null);
+  const [selectedLineage, setSelectedLineage] = useState<LineagePayload | null>(null);
+  const [approvalTokenInput, setApprovalTokenInput] = useState("");
 
   const fetchAndApply = useCallback(async (isCancelled?: () => boolean) => {
     setError("");
@@ -140,7 +198,12 @@ export function WorkflowConsole() {
         setRuns(res[1].value.items ?? []);
       }
       if (res[2].status === "fulfilled") {
-        setRegistry(res[2].value);
+        const regData = res[2].value;
+        setRegistry(regData);
+        if (regData.versions.length >= 2) {
+          setBaseVersion((prev) => prev || regData.versions[0].version);
+          setCandidateVersion((prev) => prev || regData.versions[regData.versions.length - 1].version);
+        }
       }
       if (res[3].status === "fulfilled") {
         setIsAdmin(true);
@@ -180,6 +243,7 @@ export function WorkflowConsole() {
   async function triggerWorkflow(workflowKey: string) {
     setBusyKey(workflowKey);
     setError("");
+    setNotice("");
     try {
       await apiRequest<WorkflowRunItem>("v1/workflows/runs", {
         method: "POST",
@@ -196,6 +260,7 @@ export function WorkflowConsole() {
   async function decideApproval(approvalId: string, approve: boolean) {
     setBusyKey(approvalId);
     setError("");
+    setNotice("");
     try {
       await apiRequest(`v1/workflows/approvals/${approvalId}/decision`, {
         method: "POST",
@@ -207,6 +272,65 @@ export function WorkflowConsole() {
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "บันทึกการตัดสินใจ Approval ไม่สำเร็จ");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function compareVersions() {
+    if (!baseVersion || !candidateVersion) return;
+    setBusyKey("compare");
+    setError("");
+    try {
+      const qs = new URLSearchParams({ base: baseVersion, candidate: candidateVersion });
+      const data = await apiRequest<VersionComparisonPayload>(`v1/models/registry/compare?${qs.toString()}`);
+      setComparison(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "เปรียบเทียบเวอร์ชันไม่สำเร็จ");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function inspectLineage(version: string) {
+    setBusyKey(`lineage:${version}`);
+    setError("");
+    try {
+      const data = await apiRequest<LineagePayload>(`v1/models/registry/${encodeURIComponent(version)}/lineage`);
+      setSelectedLineage(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ไม่สามารถดึง Lineage ของเวอร์ชันนี้ได้");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function runModelLifecycleAction(action: "stage" | "promote" | "rollback", version?: string) {
+    const approvalId = approvalTokenInput.trim();
+    if (!approvalId) {
+      setError("กรุณาระบุ Approval ID (Tier-2) ก่อนดำเนินการเปลี่ยนสถานะหรือย้อนกลับเวอร์ชันโมเดล");
+      return;
+    }
+    setBusyKey(`${action}:${version || "rollback"}`);
+    setError("");
+    setNotice("");
+    try {
+      if (action === "rollback") {
+        await apiRequest("v1/models/registry/rollback", {
+          method: "POST",
+          body: JSON.stringify({ to_version: version || null, approval_id: approvalId }),
+        });
+        setNotice("ย้อนกลับเวอร์ชัน Production สำเร็จ");
+      } else if (version) {
+        await apiRequest(`v1/models/registry/${encodeURIComponent(version)}/${action}`, {
+          method: "POST",
+          body: JSON.stringify({ approval_id: approvalId }),
+        });
+        setNotice(action === "stage" ? `นำ ${version} เข้าสู่ Staging สำเร็จ` : `โปรโมต ${version} เป็น Production สำเร็จ`);
+      }
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ไม่สามารถเปลี่ยนสถานะเวอร์ชันโมเดลได้");
     } finally {
       setBusyKey(null);
     }
@@ -239,6 +363,7 @@ export function WorkflowConsole() {
   }
 
   const pendingApprovals = approvals.filter((a) => a.status === "pending");
+  const versions = registry?.versions ?? [];
 
   return (
     <div className="workflow-stack">
@@ -269,6 +394,11 @@ export function WorkflowConsole() {
         {error ? (
           <p className="form-alert form-alert-error" role="alert">
             {error}
+          </p>
+        ) : null}
+        {notice ? (
+          <p className="form-alert form-alert-success" role="status">
+            {notice}
           </p>
         ) : null}
 
@@ -307,6 +437,269 @@ export function WorkflowConsole() {
               </div>
             ))}
           </div>
+        )}
+      </Panel>
+
+      <Panel className="workflow-panel">
+        <div className="panel-heading">
+          <div>
+            <div className="eyebrow">
+              <Icon name="shield" size={14} />
+              <span>NATIVE MODEL REGISTRY & LIFECYCLE MANAGEMENT</span>
+            </div>
+            <h2>การจัดการเวอร์ชันโมเดล (Model Registry & Evaluation Gate)</h2>
+          </div>
+          <div className="workflow-kpi-strip">
+            <div className="workflow-kpi-item">
+              <span>Registered Models</span>
+              <strong className="tabular-nums">
+                {registry?.configured ? (registry.registered_count ?? versions.length) : "—"}
+              </strong>
+            </div>
+            <div className="workflow-kpi-item">
+              <span>Production Version</span>
+              <strong className="tabular-nums">{registry?.active_version || "—"}</strong>
+            </div>
+          </div>
+        </div>
+
+        <div className="workflow-policy-row">
+          <span>
+            <strong>v7</strong> · Baseline (คงไว้ตรวจสอบ)
+          </span>
+          <span aria-hidden="true">/</span>
+          <span>
+            <strong>v8</strong> · CLOSED / FROZEN (ห้ามแก้ไขหรือฝึกซ้ำ)
+          </span>
+          <span aria-hidden="true">/</span>
+          <span>
+            <strong>v9</strong> · Development (ทดลองแยกจาก Baseline)
+          </span>
+        </div>
+
+        {!registry?.configured ? (
+          <div className="unavailable-block">
+            <strong>{registry?.detail || "ยังไม่ได้กำหนด ZYRQUEN_MODEL_REGISTRY_ROOT บน Backend"}</strong>
+            <p>ระบบจะไม่แสดงเวอร์ชันหรือผลประเมินจำลอง จนกว่าจะเชื่อมต่อโฟลเดอร์ ModelRegistry จริง</p>
+          </div>
+        ) : versions.length === 0 ? (
+          <div className="unavailable-block">
+            <strong>ยังไม่มีเวอร์ชันโมเดลที่ลงทะเบียนไว้ใน Registry</strong>
+            <p>เวอร์ชันใหม่จะปรากฏที่นี่หลังผ่าน Data Gate, Training และ Registration</p>
+          </div>
+        ) : (
+          <>
+            {isAdmin ? (
+              <div className="workflow-admin-toolbar">
+                <label className="workflow-inline-field">
+                  <span>Tier-2 Approval ID</span>
+                  <input
+                    className="input"
+                    onChange={(e) => setApprovalTokenInput(e.target.value)}
+                    placeholder="ระบุ Approval ID ก่อน Stage / Promote / Rollback"
+                    type="text"
+                    value={approvalTokenInput}
+                  />
+                </label>
+                <button
+                  className="button button-secondary"
+                  disabled={busyKey === "rollback:rollback"}
+                  onClick={() => void runModelLifecycleAction("rollback")}
+                  type="button"
+                >
+                  Rollback Production
+                </button>
+              </div>
+            ) : null}
+
+            <div className="workflow-table-wrap">
+              <table className="workflow-table">
+                <thead>
+                  <tr>
+                    <th>Version</th>
+                    <th>Status</th>
+                    <th>Parent</th>
+                    <th>Evaluation</th>
+                    <th>Compatibility</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {versions.map((ver) => {
+                    const evalText = ver.evaluation_evidence
+                      ? `${ver.evaluation_evidence.passed ? "PASS" : "FAIL"}${ver.evaluation_evidence.zero_regression ? "" : " (Regression)"}`
+                      : "NOT RUN";
+                    const compatOk = ver.compatibility ? ver.compatibility.compatible : null;
+                    const lifecycle = ver.lifecycle_status || "registered";
+                    return (
+                      <tr key={ver.version}>
+                        <td className="tabular-nums">
+                          <strong>{ver.version}</strong>
+                          <div className="workflow-table-sub">
+                            {ver.dataset?.version || "—"} · step {ver.checkpoint?.step ?? "—"}
+                          </div>
+                        </td>
+                        <td>
+                          <StatusBadge tone={statusToneFor(lifecycle)}>{lifecycle}</StatusBadge>
+                        </td>
+                        <td className="tabular-nums">{ver.parent || "baseline"}</td>
+                        <td>
+                          <StatusBadge
+                            tone={
+                              ver.evaluation_evidence
+                                ? ver.evaluation_evidence.passed
+                                  ? "good"
+                                  : "bad"
+                                : "warn"
+                            }
+                          >
+                            {evalText}
+                          </StatusBadge>
+                        </td>
+                        <td>
+                          {compatOk === null ? (
+                            "NOT CHECKED"
+                          ) : (
+                            <StatusBadge tone={compatOk ? "good" : "bad"}>
+                              {compatOk ? "Compatible" : "Mismatch"}
+                            </StatusBadge>
+                          )}
+                        </td>
+                        <td>
+                          <div className="workflow-actions">
+                            <button
+                              className="button button-secondary"
+                              disabled={busyKey === `lineage:${ver.version}`}
+                              onClick={() => void inspectLineage(ver.version)}
+                              type="button"
+                            >
+                              Lineage
+                            </button>
+                            {isAdmin && lifecycle === "verified" ? (
+                              <button
+                                className="button button-secondary"
+                                disabled={busyKey === `stage:${ver.version}`}
+                                onClick={() => void runModelLifecycleAction("stage", ver.version)}
+                                type="button"
+                              >
+                                Stage
+                              </button>
+                            ) : null}
+                            {isAdmin && (lifecycle === "verified" || lifecycle === "staging") ? (
+                              <button
+                                className="button button-primary"
+                                disabled={busyKey === `promote:${ver.version}`}
+                                onClick={() => void runModelLifecycleAction("promote", ver.version)}
+                                type="button"
+                              >
+                                Promote
+                              </button>
+                            ) : null}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {versions.length >= 2 ? (
+              <div className="workflow-compare-box">
+                <div className="workflow-compare-controls">
+                  <select
+                    aria-label="Base Version"
+                    className="input"
+                    onChange={(e) => setBaseVersion(e.target.value)}
+                    value={baseVersion}
+                  >
+                    {versions.map((v) => (
+                      <option key={`base-${v.version}`} value={v.version}>
+                        Base: {v.version}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Candidate Version"
+                    className="input"
+                    onChange={(e) => setCandidateVersion(e.target.value)}
+                    value={candidateVersion}
+                  >
+                    {versions.map((v) => (
+                      <option key={`cand-${v.version}`} value={v.version}>
+                        Candidate: {v.version}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="button button-secondary"
+                    disabled={busyKey === "compare"}
+                    onClick={() => void compareVersions()}
+                    type="button"
+                  >
+                    {busyKey === "compare" ? "กำลังเปรียบเทียบ..." : "เปรียบเทียบเวอร์ชัน"}
+                  </button>
+                </div>
+
+                {comparison ? (
+                  <div className="workflow-compare-result">
+                    <div className="workflow-def-head">
+                      <strong>
+                        {comparison.base_version} vs {comparison.candidate_version}
+                      </strong>
+                      <StatusBadge tone={comparison.zero_regression ? "good" : "bad"}>
+                        {comparison.zero_regression ? "Zero Regression" : "Regression Detected"}
+                      </StatusBadge>
+                    </div>
+                    <div className="workflow-delta-grid tabular-nums">
+                      {Object.entries({ ...comparison.metric_deltas, ...comparison.capability_deltas }).map(
+                        ([name, d]) => (
+                          <div className="workflow-delta-row" key={name}>
+                            <span>{name}</span>
+                            <span>
+                              {d.base} → {d.candidate} ({d.delta >= 0 ? `+${d.delta}` : d.delta})
+                            </span>
+                          </div>
+                        ),
+                      )}
+                      {Object.keys(comparison.metric_deltas).length === 0 &&
+                      Object.keys(comparison.capability_deltas).length === 0 ? (
+                        <p className="workflow-muted">ยังไม่มีตัวเลข Metrics/Capabilities ที่เปรียบเทียบกันได้ระหว่างสองเวอร์ชันนี้</p>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {selectedLineage ? (
+              <div className="workflow-compare-result">
+                <div className="workflow-def-head">
+                  <strong>Model Lineage: {selectedLineage.lineage.version}</strong>
+                  <StatusBadge tone={selectedLineage.compatibility.compatible ? "good" : "bad"}>
+                    {selectedLineage.compatibility.compatible ? "Compatibility PASS" : "Compatibility FAIL"}
+                  </StatusBadge>
+                </div>
+                <div className="workflow-delta-grid tabular-nums">
+                  {selectedLineage.lineage.ancestors.map((anc) => (
+                    <div className="workflow-delta-row" key={anc.version}>
+                      <span>
+                        {anc.version} ({anc.lifecycle_status})
+                      </span>
+                      <span>
+                        Dataset: {anc.dataset_version || "—"} · Eval:{" "}
+                        {anc.eval_passed === null || anc.eval_passed === undefined
+                          ? "NOT RUN"
+                          : anc.eval_passed
+                            ? "PASS"
+                            : "FAIL"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </>
         )}
       </Panel>
 
@@ -349,84 +742,57 @@ export function WorkflowConsole() {
           <div className="panel-heading">
             <div>
               <div className="eyebrow">
-                <Icon name="shield" size={14} />
-                <span>MODEL REGISTRY & LIFECYCLE GATE</span>
+                <Icon name="lock" size={14} />
+                <span>TIER-2 HUMAN APPROVAL QUEUE</span>
               </div>
-              <h2>คลังเวอร์ชันโมเดล (Native Registry)</h2>
+              <h2>คำขออนุมัติที่รอดำเนินการ</h2>
             </div>
-            <StatusBadge tone={registry?.configured ? "good" : "neutral"}>
-              {registry?.active_version || (registry?.configured ? "ยังไม่ Active" : "ยังไม่ตั้งค่า Registry")}
+            <StatusBadge tone={pendingApprovals.length > 0 ? "warn" : "neutral"}>
+              {pendingApprovals.length} รออนุมัติ
             </StatusBadge>
           </div>
-          {!registry?.configured ? (
+          {!isAdmin ? (
             <div className="unavailable-block">
-              <strong>{registry?.detail || "ยังไม่ได้กำหนด ZYRQUEN_MODEL_REGISTRY_ROOT บน Backend"}</strong>
-              <p>ระบบจะไม่แสดงเวอร์ชันหรือผลประเมินจำลองจนกว่าจะเชื่อมต่อโฟลเดอร์ ModelRegistry จริง</p>
+              <strong>เฉพาะผู้ดูแลระบบ (Admin) เท่านั้นที่อนุมัติ Tier-2 Gate ได้</strong>
+              <p>งานฝึกโมเดล ใช้ GPU แบบมีค่าใช้จ่าย หรือการเปลี่ยนเวอร์ชัน Production จะถูกหยุดรอจนกว่า Admin จะลงนามอนุมัติ</p>
             </div>
-          ) : registry.versions.length === 0 ? (
+          ) : pendingApprovals.length === 0 ? (
             <div className="unavailable-block">
-              <strong>ยังไม่มีเวอร์ชันโมเดลที่ลงทะเบียนไว้</strong>
-              <p>เวอร์ชันใหม่จะปรากฏที่นี่หลังผ่าน Data Gate, Training และ Registration</p>
+              <strong>ไม่มีคำขอ Tier-2 ที่รออนุมัติในขณะนี้</strong>
+              <p>เมื่อสั่งรัน Workflow กลุ่ม Training หรือ Model Promotion ระบบจะสร้างคำขอพร้อมลายเซ็น HMAC ที่นี่</p>
             </div>
           ) : (
             <div className="workflow-run-list">
-              {registry.versions.map((ver) => (
-                <div className="workflow-run-row" key={ver.version}>
+              {pendingApprovals.map((app) => (
+                <div className="workflow-run-row" key={app.id}>
                   <div className="workflow-run-main">
-                    <strong>{ver.version}</strong>
+                    <strong>{app.action_type}</strong>
                     <small>
-                      Parent: {ver.parent || "baseline"} · Eval:{" "}
-                      {ver.evaluation_evidence ? (ver.evaluation_evidence.passed ? "PASS" : "FAIL") : "NOT RUN"}
+                      {app.scope} · ID: <code>{app.id}</code>
                     </small>
                   </div>
-                  <StatusBadge tone={statusToneFor(ver.lifecycle_status || "registered")}>
-                    {ver.lifecycle_status || "registered"}
-                  </StatusBadge>
+                  <div className="workflow-actions">
+                    <button
+                      className="button button-primary"
+                      disabled={busyKey === app.id}
+                      onClick={() => void decideApproval(app.id, true)}
+                      type="button"
+                    >
+                      อนุมัติ
+                    </button>
+                    <button
+                      className="button button-danger"
+                      disabled={busyKey === app.id}
+                      onClick={() => void decideApproval(app.id, false)}
+                      type="button"
+                    >
+                      ปฏิเสธ
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
           )}
-
-          {isAdmin ? (
-            <div className="workflow-approval-box">
-              <div className="eyebrow" style={{ marginBottom: 8 }}>
-                <Icon name="lock" size={13} />
-                <span>TIER-2 HUMAN APPROVAL QUEUE ({pendingApprovals.length})</span>
-              </div>
-              {pendingApprovals.length === 0 ? (
-                <p className="workflow-muted">ไม่มีคำขอ Tier-2 ที่รออนุมัติในขณะนี้</p>
-              ) : (
-                <div className="workflow-run-list">
-                  {pendingApprovals.map((app) => (
-                    <div className="workflow-run-row" key={app.id}>
-                      <div className="workflow-run-main">
-                        <strong>{app.action_type}</strong>
-                        <small>{app.scope}</small>
-                      </div>
-                      <div className="workflow-actions">
-                        <button
-                          className="button button-primary"
-                          disabled={busyKey === app.id}
-                          onClick={() => void decideApproval(app.id, true)}
-                          type="button"
-                        >
-                          อนุมัติ
-                        </button>
-                        <button
-                          className="button button-danger"
-                          disabled={busyKey === app.id}
-                          onClick={() => void decideApproval(app.id, false)}
-                          type="button"
-                        >
-                          ปฏิเสธ
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : null}
         </Panel>
       </div>
     </div>

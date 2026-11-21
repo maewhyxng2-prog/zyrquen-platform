@@ -51,9 +51,12 @@ LIFECYCLE_STATES = (
     "staging",
     "production",
     "quarantined",
+    "blocked",
+    "failed",
     "archived",
 )
 PROMOTABLE_LIFECYCLE_STATES = ("verified", "staging", "production")
+FROZEN_BASELINE_NAMES = frozenset({"v7", "v8", "ZYRQUEN-v7", "ZYRQUEN-v8"})
 
 @dataclass
 class _InProcessLockState:
@@ -308,9 +311,14 @@ class ModelRegistry:
     # ---- register ----
     def register(self, version: str, checkpoint_dir: str | Path, tokenizer_path: str | Path,
                  dataset_dir: str | Path, metrics: dict | None = None, notes: str = "",
-                 parent: str | None = None, reservation_token: str | None = None) -> dict:
+                 parent: str | None = None, reservation_token: str | None = None,
+                 architecture: dict | None = None, training_metadata: dict | None = None,
+                 hardware: dict | None = None, capabilities: dict | None = None,
+                 frozen: bool = False) -> dict:
         if not _VERSION.match(version):
             raise RegistryError("invalid version name (use letters, digits, . _ - ; max 64 chars)")
+        if version in FROZEN_BASELINE_NAMES:
+            raise RegistryError(f"cannot overwrite protected baseline identifier: {version}")
 
         with self._registry_lock():
             data = self._read()
@@ -379,20 +387,27 @@ class ModelRegistry:
                 shutil.rmtree(dest, ignore_errors=True)
                 raise
 
+            resolved_arch = architecture if architecture is not None else state.get("model_config")
+            resolved_training = training_metadata if training_metadata is not None else state.get("config")
             record = {
                 "version": version,
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "parent": parent,
                 "lifecycle_status": "registered",
+                "frozen": bool(frozen),
                 "checkpoint": {"step": entry["step"], "sha256": entry["sha256"],
                                "size_bytes": entry["size_bytes"], "path": f"artifacts/{version}/checkpoint.pt"},
                 "tokenizer": {"version": tok.version, "sha256": tok.fingerprint(),
                               "file_sha256": _sha256(dest / "tokenizer.json"),
+                              "vocab_size": tok.vocab_size,
                               "path": f"artifacts/{version}/tokenizer.json"},
                 "dataset": {"version": ds_manifest["version"], "content_sha256": ds_manifest["content_sha256"],
                             "path": f"artifacts/{version}/dataset_manifest.json"},
-                "training_config": state.get("config"),
+                "architecture": resolved_arch,
+                "training_config": resolved_training,
                 "model_config": state.get("model_config"),
+                "hardware": hardware,
+                "capabilities": capabilities or {},
                 "metrics": metrics or {},
                 "evaluation_evidence": None,
                 "workflow_lineage": {},
@@ -472,6 +487,7 @@ class ModelRegistry:
         metrics: dict[str, Any],
         passed: bool,
         zero_regression: bool = True,
+        capabilities: dict[str, Any] | None = None,
         workflow_run_id: str | None = None,
         reason: str = "",
     ) -> dict:
@@ -481,6 +497,8 @@ class ModelRegistry:
             if version not in data["versions"]:
                 raise RegistryError(f"unknown version: {version}")
             rec = data["versions"][version]
+            if rec.get("frozen") or version in FROZEN_BASELINE_NAMES:
+                raise RegistryError(f"version {version} is frozen/closed and cannot be mutated")
             next_status = "verified" if (passed and zero_regression) else "quarantined"
             rec["lifecycle_status"] = next_status
             rec["evaluation_evidence"] = {
@@ -496,6 +514,10 @@ class ModelRegistry:
                 merged = dict(rec.get("metrics") or {})
                 merged.update(metrics)
                 rec["metrics"] = merged
+            if capabilities:
+                merged_caps = dict(rec.get("capabilities") or {})
+                merged_caps.update(capabilities)
+                rec["capabilities"] = merged_caps
             lineage = dict(rec.get("workflow_lineage") or {})
             if workflow_run_id:
                 lineage["eval_workflow_run_id"] = workflow_run_id
@@ -519,6 +541,8 @@ class ModelRegistry:
             if version not in data["versions"]:
                 raise RegistryError(f"unknown version: {version}")
             rec = data["versions"][version]
+            if rec.get("frozen") or version in FROZEN_BASELINE_NAMES:
+                raise RegistryError(f"version {version} is frozen/closed and cannot be mutated")
             if lifecycle_status == "staging" and rec.get("lifecycle_status") != "verified":
                 raise RegistryError(f"version {version} must be verified before staging")
             rec["lifecycle_status"] = lifecycle_status
@@ -533,31 +557,109 @@ class ModelRegistry:
             self._write(data)
             return rec
 
+    def check_compatibility(
+        self,
+        version: str,
+        *,
+        tokenizer_sha256: str | None = None,
+        expected_model_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Verify artifact hashes, tokenizer compatibility, and architecture metadata."""
+        rec = self.get(version)
+        reasons: list[str] = []
+        artifacts_ok = self.verify(version)
+        if not artifacts_ok:
+            reasons.append("Artifact SHA-256 verification failed or files missing.")
+
+        tok_info = rec.get("tokenizer") or {}
+        tok_ok = bool(tok_info.get("sha256")) and (
+            tokenizer_sha256 is None or tok_info.get("sha256") == tokenizer_sha256
+        )
+        if not tok_ok:
+            reasons.append("Tokenizer SHA-256 missing or incompatible.")
+
+        arch_info = rec.get("architecture") or rec.get("model_config")
+        arch_ok = isinstance(arch_info, dict) and (
+            expected_model_type is None or arch_info.get("model_type") == expected_model_type
+        )
+        if not arch_ok:
+            reasons.append("Architecture / model_config metadata missing or mismatched.")
+
+        return {
+            "version": version,
+            "compatible": artifacts_ok and tok_ok and arch_ok,
+            "checks": {
+                "artifacts_sha256": artifacts_ok,
+                "tokenizer_sha256": tok_ok,
+                "architecture_config": arch_ok,
+            },
+            "reasons": reasons,
+        }
+
+    def get_lineage(self, version: str) -> dict[str, Any]:
+        """Trace parent lineage and provenance chain from version back to baseline."""
+        data = self._read()
+        chain: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        curr: str | None = version
+        while curr is not None:
+            if curr in seen:
+                raise RegistryError(f"cycle detected in model lineage at {curr}")
+            if curr not in data["versions"]:
+                raise RegistryError(f"unknown version in lineage: {curr}")
+            seen.add(curr)
+            rec = data["versions"][curr]
+            ev = rec.get("evaluation_evidence") or {}
+            chain.append(
+                {
+                    "version": curr,
+                    "parent": rec.get("parent"),
+                    "lifecycle_status": rec.get("lifecycle_status", "registered"),
+                    "created_at": rec.get("created_at"),
+                    "dataset_version": (rec.get("dataset") or {}).get("version"),
+                    "dataset_sha256": (rec.get("dataset") or {}).get("content_sha256"),
+                    "checkpoint_sha256": (rec.get("checkpoint") or {}).get("sha256"),
+                    "tokenizer_sha256": (rec.get("tokenizer") or {}).get("sha256"),
+                    "eval_report_sha256": ev.get("report_sha256"),
+                    "eval_passed": ev.get("passed"),
+                    "workflow_lineage": rec.get("workflow_lineage") or {},
+                }
+            )
+            curr = rec.get("parent")
+        return {"version": version, "depth": len(chain), "ancestors": chain}
+
     def compare_versions(self, base_version: str, candidate_version: str) -> dict:
         """Compare numeric evaluation metrics and capability deltas between two versions."""
         base = self.get(base_version)
         cand = self.get(candidate_version)
-        base_m = base.get("metrics") or {}
-        cand_m = cand.get("metrics") or {}
 
-        numeric_deltas: dict[str, dict[str, float | None]] = {}
-        regressed_metrics: list[str] = []
-        all_keys = sorted(set(base_m.keys()) | set(cand_m.keys()))
-        for key in all_keys:
-            b_val = base_m.get(key)
-            c_val = cand_m.get(key)
-            if isinstance(b_val, (int, float)) and not isinstance(b_val, bool) and isinstance(c_val, (int, float)) and not isinstance(c_val, bool):
-                delta = round(float(c_val) - float(b_val), 6)
-                numeric_deltas[key] = {
-                    "base": float(b_val),
-                    "candidate": float(c_val),
-                    "delta": delta,
-                }
-                if key.endswith("loss"):
-                    if delta > 0.01:
-                        regressed_metrics.append(key)
-                elif delta < -0.01:
-                    regressed_metrics.append(key)
+        def _diff_numeric(base_map: dict[str, Any], cand_map: dict[str, Any]) -> tuple[dict, list[str]]:
+            deltas: dict[str, dict[str, float | None]] = {}
+            regressed: list[str] = []
+            for key in sorted(set(base_map.keys()) | set(cand_map.keys())):
+                b_val = base_map.get(key)
+                c_val = cand_map.get(key)
+                if (
+                    isinstance(b_val, (int, float))
+                    and not isinstance(b_val, bool)
+                    and isinstance(c_val, (int, float))
+                    and not isinstance(c_val, bool)
+                ):
+                    delta = round(float(c_val) - float(b_val), 6)
+                    deltas[key] = {"base": float(b_val), "candidate": float(c_val), "delta": delta}
+                    if key.endswith("loss"):
+                        if delta > 0.01:
+                            regressed.append(key)
+                    elif delta < -0.01:
+                        regressed.append(key)
+            return deltas, regressed
+
+        numeric_deltas, regressed_metrics = _diff_numeric(
+            base.get("metrics") or {}, cand.get("metrics") or {}
+        )
+        capability_deltas, regressed_capabilities = _diff_numeric(
+            base.get("capabilities") or {}, cand.get("capabilities") or {}
+        )
 
         return {
             "base_version": base_version,
@@ -566,7 +668,9 @@ class ModelRegistry:
             "candidate_lifecycle": cand.get("lifecycle_status", "registered"),
             "metric_deltas": numeric_deltas,
             "regressed_metrics": regressed_metrics,
-            "zero_regression": len(regressed_metrics) == 0,
+            "capability_deltas": capability_deltas,
+            "regressed_capabilities": regressed_capabilities,
+            "zero_regression": (len(regressed_metrics) == 0 and len(regressed_capabilities) == 0),
         }
 
     # ---- promote / rollback ----
@@ -584,6 +688,11 @@ class ModelRegistry:
             data = self._read()
             rec = data["versions"][version]
             if enforce_evaluation_gate:
+                compat = self.check_compatibility(version)
+                if not compat["compatible"]:
+                    raise RegistryError(
+                        f"promotion blocked: compatibility check failed for {version}: {compat['reasons']}"
+                    )
                 lifecycle = rec.get("lifecycle_status", "registered")
                 ev = rec.get("evaluation_evidence")
                 if lifecycle not in PROMOTABLE_LIFECYCLE_STATES:

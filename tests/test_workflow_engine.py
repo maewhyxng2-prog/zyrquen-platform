@@ -568,6 +568,49 @@ class TestModelRegistryLifecycleAndEvaluationGate(unittest.TestCase):
             self.assertEqual(registry.active_version(), v1)
             self.assertEqual(registry.get(v1)["lifecycle_status"], "production")
 
+            # Compatibility & Lineage verification
+            compat = registry.check_compatibility(v2)
+            self.assertTrue(compat["compatible"])
+            self.assertTrue(compat["checks"]["artifacts_sha256"])
+            self.assertTrue(compat["checks"]["tokenizer_sha256"])
+            self.assertTrue(compat["checks"]["architecture_config"])
+
+            lineage = registry.get_lineage(v2)
+            self.assertEqual(lineage["depth"], 2)
+            self.assertEqual([a["version"] for a in lineage["ancestors"]], [v2, v1])
+
+            # Capability regression detection
+            registry.attach_evaluation_evidence(
+                v1,
+                eval_run_id="eval-cap-1",
+                report_sha256="d" * 64,
+                metrics={"test_unseen_fg_exact": 0.85},
+                capabilities={"relational_reasoning": 0.82},
+                passed=True,
+                zero_regression=True,
+            )
+            registry.attach_evaluation_evidence(
+                v2,
+                eval_run_id="eval-cap-2",
+                report_sha256="e" * 64,
+                metrics={"test_unseen_fg_exact": 0.90},
+                capabilities={"relational_reasoning": 0.70},
+                passed=True,
+                zero_regression=True,
+            )
+            cap_cmp = registry.compare_versions(v1, v2)
+            self.assertFalse(cap_cmp["zero_regression"])
+            self.assertIn("relational_reasoning", cap_cmp["regressed_capabilities"])
+
+            # Frozen baseline names v7/v8 cannot be overwritten
+            with self.assertRaises(RegistryError):
+                registry.register("v8", ckpt_dir, tok_path, ds_dir)
+
+            # Blocked/failed states cannot be promoted
+            registry.set_lifecycle_status(v2, "blocked", reason="manual block")
+            with self.assertRaises(RegistryError):
+                registry.promote(v2, enforce_evaluation_gate=True, approval_id="app-blocked")
+
 
 if __name__ == "__main__":
     unittest.main()

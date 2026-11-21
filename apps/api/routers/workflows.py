@@ -14,6 +14,7 @@ from apps.api.workflow_schemas import (
     ApprovalDecisionRequest,
     ModelPromoteRequest,
     ModelRollbackRequest,
+    ModelStageRequest,
     TriggerWorkflowRequest,
 )
 from apps.core.native.registry import ModelRegistry, RegistryError
@@ -177,6 +178,13 @@ def list_workflow_audit_logs(
     return {"items": redact_dict(engine.store.list_audit_logs(run_id=run_id, limit=limit))}
 
 
+_BASELINE_POLICY = {
+    "v7": {"status": "Baseline", "note": "Preserved legacy baseline"},
+    "v8": {"status": "CLOSED / FROZEN", "note": "Immutable frozen reference"},
+    "v9": {"status": "Development", "note": "Experimental candidate track"},
+}
+
+
 @router.get("/v1/models/registry")
 def list_model_registry(
     _: User = Depends(get_current_user),
@@ -187,14 +195,23 @@ def list_model_registry(
             "configured": False,
             "detail": info,
             "active_version": None,
+            "registered_count": 0,
+            "baseline_policy": _BASELINE_POLICY,
             "versions": [],
         }
     try:
+        versions = registry.list_versions()
+        enriched = []
+        for rec in versions:
+            compat = registry.check_compatibility(rec["version"])
+            enriched.append({**rec, "compatibility": compat})
         return {
             "configured": True,
             "root": info,
             "active_version": registry.active_version(),
-            "versions": registry.list_versions(),
+            "registered_count": len(enriched),
+            "baseline_policy": _BASELINE_POLICY,
+            "versions": enriched,
         }
     except RegistryError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
@@ -213,6 +230,54 @@ def compare_model_versions(
         return registry.compare_versions(base, candidate)
     except RegistryError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.get("/v1/models/registry/{version}/lineage")
+def get_model_lineage(
+    version: str,
+    _: User = Depends(get_current_user),
+):
+    registry, info = _get_model_registry()
+    if registry is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=info)
+    try:
+        return {
+            "record": registry.get(version),
+            "lineage": registry.get_lineage(version),
+            "compatibility": registry.check_compatibility(version),
+        }
+    except RegistryError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.post("/v1/models/registry/{version}/stage")
+def stage_model_version(
+    version: str,
+    body: ModelStageRequest,
+    current_user: User = Depends(require_admin),
+):
+    registry, info = _get_model_registry()
+    if registry is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=info)
+    if not body.approval_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tier-2 approval_id is required to stage a model version.",
+        )
+    try:
+        compat = registry.check_compatibility(version)
+        if not compat["compatible"]:
+            raise RegistryError(f"Compatibility check failed: {compat['reasons']}")
+        rec = registry.set_lifecycle_status(
+            version,
+            "staging",
+            approval_id=body.approval_id,
+            approved_by=current_user.email,
+            reason=body.reason,
+        )
+        return {"status": "staged", "record": rec, "compatibility": compat}
+    except RegistryError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
 @router.post("/v1/models/registry/{version}/promote")

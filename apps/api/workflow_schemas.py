@@ -19,6 +19,11 @@ class ApprovalDecisionRequest(BaseModel):
     reason: str = Field(default="", max_length=500)
 
 
+class ModelStageRequest(BaseModel):
+    approval_id: str | None = Field(default=None, max_length=64)
+    reason: str = Field(default="", max_length=500)
+
+
 class ModelPromoteRequest(BaseModel):
     approval_id: str | None = Field(default=None, max_length=64)
 

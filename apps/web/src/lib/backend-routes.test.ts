@@ -79,6 +79,13 @@ describe("backend proxy route allowlist", () => {
       ),
     ).toBe(true);
     expect(isAllowedBackendRoute("GET", "v1/models/registry")).toBe(true);
+    expect(isAllowedBackendRoute("GET", "v1/models/registry/compare")).toBe(true);
+    expect(
+      isAllowedBackendRoute("GET", "v1/models/registry/ZYRQUEN-Native-0.1.0/lineage"),
+    ).toBe(true);
+    expect(
+      isAllowedBackendRoute("POST", "v1/models/registry/ZYRQUEN-Native-0.1.0/stage"),
+    ).toBe(true);
     expect(
       isAllowedBackendRoute("POST", "v1/models/registry/ZYRQUEN-Native-0.1.0/promote"),
     ).toBe(true);
@@ -101,6 +108,8 @@ describe("backend proxy route allowlist", () => {
     expect(isAllowedBackendRoute("GET", "v1/workflows/runs/not-a-uuid")).toBe(false);
     expect(isAllowedBackendRoute("DELETE", "v1/models/registry/ZYRQUEN-Native-0.1.0/promote")).toBe(false);
     expect(isAllowedBackendRoute("POST", "v1/models/registry/../secret/promote")).toBe(false);
+    expect(isAllowedBackendRoute("GET", "v1/models/registry/v1..2/lineage")).toBe(false);
+    expect(isAllowedBackendRoute("GET", "v1/models/registry/ZYRQUEN-Native-0.1.0/stage")).toBe(false);
   });
 });
 

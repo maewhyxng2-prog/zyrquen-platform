@@ -60,6 +60,12 @@ export function isAllowedBackendRoute(method: string, path: string): boolean {
   if (new RegExp(`^v1/workflows/approvals/${id}/decision$`, "i").test(path)) {
     return normalizedMethod === "POST";
   }
+  if (new RegExp(`^v1/models/registry/${version}/lineage$`, "i").test(path)) {
+    return normalizedMethod === "GET";
+  }
+  if (new RegExp(`^v1/models/registry/${version}/stage$`, "i").test(path)) {
+    return normalizedMethod === "POST";
+  }
   if (new RegExp(`^v1/models/registry/${version}/promote$`, "i").test(path)) {
     return normalizedMethod === "POST";
   }

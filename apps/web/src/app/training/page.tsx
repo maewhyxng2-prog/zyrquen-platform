@@ -83,21 +83,21 @@ export default function TrainingPage() {
         </Panel>
       </section>
 
-      <section className="future-grid" aria-label="ส่วนงานในแผนพัฒนา">
+      <section className="future-grid" aria-label="ขอบเขต API และ Runtime">
         <Panel className="future-card">
           <div className="future-title"><Icon name="layers" size={17} /><span>การจัดการ Checkpoint</span></div>
-          <StatusBadge tone="neutral">อยู่ในแผนพัฒนา · ยังไม่เชื่อมต่อ API</StatusBadge>
-          <p>ยังไม่มี Endpoint สำหรับจัดการ Checkpoint ให้หน้าเว็บเรียกใช้งานได้</p>
+          <StatusBadge tone="neutral">จัดการผ่าน Registry · อัปโหลดไฟล์ยังปิด</StatusBadge>
+          <p>ไฟล์ Checkpoint ที่ลงทะเบียนแล้วถูกตรวจ SHA-256 ผ่าน Model Registry โดยไม่อนุญาตให้แก้ไขหรือลบไฟล์เดิมจากหน้าเว็บโดยตรง</p>
         </Panel>
         <Panel className="future-card">
           <div className="future-title"><Icon name="history" size={17} /><span>การจัดการเวอร์ชันโมเดล</span></div>
-          <StatusBadge tone="neutral">อยู่ในแผนพัฒนา · ยังไม่เชื่อมต่อ API</StatusBadge>
-          <p>ยังไม่สามารถแสดงรายการหรือตรวจสอบประวัติเวอร์ชันโมเดลผ่านเส้นทาง API ปัจจุบันได้</p>
+          <StatusBadge tone="good">เชื่อมต่อ /v1/models/registry*</StatusBadge>
+          <p>แสดง Lifecycle, Lineage, Compatibility, Comparison, Staging, Promote และ Rollback ผ่าน Workflow &amp; Registry Console ด้านบน</p>
         </Panel>
         <Panel className="future-card">
           <div className="future-title"><Icon name="check-circle" size={17} /><span>ระบบประเมินผลโมเดล</span></div>
-          <StatusBadge tone="neutral">อยู่ในแผนพัฒนา · ยังไม่เชื่อมต่อ API</StatusBadge>
-          <p>ยังไม่มีการเปิดเผยคะแนนประเมินและรายงานผลการตรวจสอบผ่าน API</p>
+          <StatusBadge tone="warn">ต้องใช้หลักฐานจริงจาก Evaluation</StatusBadge>
+          <p>Evaluation Gate จะเปลี่ยนสถานะเป็น Verified หรือ Quarantined จาก Evaluation Report จริงเท่านั้น</p>
         </Panel>
       </section>
       <p className="footnote"><Icon name="help" size={14} /> การปิดบังข้อมูลส่วนบุคคล (PII) ในชุดข้อมูลทำงานแบบจับคู่รูปแบบข้อความ โมดูลหลักไม่ได้รับรองการปกป้องความเป็นส่วนตัวแบบสมบูรณ์</p>

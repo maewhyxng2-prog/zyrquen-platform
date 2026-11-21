@@ -294,11 +294,6 @@ def build_models_namespace(torch_mod, nn, F):
         @torch_mod.no_grad()
         def generate(self, src, max_len: int = 48, bos_idx: int = BOS_ID, eos_idx: int = EOS_ID):
             # src is expected to be [bos] + src_toks (no trailing eos) for causal continuation
-            h = self.emb(src)
-            _, hc = self.lstm(h)
-            cur = src[:, -1:]
-            logits_step = self.head(h[:, -1:, :])  # fallback unused; feed last hidden via step
-            # Re-compute prefix output cleanly to get last hidden output
             out_seq, hc = self.lstm(self.emb(src))
             nxt = self.head(out_seq[:, -1, :]).argmax(dim=-1)
             preds = []
@@ -877,7 +872,7 @@ def compute_batch_loss(
         valid_mask = trg_out != PAD_ID
         if valid_mask.any():
             is_slot_tok = (trg_out >= 4) & (trg_out < 4 + MAX_EPHEMERAL_SLOTS)
-            pgen_targets = torch_mod.where(is_slot_tok, 0.0, 1.0)
+            pgen_targets = 1.0 - is_slot_tok.float()
             p_clamped = p_gen.squeeze(-1).clamp(1e-6, 1.0 - 1e-6)
             bce = -(
                 pgen_targets * torch_mod.log(p_clamped)
@@ -1456,7 +1451,7 @@ def run_train(args, data_dir: Path, out_dir: Path, audit_report: dict[str, Any])
         if "py_rng_state" in r_ckpt:
             rng.setstate(r_ckpt["py_rng_state"])
         if "torch_rng_state" in r_ckpt:
-            torch_mod.set_rng_state(r_ckpt["torch_rng_state"])
+            torch_mod.set_rng_state(r_ckpt["torch_rng_state"].cpu())
         start_step = int(r_ckpt.get("step", 0))
         best_val_loss = float(r_ckpt.get("best_val_loss", float("inf")))
         best_val_fg_exact = float(r_ckpt.get("best_val_fg_exact", -1.0))
@@ -1493,7 +1488,7 @@ def run_train(args, data_dir: Path, out_dir: Path, audit_report: dict[str, Any])
 
     stopped_reason = "completed"
     last_step = start_step
-    best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()} if best_path.exists() else None
+    best_state = None
 
     for step in range(start_step + 1, total_steps + 1):
         last_step = step
@@ -1619,6 +1614,7 @@ def run_train(args, data_dir: Path, out_dir: Path, audit_report: dict[str, Any])
                     "best_val_loss": best_val_loss,
                     "best_val_fg_exact": best_val_fg_exact,
                     "params": total_params,
+                    "environment": env_meta,
                     "elapsed_sec": round(time.time() - t0, 2),
                     "max_rss_kb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
                 }
@@ -1650,6 +1646,7 @@ def run_train(args, data_dir: Path, out_dir: Path, audit_report: dict[str, Any])
                 "best_val_fg_exact": best_val_fg_exact,
                 "no_improve": no_improve,
                 "params": total_params,
+                "environment": env_meta,
                 "elapsed_sec": round(time.time() - t0, 2),
                 "max_rss_kb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
             }
@@ -1798,6 +1795,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.batch_size <= 0 or args.grad_accum <= 0 or args.eval_every <= 0:
+        print("BLOCKED: --batch_size, --grad_accum, and --eval_every must be > 0", file=sys.stderr)
+        return 1
+    if args.seq < 16:
+        print("BLOCKED: --seq must be >= 16", file=sys.stderr)
+        return 1
+    if args.steps is not None and args.steps <= 0:
+        print("BLOCKED: --steps must be > 0", file=sys.stderr)
+        return 1
+
     data_dir = Path(args.data)
     out_dir = Path(args.out) if args.out else Path("checkpoints/nagi_v9") / args.arm
 

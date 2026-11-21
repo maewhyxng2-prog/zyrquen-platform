@@ -69,11 +69,15 @@ EVAL_SPLITS = ("val_unseen", "val_ood", "test_unseen", "test_ood")
 def calc_repetition(toks: list[str]) -> bool:
     if len(toks) < 2:
         return False
-    # Flag single-token loop (e.g. "E1 E1 E1") or adjacent duplicate non-arrow tokens
+    # Flag single-token loop (e.g. "E1 E1 E1") or adjacent duplicate tokens
     if len(set(toks)) == 1:
         return True
     for i in range(len(toks) - 1):
         if toks[i] == toks[i + 1]:
+            return True
+    # Flag immediate bigram cycles (e.g. "A -> A ->" or "A B A B")
+    for i in range(len(toks) - 3):
+        if toks[i] == toks[i + 2] and toks[i + 1] == toks[i + 3]:
             return True
     return False
 
@@ -359,7 +363,8 @@ def evaluate_rows(
                             q_part = after_upd.split(q_cue, 1)[1]
                             upd_body = after_upd.split(q_cue, 1)[0]
                             q_ent = q_part.strip().split()[0] if q_part.strip() else ""
-                            if q_ent and q_ent in upd_body:
+                            upd_toks = set(tokenize_structural_text(upd_body))
+                            if q_ent and q_ent in upd_toks:
                                 acc["adaptive_override_tot"] += 1
                                 if fg_exact:
                                     acc["adaptive_override_hit"] += 1
@@ -1247,6 +1252,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.max_len <= 0:
+        print("BLOCKED: --max_len must be > 0", file=sys.stderr)
+        return 1
     data_dir = Path(args.data)
     ckpt_path = Path(args.checkpoint)
 
