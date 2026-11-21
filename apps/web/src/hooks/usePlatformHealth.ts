@@ -1,20 +1,46 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  createElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { apiRequest } from "@/lib/api";
 import type { ApiHealth, NativeHealth } from "@/lib/types";
 
-export function usePlatformHealth() {
+export type PlatformHealthState = {
+  apiHealth: ApiHealth | null;
+  nativeHealth: NativeHealth | null;
+  apiError: string | null;
+  nativeError: string | null;
+  loading: boolean;
+  lastChecked: Date | null;
+  platformVersion: string | null;
+  platformStage: string | null;
+  modelVersion: string | null;
+  refresh: () => Promise<void>;
+};
+
+const PlatformHealthContext = createContext<PlatformHealthState | null>(null);
+
+function usePlatformHealthPolling(enabled: boolean): PlatformHealthState {
   const [apiHealth, setApiHealth] = useState<ApiHealth | null>(null);
   const [nativeHealth, setNativeHealth] = useState<NativeHealth | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
   const [nativeError, setNativeError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(enabled);
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
 
   const requestId = useRef(0);
 
   const refresh = useCallback(async () => {
+    if (!enabled) return;
     const currentRequestId = ++requestId.current;
 
     setLoading(true);
@@ -62,9 +88,11 @@ export function usePlatformHealth() {
 
     setLastChecked(new Date());
     setLoading(false);
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
+    if (!enabled) return;
+
     const initialCheck = window.setTimeout(() => {
       void refresh();
     }, 0);
@@ -78,15 +106,58 @@ export function usePlatformHealth() {
       window.clearInterval(interval);
       requestId.current += 1;
     };
-  }, [refresh]);
+  }, [enabled, refresh]);
 
-  return {
-    apiHealth,
-    nativeHealth,
-    apiError,
-    nativeError,
-    loading,
-    lastChecked,
-    refresh,
-  };
+  const platformVersion =
+    nativeHealth?.platform_version ??
+    apiHealth?.native_ai?.platform_version ??
+    null;
+
+  const platformStage =
+    nativeHealth?.platform_stage ??
+    apiHealth?.native_ai?.platform_stage ??
+    null;
+
+  const modelVersion =
+    nativeHealth?.model_version ??
+    apiHealth?.native_ai?.model_version ??
+    null;
+
+  return useMemo(
+    () => ({
+      apiHealth,
+      nativeHealth,
+      apiError,
+      nativeError,
+      loading,
+      lastChecked,
+      platformVersion,
+      platformStage,
+      modelVersion,
+      refresh,
+    }),
+    [
+      apiHealth,
+      nativeHealth,
+      apiError,
+      nativeError,
+      loading,
+      lastChecked,
+      platformVersion,
+      platformStage,
+      modelVersion,
+      refresh,
+    ],
+  );
+}
+
+export function PlatformHealthProvider({ children }: { children: ReactNode }) {
+  const value = usePlatformHealthPolling(true);
+  return createElement(PlatformHealthContext.Provider, { value }, children);
+}
+
+export function usePlatformHealth(): PlatformHealthState {
+  const shared = useContext(PlatformHealthContext);
+  const standalone = usePlatformHealthPolling(shared === null);
+  return shared ?? standalone;
 }

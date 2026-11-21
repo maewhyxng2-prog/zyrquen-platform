@@ -12,6 +12,19 @@ type RouteContext = {
   params: Promise<{ path: string[] }>;
 };
 
+function isSameOriginRequest(request: NextRequest): boolean {
+  const origin = request.headers.get("origin");
+  if (!origin) return false;
+  if (origin === request.nextUrl.origin) return true;
+  const host =
+    request.headers.get("x-forwarded-host")?.split(",")[0]?.trim() ||
+    request.headers.get("host")?.trim();
+  const proto =
+    request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() ||
+    request.nextUrl.protocol.replace(/:$/, "");
+  return Boolean(host && proto && origin === `${proto}://${host}`);
+}
+
 async function readBoundedBody(
   request: NextRequest,
   maxBytes: number,
@@ -103,7 +116,7 @@ async function proxy(request: NextRequest, context: RouteContext) {
   if (
     accessToken &&
     !["GET", "HEAD", "OPTIONS"].includes(method) &&
-    request.headers.get("origin") !== request.nextUrl.origin
+    !isSameOriginRequest(request)
   ) {
     return NextResponse.json(
       { detail: "คำขอไม่ผ่านการตรวจสอบแหล่งที่มา" },
@@ -158,9 +171,13 @@ async function proxy(request: NextRequest, context: RouteContext) {
       );
     }
 
-    let identityResponse: Response;
+    let identityStatus = 200;
+    let identityPayload: { id?: unknown; is_active?: unknown } | null = null;
+    let identityErrorText = "";
+    let identityContentType = "application/json";
+
     try {
-      identityResponse = await fetch(`${baseUrl}/auth/me`, {
+      const identityResponse = await fetch(`${baseUrl}/auth/me`, {
         method: "GET",
         headers: {
           Authorization: authorizationHeader,
@@ -172,6 +189,16 @@ async function proxy(request: NextRequest, context: RouteContext) {
           AbortSignal.timeout(hasExplicitUrl ? 10_000 : 1_500),
         ]),
       });
+      identityStatus = identityResponse.status;
+      identityContentType =
+        identityResponse.headers.get("content-type") ?? "application/json";
+      if (identityResponse.ok) {
+        identityPayload = (await identityResponse.json().catch(() => null)) as
+          | { id?: unknown; is_active?: unknown }
+          | null;
+      } else {
+        identityErrorText = await identityResponse.text();
+      }
     } catch {
       return NextResponse.json(
         { detail: "ไม่สามารถยืนยันบัญชีกับ ZYRQUEN API ได้" },
@@ -179,16 +206,15 @@ async function proxy(request: NextRequest, context: RouteContext) {
       );
     }
 
-    if (!identityResponse.ok) {
-      const response = new NextResponse(await identityResponse.text(), {
-        status: identityResponse.status,
+    if (identityStatus < 200 || identityStatus >= 300) {
+      const response = new NextResponse(identityErrorText, {
+        status: identityStatus,
         headers: {
-          "content-type":
-            identityResponse.headers.get("content-type") ?? "application/json",
+          "content-type": identityContentType,
           "cache-control": "no-store",
         },
       });
-      if (identityResponse.status === 401 || identityResponse.status === 403) {
+      if (identityStatus === 401 || identityStatus === 403) {
         const expired = buildSessionCookieOptions(request, 0);
         response.cookies.set(ACCESS_COOKIE, "", expired);
         response.cookies.set(EMAIL_COOKIE, "", expired);
@@ -196,9 +222,6 @@ async function proxy(request: NextRequest, context: RouteContext) {
       return response;
     }
 
-    const identityPayload = (await identityResponse.json().catch(() => null)) as
-      | { id?: unknown; is_active?: unknown }
-      | null;
     if (
       typeof identityPayload?.id !== "string" ||
       identityPayload.is_active !== true
@@ -219,9 +242,8 @@ async function proxy(request: NextRequest, context: RouteContext) {
     }
   }
 
-  const upstreamUrl = path ? `${baseUrl}/${path}` : `${baseUrl}/`;
-
   let upstream: Response;
+  const upstreamUrl = path ? `${baseUrl}/${path}` : `${baseUrl}/`;
   try {
     const timeoutMs = isInferenceRequest
       ? 120_000

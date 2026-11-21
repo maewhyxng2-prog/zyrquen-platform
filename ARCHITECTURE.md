@@ -78,15 +78,15 @@ Build an independent, internet-connected, multi-user AI platform with its own na
 
 ## 8. Implementation Status
 Architecture specification: Defined.
-Production backend: Not yet implemented.
-Native AI Core: Not yet implemented.
-Cloud deployment: Not yet implemented.
-Public launch: Not yet implemented.
+Web Client & FastAPI Control Plane (`apps/web/`, `apps/api/`): Implemented (Phase 10.9.9 Integration Gate `PASSED`; fails closed without mock backend).
+Native AI Core & Training Infrastructure (`apps/core/`, `phases/phase11.py`–`phases/phase20.py`): Code implemented (Phase 11–20 `60/60` local unit tests; no trained ZYRQUEN model weights bundled).
+Model Capability Progression (`v7` → `v8` → `v9` → `NGI`): `v7` baseline & `v8` Attention + Pointer-Copy closed/frozen (`docs/V8_SUMMARY.md`, `docs/V8_EXPERIMENT_CLOSURE_REPORT.md`); `v9` Generalization & Native Reasoning planned (`docs/V9_BLUEPRINT.md`, `docs/V9_EXPERIMENT_PLAN.md`, not yet trained).
+Cloud deployment & Public launch: Not yet provisioned or verified for production.
 
 The Phase 9 intelligence package contains contract-level implementations and a
-runtime integration validator. This does not constitute native model inference,
-training, production integrations, or generated application execution; see
-[`docs/PHASE_9_STATUS.md`](docs/PHASE_9_STATUS.md) for verified scope and limits.
+runtime integration validator. This does not constitute trained model inference,
+autonomous weight updates, or production integrations; see
+[`docs/PHASE_9_STATUS.md`](docs/PHASE_9_STATUS.md) and [`README.md`](README.md) for verified scope and limits.
 
 ## 9. Long-term Objective
-Deliver ZYRQUEN Ω∞ as an independent, scalable, internet-connected AI platform that can serve multiple users and evolve its own native intelligence capabilities.
+Deliver ZYRQUEN Ω∞ as an independent, scalable, internet-connected AI platform that can serve multiple users and evolve its own native intelligence capabilities toward Native General Intelligence (NGI).
