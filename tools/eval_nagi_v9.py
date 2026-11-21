@@ -52,6 +52,7 @@ from train_nagi_v9 import (  # noqa: E402
     UNK_ID,
     SlotBinding,
     atomic_write_text,
+    collect_runtime_environment,
     encode_pair_slotted,
     encode_pair_standard,
     free_generate_row,
@@ -1075,8 +1076,20 @@ def format_markdown_report(report: dict[str, Any]) -> str:
     stops = report["acceptance_assessment"]["stop_criteria_triggered"]
     lines.append(f"- **Stop Criteria Triggered:** `{stops if stops else 'NONE'}`\n")
 
+    if report.get("novel_structure_evaluation"):
+        ns = report["novel_structure_evaluation"]
+        lines.append("\n## 5. Novel Structure & OOD Generalization Summary\n\n")
+        lines.append(
+            f"- **Zero Template/Skeleton Leakage Confirmed:** `TL-01={ns['tl01_zero_template_leakage']}`, "
+            f"`SL-01={ns['sl01_zero_skeleton_leakage']}`\n"
+            f"- **Val-Unseen vs Val-OOD FG Exact:** `{_f(ns['val_unseen_fg_exact'])}` vs `{_f(ns['val_ood_fg_exact'])}` "
+            f"(OOD gap=`{_f(ns['val_ood_structure_gap'])}`)\n"
+            f"- **Test-Unseen vs Test-OOD FG Exact:** `{_f(ns['test_unseen_fg_exact'])}` vs `{_f(ns['test_ood_fg_exact'])}` "
+            f"(OOD gap=`{_f(ns['test_ood_structure_gap'])}`)\n"
+        )
+
     if report.get("arm_comparison"):
-        lines.append("\n## 5. Multi-Arm Comparison (Apples-to-Apples on `data/nagi_v9/`)\n\n")
+        lines.append("\n## 6. Multi-Arm Comparison (Apples-to-Apples on `data/nagi_v9/`)\n\n")
         lines.append(
             "| Arm | Params | Val Unseen FG | Val OOD FG | Test Unseen FG | Test OOD FG | Unseen Copy (Test) | Efficiency (`TestOOD / 100k`) |\n"
             "|---|---:|---:|---:|---:|---:|---:|---:|\n"
@@ -1088,7 +1101,99 @@ def format_markdown_report(report: dict[str, Any]) -> str:
                 f"{_f(row['test_ood_fg_exact'])} | {_f(row['test_unseen_copy_acc'])} | {_f(row['efficiency_ratio'])} |\n"
             )
 
+    if report.get("regression_comparison"):
+        lines.append("\n## 7. Regression Comparison Against Baselines\n\n")
+        for cmp_entry in report["regression_comparison"]:
+            lines.append(
+                f"- **vs `{cmp_entry['baseline_arm']}`** (`zero_regression={cmp_entry['zero_regression']}`, "
+                f"`test_unseen_delta={_f(cmp_entry['overall_deltas']['test_unseen_fg_exact'])}`, "
+                f"`test_ood_delta={_f(cmp_entry['overall_deltas']['test_ood_fg_exact'])}`, "
+                f"`regressed_capabilities={cmp_entry['regressed_capabilities']}`)\n"
+            )
+
     return "".join(lines)
+
+
+def build_novel_structure_evaluation(
+    splits_results: dict[str, dict[str, Any]],
+    probes: dict[str, Any],
+    audit_report: dict[str, Any],
+) -> dict[str, Any]:
+    vu_fg = splits_results["val_unseen"]["overall"]["free_generation"]["exact_match"]
+    vo_fg = splits_results["val_ood"]["overall"]["free_generation"]["exact_match"]
+    tu_fg = splits_results["test_unseen"]["overall"]["free_generation"]["exact_match"]
+    to_fg = splits_results["test_ood"]["overall"]["free_generation"]["exact_match"]
+
+    per_cap_ood: dict[str, Any] = {}
+    for cap in EXPECTED_CAPABILITIES:
+        tu_cap = splits_results["test_unseen"]["per_capability"].get(cap)
+        to_cap = splits_results["test_ood"]["per_capability"].get(cap)
+        tu_val = tu_cap["free_generation"]["exact_match"] if tu_cap else None
+        to_val = to_cap["free_generation"]["exact_match"] if to_cap else None
+        per_cap_ood[cap] = {
+            "test_unseen_fg_exact": tu_val,
+            "test_ood_fg_exact": to_val,
+            "structure_gap": round(tu_val - to_val, 4) if (tu_val is not None and to_val is not None) else None,
+        }
+
+    gates = audit_report.get("gates", {})
+    return {
+        "tl01_zero_template_leakage": bool(gates.get("TL-01", {}).get("passed", False)),
+        "sl01_zero_skeleton_leakage": bool(gates.get("SL-01", {}).get("passed", False)),
+        "val_unseen_fg_exact": vu_fg,
+        "val_ood_fg_exact": vo_fg,
+        "val_ood_structure_gap": round(vu_fg - vo_fg, 4),
+        "test_unseen_fg_exact": tu_fg,
+        "test_ood_fg_exact": to_fg,
+        "test_ood_structure_gap": round(tu_fg - to_fg, 4),
+        "probe_2_premise_permutation_passed": probes["probe_2_premise_permutation_invariance"].get("passed"),
+        "probe_3_depth_extrapolation_passed": probes["probe_3_depth_extrapolation_gap"].get("passed"),
+        "probe_4_distractor_sensitivity_passed": probes["probe_4_distractor_sensitivity"].get("passed"),
+        "per_capability_test_ood": per_cap_ood,
+    }
+
+
+def build_regression_comparison(
+    current_report: dict[str, Any],
+    baseline_reports: list[dict[str, Any]],
+    tolerance: float = 0.01,
+) -> list[dict[str, Any]]:
+    comparisons: list[dict[str, Any]] = []
+    for base in baseline_reports:
+        base_arm = base.get("checkpoint", {}).get("arm", "unknown")
+        overall_deltas: dict[str, float | None] = {}
+        for sp in EVAL_SPLITS:
+            curr_sp = current_report["splits"].get(sp, {}).get("overall", {}).get("free_generation", {}).get("exact_match")
+            base_sp = base.get("splits", {}).get(sp, {}).get("overall", {}).get("free_generation", {}).get("exact_match")
+            overall_deltas[f"{sp}_fg_exact"] = (
+                round(curr_sp - base_sp, 4) if (curr_sp is not None and base_sp is not None) else None
+            )
+
+        per_cap_deltas: dict[str, dict[str, float | None]] = {}
+        regressed: list[str] = []
+        for cap in EXPECTED_CAPABILITIES:
+            tu_c = current_report["splits"]["test_unseen"]["per_capability"].get(cap, {}).get("free_generation", {}).get("exact_match")
+            tu_b = base.get("splits", {}).get("test_unseen", {}).get("per_capability", {}).get(cap, {}).get("free_generation", {}).get("exact_match")
+            to_c = current_report["splits"]["test_ood"]["per_capability"].get(cap, {}).get("free_generation", {}).get("exact_match")
+            to_b = base.get("splits", {}).get("test_ood", {}).get("per_capability", {}).get(cap, {}).get("free_generation", {}).get("exact_match")
+            d_tu = round(tu_c - tu_b, 4) if (tu_c is not None and tu_b is not None) else None
+            d_to = round(to_c - to_b, 4) if (to_c is not None and to_b is not None) else None
+            per_cap_deltas[cap] = {"test_unseen_delta": d_tu, "test_ood_delta": d_to}
+            if (d_tu is not None and d_tu < -tolerance) or (d_to is not None and d_to < -tolerance):
+                regressed.append(cap)
+
+        comparisons.append(
+            {
+                "baseline_arm": base_arm,
+                "baseline_checkpoint_sha256": base.get("checkpoint", {}).get("sha256"),
+                "tolerance": tolerance,
+                "overall_deltas": overall_deltas,
+                "per_capability_deltas": per_cap_deltas,
+                "regressed_capabilities": regressed,
+                "zero_regression": len(regressed) == 0,
+            }
+        )
+    return comparisons
 
 
 def build_arm_comparison_rows(current_report: dict[str, Any], compare_paths: list[str]) -> list[dict[str, Any]]:
@@ -1251,6 +1356,8 @@ def main() -> int:
     )
 
     report: dict[str, Any] = {
+        "schema_version": "zyrquen.eval-v9.report.v1",
+        "environment": collect_runtime_environment(torch_mod, device),
         "checkpoint": {
             "path": str(ckpt_path),
             "sha256": sha256_file(ckpt_path),
@@ -1274,12 +1381,15 @@ def main() -> int:
             "max_gen_len": args.max_len,
         },
         "splits": splits_results,
+        "novel_structure_evaluation": build_novel_structure_evaluation(splits_results, probes, audit_report),
         "principle_probes": probes,
         "acceptance_assessment": assessment,
         "arm_comparison": [],
+        "regression_comparison": [],
     }
     if args.compare:
         report["arm_comparison"] = build_arm_comparison_rows(report, args.compare)
+        report["regression_comparison"] = build_regression_comparison(report, baseline_reports)
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

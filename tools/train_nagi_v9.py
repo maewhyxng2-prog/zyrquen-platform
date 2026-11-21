@@ -26,9 +26,12 @@ Does NOT modify v7/v8 files, checkpoints, apps/web, apps/api, or apps/core.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import os
+import platform
 import random
 import resource
 import sys
@@ -91,6 +94,26 @@ def set_seed(seed: int, torch_mod=None) -> None:
         torch_mod.manual_seed(seed)
         if torch_mod.cuda.is_available():
             torch_mod.cuda.manual_seed_all(seed)
+        if hasattr(torch_mod, "backends") and hasattr(torch_mod.backends, "cudnn"):
+            torch_mod.backends.cudnn.deterministic = True
+            torch_mod.backends.cudnn.benchmark = False
+
+
+def collect_runtime_environment(torch_mod=None, device=None) -> dict[str, Any]:
+    return {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "python_version": platform.python_version(),
+        "platform": platform.platform(),
+        "cpu_count": os.cpu_count(),
+        "torch_version": getattr(torch_mod, "__version__", None) if torch_mod is not None else None,
+        "device": str(device) if device is not None else None,
+        "cuda_available": bool(torch_mod.cuda.is_available()) if torch_mod is not None else False,
+        "cudnn_deterministic": (
+            bool(torch_mod.backends.cudnn.deterministic)
+            if torch_mod is not None and hasattr(torch_mod, "backends") and hasattr(torch_mod.backends, "cudnn")
+            else None
+        ),
+    }
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -1360,6 +1383,15 @@ def run_train(args, data_dir: Path, out_dir: Path, audit_report: dict[str, Any])
     val_rows = val_unseen + val_ood
     test_rows = load_jsonl(data_dir / "test_unseen.jsonl") + load_jsonl(data_dir / "test_ood.jsonl")
 
+    if not train_rows or not val_rows:
+        print(
+            f"BLOCKED: invalid/empty dataset splits (train={len(train_rows)}, val={len(val_rows)}) in {data_dir}",
+            file=sys.stderr,
+        )
+        return 1
+
+    env_meta = collect_runtime_environment(torch_mod, device)
+
     use_slots = (args.arm == "arm_d") and (not args.no_slots)
     vocab = build_vocab(train_rows, use_slots=use_slots)
     el05_ok, el05_overlap = verify_vocab_no_eval_leakage(vocab, val_rows + test_rows)
@@ -1474,37 +1506,64 @@ def run_train(args, data_dir: Path, out_dir: Path, audit_report: dict[str, Any])
         step_loss_sum = 0.0
         mega_batch = batches[step - 1]
         aborted_nan = False
+        aborted_reason: str | None = None
+        valid_microbatches = 0
 
-        for acc_i in range(args.grad_accum):
-            sub_batch = mega_batch[acc_i * args.batch_size : (acc_i + 1) * args.batch_size]
-            loss = compute_batch_loss(
-                arm=args.arm,
-                model=model,
-                batch_rows=sub_batch,
-                stoi=stoi,
-                max_seq=args.seq,
-                step_idx=step,
-                total_steps=total_steps,
-                use_slots=use_slots,
-                permute_slots=use_slots,  # Slot Permutation Equivariance during training
-                rng=rng,
-                torch_mod=torch_mod,
-                F=F,
-                device=device,
-                aux_pgen_weight=0.05,
-            )
-            if loss is None:
-                continue
-            loss_scaled = loss / args.grad_accum
-            if not math.isfinite(float(loss_scaled.item())):
+        try:
+            for acc_i in range(args.grad_accum):
+                sub_batch = mega_batch[acc_i * args.batch_size : (acc_i + 1) * args.batch_size]
+                loss = compute_batch_loss(
+                    arm=args.arm,
+                    model=model,
+                    batch_rows=sub_batch,
+                    stoi=stoi,
+                    max_seq=args.seq,
+                    step_idx=step,
+                    total_steps=total_steps,
+                    use_slots=use_slots,
+                    permute_slots=use_slots,  # Slot Permutation Equivariance during training
+                    rng=rng,
+                    torch_mod=torch_mod,
+                    F=F,
+                    device=device,
+                    aux_pgen_weight=0.05,
+                )
+                if loss is None:
+                    continue
+                loss_scaled = loss / args.grad_accum
+                if not math.isfinite(float(loss_scaled.item())):
+                    aborted_nan = True
+                    aborted_reason = "abort_nan_inf_loss"
+                    break
+                loss_scaled.backward()
+                step_loss_sum += float(loss_scaled.item())
+                valid_microbatches += 1
+
+            if not aborted_nan and valid_microbatches == 0:
                 aborted_nan = True
+                aborted_reason = "abort_invalid_batch_no_valid_rows"
+
+            if not aborted_nan:
+                for p in model.parameters():
+                    if p.grad is not None and not torch_mod.isfinite(p.grad).all():
+                        aborted_nan = True
+                        aborted_reason = "abort_nan_inf_grad"
+                        break
+        except (MemoryError, RuntimeError) as exc:
+            msg = str(exc).lower()
+            if isinstance(exc, MemoryError) or "out of memory" in msg:
+                optimizer.zero_grad(set_to_none=True)
+                if torch_mod.cuda.is_available():
+                    torch_mod.cuda.empty_cache()
+                stopped_reason = "abort_oom"
+                print(f"STOP CRITERIA TRIGGERED at step {step}: OutOfMemory ({exc})", file=sys.stderr)
                 break
-            loss_scaled.backward()
-            step_loss_sum += float(loss_scaled.item())
+            raise
 
         if aborted_nan or not math.isfinite(step_loss_sum):
-            stopped_reason = "abort_nan_inf_loss"
-            print(f"STOP CRITERIA TRIGGERED at step {step}: NaN/Inf loss")
+            optimizer.zero_grad(set_to_none=True)
+            stopped_reason = aborted_reason or "abort_nan_inf_loss"
+            print(f"STOP CRITERIA TRIGGERED at step {step}: {stopped_reason}", file=sys.stderr)
             break
 
         nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -1620,7 +1679,8 @@ def run_train(args, data_dir: Path, out_dir: Path, audit_report: dict[str, Any])
                 print(f"Early stopping at step {step} (no improvement for {no_improve} evals)")
                 break
 
-    if best_state is None and best_path.exists() is False:
+    best_state_restored = False
+    if best_state is None and not best_path.exists():
         # Ensure best.pt exists even if run aborted early before first eval_every
         best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
         best_payload = {
@@ -1643,10 +1703,21 @@ def run_train(args, data_dir: Path, out_dir: Path, audit_report: dict[str, Any])
             "best_val_loss": best_val_loss if math.isfinite(best_val_loss) else None,
             "best_val_fg_exact": best_val_fg_exact,
             "params": total_params,
+            "environment": env_meta,
             "elapsed_sec": round(time.time() - t0, 2),
             "max_rss_kb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
         }
         atomic_torch_save(torch_mod, best_payload, best_path)
+
+    # Restore best validation weights into model before closing out training
+    if best_state is not None:
+        model.load_state_dict({k: v.to(device) for k, v in best_state.items()})
+        best_state_restored = True
+    elif best_path.is_file():
+        best_ckpt_disk = torch_mod.load(best_path, map_location=device, weights_only=False)
+        if "model_state" in best_ckpt_disk:
+            model.load_state_dict(best_ckpt_disk["model_state"])
+            best_state_restored = True
 
     elapsed_sec = round(time.time() - t0, 2)
     max_rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
@@ -1663,6 +1734,7 @@ def run_train(args, data_dir: Path, out_dir: Path, audit_report: dict[str, Any])
         "best_step": best_step,
         "best_val_loss": best_val_loss if math.isfinite(best_val_loss) else None,
         "best_val_fg_exact_sample": best_val_fg_exact if best_val_fg_exact >= 0 else None,
+        "best_state_restored": best_state_restored,
         "train_loss_last10": round(avg_last10, 4) if avg_last10 is not None else None,
         "params": total_params,
         "vocab_size": len(vocab),
@@ -1671,6 +1743,7 @@ def run_train(args, data_dir: Path, out_dir: Path, audit_report: dict[str, Any])
         "el05_verified_zero": True,
         "from_scratch": True,
         "seed": args.seed,
+        "arch_cfg": arch_cfg,
         "dataset": str(data_dir),
         "dataset_manifest_sha256": manifest_sha,
         "leakage_audit_status": audit_report.get("overall_status"),
@@ -1678,6 +1751,7 @@ def run_train(args, data_dir: Path, out_dir: Path, audit_report: dict[str, Any])
         "best_checkpoint_sha256": sha256_file(best_path) if best_path.is_file() else None,
         "last_checkpoint": str(last_path) if last_path.is_file() else None,
         "last_checkpoint_sha256": sha256_file(last_path) if last_path.is_file() else None,
+        "environment": env_meta,
         "elapsed_sec": elapsed_sec,
         "max_rss_kb": max_rss_kb,
     }
@@ -1688,7 +1762,8 @@ def run_train(args, data_dir: Path, out_dir: Path, audit_report: dict[str, Any])
 
     print(
         f"DONE [{args.arm}] reason={stopped_reason} | step={last_step} | best_step={best_step} | "
-        f"best_val_loss={summary['best_val_loss']} | elapsed={elapsed_sec}s | rss={max_rss_kb}KB"
+        f"best_val_loss={summary['best_val_loss']} | best_restored={best_state_restored} | "
+        f"elapsed={elapsed_sec}s | rss={max_rss_kb}KB"
     )
     print(f"Summary saved to {out_dir / 'train_summary.json'}")
     return 1 if stopped_reason.startswith("abort_") else 0
