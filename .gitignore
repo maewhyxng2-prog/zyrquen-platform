@@ -40,3 +40,5 @@ runs/
 artifacts/
 *.ckpt
 *.npz
+node_modules/
+package-lock.json
