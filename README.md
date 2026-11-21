@@ -18,13 +18,14 @@ ZYRQUEN Ω∞ เป็นโครงการวิจัยและวิศ
 
 | ระดับหลักฐาน | สถานะปัจจุบัน | รายละเอียดที่ตรวจสอบได้จริง |
 | --- | --- | --- |
-| **Implementation** | มีโค้ดต้นฉบับใน Repository | Web Client (`apps/web/`), FastAPI Service (`apps/api/`), Native Runtime / Tokenizer / Model / Dataset / Training (`apps/core/`), Training Infrastructure (`apps/core/training_infrastructure/`), Intelligence Phase 9.1–9.10 (`apps/core/intelligence/`), Alembic Migrations (`apps/api/migrations/`) และเอกสารปฏิบัติการ (`docs/operations/`) |
-| **Unit Tests** | มีการตรวจบางส่วนหลัง Cleanup Gate (ไม่ใช่หลักฐานว่า Full Test Suite ผ่าน) | ชุดสัญญา Phase 9 และ SVG safety (`tests/`), Web checks (`apps/web/`), และผลหลัง Phase 10 Cleanup Gate ใน Sandbox แบบไม่มี dependencies เสริม (`apps/core/native/test_evaluation.py`: 3 pure-Python tests passed, 8 tests blocked ต้องใช้ `torch`; `apps/api/test_evaluation.py` และ `apps/api/test_auth_gate.py`: blocked/not run ใน Sandbox ต้องรันใน CI/environment ที่มี `pytest`, `fastapi`, `sqlalchemy`) ดูรายละเอียดใน [Verification](#verification) |
-| **Integration Verification** | ยังติดข้อจำกัด (Blocked / Conditional) | `apps/api/test_pg_integration.py` ข้ามการทำงานหากไม่ตั้งค่า `ZYRQUEN_PG_INTEGRATION=1` และ Test PostgreSQL; PostgreSQL quota concurrency, Alembic upgrade/downgrade บน Test PostgreSQL จริง และ production-like HTTP/multi-user E2E ยังไม่มีผลยืนยันในเครื่องท้องถิ่น (ดู [`docs/operations/KNOWN_LIMITATIONS.md`](docs/operations/KNOWN_LIMITATIONS.md)) |
+| **Implementation** | มีโค้ดต้นฉบับใน Repository | Web Client (`apps/web/`), FastAPI Service (`apps/api/`), Native Runtime / Tokenizer / Model / Dataset / Training (`apps/core/`), Training Infrastructure (`apps/core/training_infrastructure/`), Intelligence Phase 9.1–9.10 (`apps/core/intelligence/`), Alembic Migrations (`apps/api/migrations/`), และเอกสารปฏิบัติการ/เตรียมความพร้อม (`docs/operations/`, `docs/engineering/`) |
+| **Unit Tests** | ผ่านบางส่วน (ไม่ใช่ Full Runtime CI Pass) | **AI Studio Sandbox (stdlib):** Python AST `173/173` ผ่าน, `tests/` pure-unittest `128/128` ผ่าน (อีก 16 tests ใน 3 ไฟล์ต้องใช้ `pytest`), `apps/core` pure-Python (`test_native_runtime.py`: 14 passed / 6 skipped, `native/test_evaluation.py`: 3 passed / 8 blocked ต้องใช้ `torch`), Web Vitest (`16/16`), TypeScript และ ESLint ผ่าน (ส่วน `apps/api/` unit suite ยังคง `BLOCKED` ใน Sandbox ต้องใช้ `pytest`/`fastapi`/`sqlalchemy`/`torch`) • **Codespaces (ภาพหลักฐาน):** `apps/web` `npm test && typecheck && lint && build` build Next.js สำเร็จ ดูรายละเอียดใน [Verification](#verification) |
+| **Integration Verification** | **Phase 10.9.9 Gate: `NOT CLOSED`** (`BLOCKED`) | การแก้ `apps/api/migrations/env.py` (`poolclass=NullPool`) ผ่าน **Static Verification** แล้วใน AI Studio และมี Commit `74aea54` บน `origin/main` แต่จากหลักฐาน Codespaces ล่าสุด Local `HEAD` ยังอยู่ที่ `e6f1386` (`test_pg_integration.py` ได้ `3 skipped` เพราะไม่มี Test PostgreSQL ใน Workspace), CI run `44877359816` (`e6f1386`) ล้มเหลวจาก `NameError: name 'pool' is not defined`, และ **ยังไม่มีหลักฐานผล CI Run บน `74aea54`** รวมถึงยังไม่ได้รัน Docker build จาก Repo Root (ดู [`docs/engineering/ZYRQUEN_PHASE_READINESS.md`](docs/engineering/ZYRQUEN_PHASE_READINESS.md) และ [`docs/operations/KNOWN_LIMITATIONS.md`](docs/operations/KNOWN_LIMITATIONS.md)) |
 | **Production Deployment** | ยังไม่พร้อมและยังไม่ได้ Deploy | ยังไม่มี trained ZYRQUEN model weights, ยังไม่ได้ provision โครงสร้างพื้นฐาน Cloud / PostgreSQL / GPU / Monitoring / Alerting / Backup storage และห้ามระบุว่าเป็น Production Ready |
 
 เอกสารอ้างอิงหลัก:
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — ขอบเขตสถาปัตยกรรมและสถานะการพัฒนาภาพรวม
+- [`docs/engineering/ZYRQUEN_PHASE_READINESS.md`](docs/engineering/ZYRQUEN_PHASE_READINESS.md) — สถานะการปิด Gate Phase 10.9.9, ข้อเสนอ Phase 11 (รออนุมัติ) และ Future Work Packages (`11.x`)
 - [`docs/PHASE_9_STATUS.md`](docs/PHASE_9_STATUS.md) — ขอบเขตและข้อจำกัดของ Phase 9.1–9.10
 - [`docs/operations/KNOWN_LIMITATIONS.md`](docs/operations/KNOWN_LIMITATIONS.md) — รายการ blocker ของ Phase 6–7 และสิ่งที่ยังไม่ได้ตรวจ/ยังไม่ได้ตั้งค่า
 - [`API_ACCESS.md`](API_ACCESS.md) — แนวทางการใช้งาน API keys สำหรับ server-to-server inference
@@ -135,7 +136,7 @@ uvicorn apps.api.main:app --reload
 ```
 
 หมายเหตุเพิ่มเติม:
-- `apps/api/requirements.txt` มี `tokenizers` และ `transformers` แต่ **ไม่รวม `torch`** หากต้องการโหลดโมเดลจริงหรือรัน test ที่ต้องใช้ PyTorch ต้องติดตั้ง `torch` แยก (เช่น CPU build ใน `.github/workflows/api-tests.yml`)
+- `apps/api/requirements.txt` รวมชุด FastAPI, Uvicorn, Pydantic Settings, SQLAlchemy, Alembic, `psycopg[binary]`, JWT/Passlib และ `pytest` แต่ **ไม่รวม `torch`, `tokenizers` หรือ `transformers`** หากต้องการโหลดโมเดลจริงหรือรัน test ที่ต้องใช้ PyTorch ต้องติดตั้ง `torch` แยก (เช่น CPU build ใน `.github/workflows/api-tests.yml`)
 - เมื่อไม่มี model artifact ที่ `ZYRQUEN_MODEL_PATH` API ยังสามารถเริ่มต้นในโหมด degraded ได้ แต่ endpoint `/v1/native-ai/infer` และ `/v1/native-ai/infer/stream` จะคืนสถานะ `503`
 - ดูรายการตัวแปรสภาพแวดล้อมทั้งหมดได้ที่ [`docs/operations/CONFIGURATION_REFERENCE.md`](docs/operations/CONFIGURATION_REFERENCE.md) และ [`.env.example`](.env.example)
 
@@ -187,21 +188,25 @@ python -m apps.api.admin_bootstrap
 
 ## Verification
 
-### สถานะการทดสอบล่าสุดตามหลักฐาน (หลัง Phase 10 Cleanup Gate)
+### สถานะการทดสอบล่าสุดตามหลักฐาน (Phase 10.8 / Phase 10.9.9 Readiness)
 
-สถานะหลังแก้ไขและตรวจใน Sandbox (`/usr/bin/python3` 3.11.2 stdlib เท่านั้น — ไม่ได้ติดตั้ง dependencies เพิ่ม):
+แยกผลตามสภาพแวดล้อมที่ตรวจสอบจริงเพื่อป้องกันการเข้าใจคลาดเคลื่อน:
 
-- **Passed (ยืนยันผลจริงใน Sandbox):**
-  - Static syntax (`ast.parse`), import compatibility และ format check: **6/6** ไฟล์ที่แก้ไขและคงอยู่บนดิสก์ (`apps/core/native/evaluation/{__init__.py,engine.py,metrics.py}`, `apps/core/native/test_evaluation.py`, `apps/api/routers/evaluation.py`, `apps/api/test_evaluation.py`) โดยลบ `apps/core/native/evaluation.py` เพื่อแก้ shadowing แล้ว
-  - Pure-Python tests ใน `apps/core/native/test_evaluation.py`: **3 passed** (`test_package_does_not_shadow_module`, `test_evaluation_rejects_unconfigured_engine`, `test_metrics_reject_invalid_inputs`)
-  - Standalone pure-Python runtime check บน `EvaluationEngine` + `prepare_dataset`: **6/6 assertions passed**
-- **Blocked (ใน Sandbox ปัจจุบันเนื่องจากขาด Dependencies):**
-  - `apps/core/native/test_evaluation.py`: **8 tests blocked** (`ModuleNotFoundError: No module named 'torch'`) ใน `VersionedCheckpointManager.save_versioned()` ที่เรียก `_torch_save`
-  - `apps/api/test_evaluation.py` และ `apps/api/test_auth_gate.py`: **blocked** ใน Sandbox เนื่องจากไม่มี `pytest`, `fastapi`, `sqlalchemy`, `pydantic`, `jose`, `passlib`, `httpx` (อ้างอิงประวัติเดิมก่อน Cleanup Gate ที่ commit `6f4b5bd` เคยรันผ่าน `test_auth_gate.py`: 4 passed และ `test_evaluation.py` เวอร์ชันเดิม: 1 passed แต่ยังไม่ได้รันยืนยันซ้ำหลังขยายโค้ดและเทสต์ใน Cleanup Gate)
-- **Not Run:**
-  - การรัน `pytest` เต็มชุดหลัง Cleanup Gate สำหรับ `apps/core/native/test_evaluation.py`, `apps/api/test_evaluation.py`, `apps/api/test_auth_gate.py`, Full Repository Test Suite และ `apps/api/test_pg_integration.py`
+- **Passed / Static Pass (ยืนยันผลจริงใน AI Studio Sandbox — Python 3.11.2 stdlib + Web Node 22):**
+  - Python `ast.parse` ทั้ง Repository: **173/173** ไฟล์ `.py` ผ่าน (`SYNTAX_ERRORS: []`) และ `apps/api/migrations/env.py` (`poolclass=NullPool,`) ผ่าน `AST_PARSE: OK`
+  - External AI Provider Audit ใน `apps/`: **`0 hits`** (ไม่มี OpenAI/Anthropic/Gemini/LiteLLM/LangChain)
+  - Pure-Python `unittest` ใน `tests/`: **128/128 passed** (16 ไฟล์; อีก 3 ไฟล์รวม 16 tests ต้องใช้ `pytest`)
+  - Pure-Python checks ใน `apps/core/`: `test_native_runtime.py` (**14 passed, 6 skipped**), `native/test_evaluation.py` (**3 passed**, 8 blocked ต้องใช้ `torch`), `test_evaluation.py` (**4 passed**), `distributed/test_trainer.py` (**4 passed**), `gpu/test_provisioner.py` (**4 passed**)
+  - Web checks ใน `apps/web/`: Vitest (**4 files, 16 passed**), `tsc --noEmit` (**PASS**), `eslint . --max-warnings=0` (**PASS**)
+- **Codespaces Evidence (จากภาพหน้าจอบน `/workspaces/zyrquen-platform`, Local `HEAD: e6f1386`):**
+  - Web build (`cd apps/web && npm test && npm run typecheck && npm run lint && npm run build`): **Next.js build สำเร็จ** (`12/12` static pages)
+  - `apps/api/test_pg_integration.py`: **`3 skipped`** เนื่องจากยังไม่มี Test PostgreSQL / env markers ใน Codespaces
+- **Blocked / Not Closed (ต้องปิดใน Codespaces & GitHub Actions บน `origin/main` ล่าสุด `74aea54`):**
+  - `apps/api/` API & security suite (`79` test functions ใน `15` ไฟล์) และ `torch`-dependent tests (`apps/core/`) **blocked** ใน AI Studio Sandbox เนื่องจากขาด dependencies (`pytest`, `fastapi`, `sqlalchemy`, `alembic`, `psycopg`, `torch`)
+  - GitHub Actions run ล่าสุดที่เห็นผล (`44877359816` บน `e6f1386`) ล้มเหลวใน `postgres-integration` (`NameError: name 'pool' is not defined`) และยังไม่มีหลักฐาน CI run สำหรับ Commit `74aea54` (`refactor(api): fix sqlalchemy pool class import`) บน `origin/main`
+  - Docker build จาก Repository Root (`apps/api/Dockerfile`, `apps/web/Dockerfile`) และ `npm run test:e2e` (`apps/web/e2e/platform.spec.ts` vs UI ภาษาไทย) ยังไม่ได้รับการยืนยันผ่านในรอบล่าสุด
 
-คำสั่งสำหรับรัน targeted tests หลัง Cleanup Gate ใน CI หรือเครื่องที่มี dependencies ครบ:
+คำสั่งสำหรับรัน targeted tests จาก **Repository Root** ใน CI หรือ Codespaces ที่มี dependencies ครบ:
 
 ```bash
 PYTHONPATH="$PWD:$PWD/apps/api" \
@@ -213,8 +218,8 @@ python -m pytest -v apps/core/native/test_evaluation.py apps/api/test_evaluation
 ```
 
 **ข้อจำกัดและข้อควรระวังในการตีความผล:**
-- ปัญหา package/module shadowing ระหว่าง `apps/core/native/evaluation.py` กับ `apps/core/native/evaluation/` ได้รับการแก้ไขแล้ว แต่ยังมี **API tests (`apps/api/test_evaluation.py`, `apps/api/test_auth_gate.py`) ที่ยังไม่ได้รันหลัง Cleanup Gate** และ **Native tests 8 รายการใน `apps/core/native/test_evaluation.py` ที่ต้องใช้ `torch`** จึงห้ามอ้างว่า Full Test Suite ผ่านทั้งหมด
-- การผ่าน contract/integrity tests ยังไม่ใช่หลักฐานว่า Native Model ได้รับการฝึกหรือมีความสามารถจริง จนกว่าจะเชื่อม `NativeModelLoader` / Inference และรัน evaluation บนหลักฐานจริงผ่านครบถ้วน
+- ปัญหา `apps/core/native/evaluation.py` shadowing และ `poolclass=NullPool` ใน AI Studio ถูกแก้ไขแล้วในระดับซอร์สโค้ด แต่ **Phase 10.9.9 Gate ยังมีสถานะ `NOT CLOSED`** จนกว่าจะยืนยัน `test_pg_integration.py`, API/Native full pytest, Docker builds จาก Repo Root และ CI Workflow บน SHA ปัจจุบัน (`74aea54`+) ได้ครบถ้วน
+- การผ่าน Static หรือ Contract/Integrity tests ยังไม่ใช่หลักฐานว่า Native Model ได้รับการฝึกหรือมีความสามารถจริง (ห้ามเปิด Phase 11 หรือทำ Auto-Promotion จนกว่า Gate 10.9.9 จะปิดและได้รับอนุมัติ)
 
 ### ชุดคำสั่งตรวจสอบใน Repository
 
@@ -297,4 +302,4 @@ Operational Endpoints ที่เปิดใช้งานใน `apps/api/ma
 2. การทดสอบ **Alembic migration execution** (upgrade/downgrade) บน Test PostgreSQL ที่ยืนยันตัวตนแล้ว
 3. การทดสอบ **production-like HTTP E2E และ multi-user** ครบวงจร
 
-ดูแผนงานระยะยาวเพิ่มเติมได้ที่ [`docs/roadmap/01_ZYRQUEN_Roadmap.md`](docs/roadmap/01_ZYRQUEN_Roadmap.md), [`docs/roadmap/02_Phase3_Native_AI_Architecture.md`](docs/roadmap/02_Phase3_Native_AI_Architecture.md) และ snapshot ประวัติศาสตร์ใน [`docs/NEXT_STEPS_STATUS.md`](docs/NEXT_STEPS_STATUS.md)
+ดูแผนงานระยะยาวและการเตรียมความพร้อมแต่ละเฟสได้ที่ [`docs/engineering/ZYRQUEN_PHASE_READINESS.md`](docs/engineering/ZYRQUEN_PHASE_READINESS.md), [`docs/roadmap/01_ZYRQUEN_Roadmap.md`](docs/roadmap/01_ZYRQUEN_Roadmap.md), [`docs/roadmap/02_Phase3_Native_AI_Architecture.md`](docs/roadmap/02_Phase3_Native_AI_Architecture.md) และ snapshot ประวัติศาสตร์ใน [`docs/NEXT_STEPS_STATUS.md`](docs/NEXT_STEPS_STATUS.md)
