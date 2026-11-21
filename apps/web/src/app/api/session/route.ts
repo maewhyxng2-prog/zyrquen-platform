@@ -6,6 +6,7 @@ import {
   EMAIL_COOKIE,
   buildSessionCookieOptions,
 } from "@/lib/cookies";
+import { getMockSessionStatus, shouldUseMockBackend } from "@/lib/mock-backend";
 
 function clearSessionCookies(request: NextRequest, response: NextResponse) {
   const expiredCookie = buildSessionCookieOptions(request, 0);
@@ -123,6 +124,11 @@ export async function GET(request: NextRequest) {
   const hasExplicitUrl = Boolean(configuredUrl?.trim());
   const authorization = `Bearer ${accessToken}`;
 
+  if (await shouldUseMockBackend(baseUrl, hasExplicitUrl)) {
+    const mockSession = getMockSessionStatus(authorization);
+    return buildSessionResponse(request, mockSession.status, mockSession.payload);
+  }
+
   if (!baseUrl) {
     return NextResponse.json(
       {
@@ -148,6 +154,10 @@ export async function GET(request: NextRequest) {
       signal: AbortSignal.timeout(hasExplicitUrl ? 10_000 : 1_500),
     });
   } catch {
+    if (!hasExplicitUrl) {
+      const mockSession = getMockSessionStatus(authorization);
+      return buildSessionResponse(request, mockSession.status, mockSession.payload);
+    }
     return NextResponse.json(
       {
         authenticated: false,

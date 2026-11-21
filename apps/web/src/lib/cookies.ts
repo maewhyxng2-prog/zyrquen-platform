@@ -5,17 +5,20 @@ export const EMAIL_COOKIE = "zyrquen_email";
 export const SESSION_SECONDS = 30 * 60;
 
 function isHttpsRequest(request?: NextRequest): boolean {
-  if (process.env.NODE_ENV === "production") {
-    return true;
+  if (request) {
+    const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+    if (forwardedProto) {
+      return forwardedProto === "https";
+    }
+    if (request.nextUrl.protocol === "https:") {
+      return true;
+    }
+    const hostname = request.nextUrl.hostname.toLowerCase();
+    if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "0.0.0.0") {
+      return false;
+    }
   }
-  if (!request) {
-    return false;
-  }
-  const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
-  if (forwardedProto) {
-    return forwardedProto === "https";
-  }
-  return request.nextUrl.protocol === "https:";
+  return process.env.NODE_ENV === "production";
 }
 
 export function buildSessionCookieOptions(request?: NextRequest, maxAge = SESSION_SECONDS) {
