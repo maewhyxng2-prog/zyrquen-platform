@@ -352,7 +352,7 @@ def test_http_multi_user_auth_isolation_and_api_keys(pg_engine, Session):
         headers={"Authorization": f"Bearer {token_a}"},
         json={"title": "private-a"},
     )
-    assert conversation_a.status_code == 200
+    assert conversation_a.status_code == 201
     conversation_id = conversation_a.json()["id"]
     cross_read = client.get(
         f"/conversations/{conversation_id}",
