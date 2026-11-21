@@ -54,20 +54,32 @@
 
 ---
 
-## 3. ผลการทดลองเปรียบเทียบ `v7` vs `v8` (Empirical Results)
+## 3. ผลการทดลองเปรียบเทียบ `v7` vs `v8` และโครงสร้างค่าชี้วัดที่คาดหวัง (Expected Metrics Ledger)
 
 > **ข้อจำกัดตามกฎห้ามสร้างตัวเลขที่ไม่มีอยู่จริง:** ในพื้นที่ทำงาน AI Studio นี้ **ไม่มี** ไฟล์ `checkpoints/nagi_500_v8/*.pt`, `eval/nagi_500_v7_500/report.json`, `eval/nagi_500_v8/report.json`, `eval/nagi_500_v8/report.md`, หรือ `data/nagi_500_v3/*.jsonl` อยู่จริง จึง **ไม่สามารถตรวจยืนยันหรือคัดลอกตัวเลขผลลัพธ์จริง** ในพื้นที่ทำงานนี้ได้
 
-| เมตริกเปรียบเทียบ (`v7` vs `v8`) | สถานะใน Workspace | ค่าที่ยืนยันได้ใน Workspace |
-|---|---|---|
-| Validation / Test Exact Match (`v7` vs `v8`) | **BLOCKED** | ไม่มี `report.json` ของ `v7` และ `v8` ใน Workspace |
-| First-token Accuracy | **BLOCKED** | ไม่มี `report.json` ใน Workspace |
-| EOS Hit และ EOS Position / Premature EOS | **BLOCKED** | ไม่มี `report.json` ใน Workspace |
-| Repetition Rate | **BLOCKED** | ไม่มี `report.json` ใน Workspace |
-| Entity Copy Accuracy & Unseen Entity Copy | **BLOCKED** | ไม่มี `report.json` ใน Workspace |
-| ผลแยกราย Capability (Teacher-forced vs Free-gen) | **BLOCKED** | ไม่มี `report.json` ใน Workspace |
-| Parameter Count (`v7` vs `v8`) | **BLOCKED** | คำนวณจริงไม่ได้เพราะไม่มี `vocab` จาก `data/nagi_500_v3/train.jsonl` และไม่มี `torch` |
-| Training Time & Peak Memory (`elapsed_sec`, `max_rss_kb`) | **BLOCKED** | ไม่มี `metrics.json` / Checkpoint ใน Workspace |
+### 3.1 ตารางแยกผลลัพธ์ระหว่าง Teacher-Forced กับ Free-Generation (ตามโครงสร้าง `eval_nagi_500_v8.py`)
+
+| โหมดประเมิน (Evaluation Mode) | Split | ค่าชี้วัด (Metric) | ค่า `v7` Baseline | ค่า `v8` (Attn + Pointer) | สถานะหลักฐานใน Workspace |
+|---|---|---|---:|---:|---|
+| **Teacher-Forced** | `val` / `test` | Exact Match (`exact_match`) | `BLOCKED` | `BLOCKED` | ต้องอ่านจาก `report.json` จริง (`*_overall.teacher_forced`) |
+| **Teacher-Forced** | `val` / `test` | First-token Accuracy (`first_token_acc`) | `BLOCKED` | `BLOCKED` | คำนวณใน `eval_nagi_500_v8.py` บรรทัด `213`, `328` |
+| **Teacher-Forced** | `val` / `test` | Token Accuracy & Loss (`token_acc`, `loss_avg`) | `BLOCKED` | `BLOCKED` | คำนวณใน `eval_nagi_500_v8.py` บรรทัด `408–409`, `423–424` |
+| **Teacher-Forced** | `val` / `test` | EOS Hit / Avg EOS Pos / Premature EOS | `BLOCKED` | `BLOCKED` | คำนวณใน `eval_nagi_500_v8.py` บรรทัด `329–331` |
+| **Teacher-Forced** | `val` / `test` | Repetition Rate (`repetition_rate`) | `BLOCKED` | `BLOCKED` | คำนวณใน `eval_nagi_500_v8.py` บรรทัด `184–188`, `332` |
+| **Teacher-Forced** | `val` / `test` | Entity Copy & Unseen Copy Accuracy | `BLOCKED` | `BLOCKED` | คำนวณใน `eval_nagi_500_v8.py` บรรทัด `311–320`, `333–336` |
+| **Free-Generation** | `val` / `test` | Exact Match (`exact_match`) | `BLOCKED` | `BLOCKED` | ใช้เทียบหลักใน `v7_baseline_comparison` (บรรทัด `488–501`) |
+| **Free-Generation** | `val` / `test` | First-token Accuracy (`first_token_acc`) | `BLOCKED` | `BLOCKED` | ใช้เทียบใน `v7_baseline_comparison` (บรรทัด `502–509`) |
+| **Free-Generation** | `val` / `test` | EOS Hit / Avg EOS Pos / Premature EOS | `BLOCKED` | `BLOCKED` | ใช้เทียบ `eos_hit_rate` ใน `v7_baseline_comparison` (บรรทัด `510–517`) |
+| **Free-Generation** | `val` / `test` | Repetition Rate (`repetition_rate`) | `BLOCKED` | `BLOCKED` | ใช้เทียบใน `v7_baseline_comparison` (บรรทัด `518–525`) |
+| **Free-Generation** | `val` / `test` | Entity Copy & Unseen Copy (`dynamic local vocab`) | `BLOCKED` | `BLOCKED` | รองรับ `E00–E99` และ `*_e000` (บรรทัด `218–283`, `311–336`) |
+| **Free-Generation** | `val` / `test` | Mean Pointer Gate (`mean_p_gen`) | `N/A` *(ไม่มีใน v7)* | `BLOCKED` | วัดสัดส่วนการ Generate เทียบ Copy (บรรทัด `260–265`, `427`) |
+| **Gap Analysis** | `val` / `test` | Exposure Bias Gap (`TF exact - FG exact`) | `BLOCKED` | `BLOCKED` | คำนวณทั้งราย Capability และ Overall (บรรทัด `418`, `433`) |
+
+### 3.2 สรุปความพร้อมของตัวชี้วัดระดับระบบและการแยกราย Capability
+- **ผลแยกราย Capability (`val_per_capability`, `test_per_capability`):** `eval_nagi_500_v8.py` แยกประเมินครบทุก Capability (ทั้ง `teacher_forced` และ `free_generation` แยกเป็น 2 แถวต่อ Capability ใน `report.md` บรรทัด `603–621`) — สถานะหลักฐานใน Workspace: **BLOCKED** (ไม่มี `report.json`)
+- **Parameter Count (`v7` vs `v8`):** คำนวณใน Workspace ไม่ได้เพราะไม่มี `vocab` จาก `data/nagi_500_v3/train.jsonl` และไม่มี `torch` (ตัวเลขบันทึกอ้างอิงจากเจ้าของโครงการ: `273,955` → `523,708`) — สถานะ: **BLOCKED**
+- **Training Time & Peak Memory (`elapsed_sec`, `max_rss_kb`):** บันทึกใน `metrics.json` และ `checkpoint` ของเครื่องที่รันจริง — สถานะใน Workspace: **BLOCKED**
 
 ---
 
