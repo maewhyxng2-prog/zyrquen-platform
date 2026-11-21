@@ -12,7 +12,7 @@ ZYRQUEN Ω∞ เป็นโครงการวิจัยและวิศ
 
 | ระดับหลักฐาน | สถานะปัจจุบัน | รายละเอียดที่ตรวจสอบได้จริง |
 | --- | --- | --- |
-| **Implementation** | มีโค้ดต้นฉบับใน Repository | Web Client (`apps/web/`), FastAPI Service (`apps/api/`), Native Runtime / Tokenizer / Model / Dataset / Training (`apps/core/`), Intelligence Phase 9.1–9.10 (`apps/core/intelligence/`), Phase 11–20 (`phases/phase11.py` - `phases/phase20.py`), Alembic Migrations (`apps/api/migrations/`), เอกสาร (`docs/`) |
+| **Implementation** | มีโค้ดต้นฉบับใน Repository | Web Client (`apps/web/`), FastAPI Service (`apps/api/`), Native Runtime / Tokenizer / Model / Dataset / Training (`apps/core/`), Intelligence Phase 9.1–9.10 (`apps/core/intelligence/`) — ปิดแล้ว ต่อด้วย Phase 10.9.9 `PASSED / CLOSED` และ Phase 11–20 `CODE DONE`, Phase 11–20 (`phases/phase11.py` - `phases/phase20.py`), Alembic Migrations (`apps/api/migrations/`), เอกสาร (`docs/`) |
 | **Unit Tests** | **Local Final Gate 11–20: `60 / 60 PASSED`** | `tests_phases/test_phase11.py` - `tests_phases/test_phase20.py` แต่ละ Phase `6 passed` รวม `60 passed in 0.18s` บนเครื่องท้องถิ่น (Local) |
 | **Integration Verification** | **Phase 10.9.9 Gate: `PASSED / CLOSED`** | CI Run `44893016007`, SHA `466b58a75419708a86469f59a903e322d85081d2`, 4/4 `web / docker / test / postgres-integration` สำเร็จ, docs commit `7a3c3be` |
 | **GitHub CI สำหรับ 11–20** | **ยังไม่ยืนยัน** | ห้ามอ้างว่า CI 4/4 สำหรับ 11–20 ผ่าน จนกว่าจะเห็น Workflow 4 Jobs สำเร็จบน SHA เดียวกัน — ตอนนี้มีแค่ Local `60/60` |
