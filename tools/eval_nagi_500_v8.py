@@ -159,7 +159,11 @@ def main():
     enc = Encoder(len(vocab), emb_dim, hid_dim)
     dec = PointerDecoder(len(vocab), emb_dim, hid_dim)
     model = Seq2Seq(enc, dec, device).to(device)
-    model.load_state_dict(ckpt["model_state"])
+    model_state = ckpt.get("model_state") or ckpt.get("model")
+    if model_state is None:
+        print("BLOCKED checkpoint missing model_state")
+        return
+    model.load_state_dict(model_state)
     model.eval()
 
     data_dir = Path(args.data)
@@ -177,9 +181,16 @@ def main():
 
     criterion = nn.NLLLoss(ignore_index=pad_id)
 
+    def calc_repetition(toks):
+        return len(toks) >= 2 and (
+            len(set(toks)) == 1
+            or any(toks[i] == toks[i + 1] for i in range(len(toks) - 1))
+        )
+
     def teacher_forced_eval(ex):
+        exp_toks = tokenize(ex["target"])
         src_ids = [bos_id] + [stoi.get(t, unk_id) for t in tokenize(ex["input"])] + [eos_id]
-        trg_ids = [bos_id] + [stoi.get(t, unk_id) for t in tokenize(ex["target"])] + [eos_id]
+        trg_ids = [bos_id] + [stoi.get(t, unk_id) for t in exp_toks] + [eos_id]
         src_t = torch.tensor([src_ids], dtype=torch.long, device=device)
         trg_t = torch.tensor([trg_ids], dtype=torch.long, device=device)
         with torch.no_grad():
@@ -189,7 +200,20 @@ def main():
             preds = probs[:, 1:, :].argmax(dim=2).squeeze(0).tolist()
         gold = trg_ids[1:]
         corr = sum(1 for p, g in zip(preds, gold) if p == g)
-        return corr, len(gold), float(loss.item())
+        eos_pos = preds.index(eos_id) if eos_id in preds else -1
+        pred_body_ids = preds[:eos_pos] if eos_pos >= 0 else preds
+        pred_toks = [itos.get(p, "<unk>") for p in pred_body_ids]
+        return {
+            "token_corr": corr,
+            "token_tot": len(gold),
+            "loss": float(loss.item()),
+            "pred_toks": pred_toks,
+            "eos_pos": eos_pos,
+            "exact": pred_toks == exp_toks,
+            "first": bool(pred_toks and exp_toks and pred_toks[0] == exp_toks[0]),
+            "premature_eos": 0 <= eos_pos < len(exp_toks),
+            "rep": calc_repetition(pred_toks),
+        }
 
     def free_generate(inp_text: str):
         inp_toks = tokenize(inp_text)
@@ -258,84 +282,112 @@ def main():
         mean_pgen = sum(p_gens) / len(p_gens) if p_gens else 0.0
         return pred_toks, eos_pos, mean_pgen
 
+    def new_mode_acc():
+        return {
+            "exact": 0,
+            "first": 0,
+            "eos": 0,
+            "prem": 0,
+            "rep": 0,
+            "eos_positions": [],
+            "ent_tot": 0,
+            "ent_hit": 0,
+            "unseen_tot": 0,
+            "unseen_hit": 0,
+        }
+
+    def update_mode_acc(acc, pred_toks, exp_toks, eos_pos, is_exact, is_first, is_prem, is_rep):
+        if is_exact:
+            acc["exact"] += 1
+        if is_first:
+            acc["first"] += 1
+        if eos_pos >= 0:
+            acc["eos"] += 1
+            acc["eos_positions"].append(eos_pos)
+            if is_prem:
+                acc["prem"] += 1
+        if is_rep:
+            acc["rep"] += 1
+        for idx, tok in enumerate(exp_toks):
+            if is_entity_token(tok):
+                acc["ent_tot"] += 1
+                matched = idx < len(pred_toks) and pred_toks[idx] == tok
+                if matched:
+                    acc["ent_hit"] += 1
+                if tok not in train_target_entities:
+                    acc["unseen_tot"] += 1
+                    if matched:
+                        acc["unseen_hit"] += 1
+
+    def finalize_mode(acc, n_items):
+        n = max(1, n_items)
+        eos_pos_list = acc["eos_positions"]
+        return {
+            "exact_match": acc["exact"] / n,
+            "correct": acc["exact"],
+            "first_token_acc": acc["first"] / n,
+            "eos_hit_rate": acc["eos"] / n,
+            "avg_eos_position": (sum(eos_pos_list) / len(eos_pos_list)) if eos_pos_list else None,
+            "premature_eos_rate": acc["prem"] / n,
+            "repetition_rate": acc["rep"] / n,
+            "entity_copy_acc": (acc["ent_hit"] / acc["ent_tot"]) if acc["ent_tot"] > 0 else None,
+            "entity_count": acc["ent_tot"],
+            "unseen_entity_copy_acc": (acc["unseen_hit"] / acc["unseen_tot"]) if acc["unseen_tot"] > 0 else None,
+            "unseen_entity_count": acc["unseen_tot"],
+        }
+
     def eval_split(rows):
         per_cap = {}
         err_cases = {}
         tok_counter = Counter()
 
-        tot_exact = tot_first = tot_eos = tot_prem = tot_rep = 0
-        eos_positions = []
+        tot_fg = new_mode_acc()
+        tot_tf = new_mode_acc()
         pgen_means = []
         tf_corr = tf_tot = 0
         tf_losses = []
-        ent_tot = ent_hit = unseen_tot = unseen_hit = 0
 
         caps = sorted(set(r["capability"] for r in rows))
         for cap in caps:
             items = [r for r in rows if r["capability"] == cap]
-            c_exact = c_first = c_eos = c_prem = c_rep = 0
-            c_eos_pos = []
+            c_fg = new_mode_acc()
+            c_tf = new_mode_acc()
             c_pgens = []
             c_tf_corr = c_tf_tot = 0
             c_tf_losses = []
-            c_ent_tot = c_ent_hit = c_unseen_tot = c_unseen_hit = 0
             err_list = []
 
             for r in items:
-                tf_c, tf_n, tf_l = teacher_forced_eval(r)
-                tf_corr += tf_c
-                tf_tot += tf_n
-                tf_losses.append(tf_l)
-                c_tf_corr += tf_c
-                c_tf_tot += tf_n
-                c_tf_losses.append(tf_l)
+                exp_toks = tokenize(r["target"])
+                tf = teacher_forced_eval(r)
+                tf_corr += tf["token_corr"]
+                tf_tot += tf["token_tot"]
+                tf_losses.append(tf["loss"])
+                c_tf_corr += tf["token_corr"]
+                c_tf_tot += tf["token_tot"]
+                c_tf_losses.append(tf["loss"])
+
+                update_mode_acc(
+                    c_tf, tf["pred_toks"], exp_toks, tf["eos_pos"],
+                    tf["exact"], tf["first"], tf["premature_eos"], tf["rep"],
+                )
+                update_mode_acc(
+                    tot_tf, tf["pred_toks"], exp_toks, tf["eos_pos"],
+                    tf["exact"], tf["first"], tf["premature_eos"], tf["rep"],
+                )
 
                 pred_toks, eos_pos, mean_pgen = free_generate(r["input"])
-                exp_toks = tokenize(r["target"])
                 tok_counter.update(pred_toks)
                 pgen_means.append(mean_pgen)
                 c_pgens.append(mean_pgen)
 
                 is_exact = pred_toks == exp_toks
-                if is_exact:
-                    tot_exact += 1
-                    c_exact += 1
+                is_first = bool(pred_toks and exp_toks and pred_toks[0] == exp_toks[0])
+                is_prem = 0 <= eos_pos < len(exp_toks)
+                is_rep = calc_repetition(pred_toks)
 
-                if pred_toks and exp_toks and pred_toks[0] == exp_toks[0]:
-                    tot_first += 1
-                    c_first += 1
-
-                if eos_pos >= 0:
-                    tot_eos += 1
-                    c_eos += 1
-                    eos_positions.append(eos_pos)
-                    c_eos_pos.append(eos_pos)
-                    if eos_pos < len(exp_toks):
-                        tot_prem += 1
-                        c_prem += 1
-
-                is_rep = len(pred_toks) >= 2 and (
-                    len(set(pred_toks)) == 1
-                    or any(pred_toks[i] == pred_toks[i + 1] for i in range(len(pred_toks) - 1))
-                )
-                if is_rep:
-                    tot_rep += 1
-                    c_rep += 1
-
-                for idx, tok in enumerate(exp_toks):
-                    if is_entity_token(tok):
-                        ent_tot += 1
-                        c_ent_tot += 1
-                        matched = idx < len(pred_toks) and pred_toks[idx] == tok
-                        if matched:
-                            ent_hit += 1
-                            c_ent_hit += 1
-                        if tok not in train_target_entities:
-                            unseen_tot += 1
-                            c_unseen_tot += 1
-                            if matched:
-                                unseen_hit += 1
-                                c_unseen_hit += 1
+                update_mode_acc(c_fg, pred_toks, exp_toks, eos_pos, is_exact, is_first, is_prem, is_rep)
+                update_mode_acc(tot_fg, pred_toks, exp_toks, eos_pos, is_exact, is_first, is_prem, is_rep)
 
                 if not is_exact and len(err_list) < 5:
                     err_list.append(
@@ -344,58 +396,41 @@ def main():
                             "input": r["input"],
                             "expected": r["target"],
                             "predicted": " ".join(pred_toks),
+                            "teacher_forced_predicted": " ".join(tf["pred_toks"]),
                             "eos_pos": eos_pos,
-                            "premature_eos": 0 <= eos_pos < len(exp_toks),
+                            "premature_eos": is_prem,
                             "mean_p_gen": round(mean_pgen, 4),
-                            "teacher_forced_loss": round(tf_l, 4),
+                            "teacher_forced_loss": round(tf["loss"], 4),
                         }
                     )
 
-            n = max(1, len(items))
+            tf_metrics = finalize_mode(c_tf, len(items))
+            tf_metrics["token_acc"] = c_tf_corr / max(1, c_tf_tot)
+            tf_metrics["loss_avg"] = sum(c_tf_losses) / max(1, len(c_tf_losses))
+
+            fg_metrics = finalize_mode(c_fg, len(items))
+            fg_metrics["mean_p_gen"] = sum(c_pgens) / max(1, len(c_pgens))
+
             per_cap[cap] = {
                 "count": len(items),
-                "teacher_forced": {
-                    "token_acc": c_tf_corr / max(1, c_tf_tot),
-                    "loss_avg": sum(c_tf_losses) / max(1, len(c_tf_losses)),
-                },
-                "free_generation": {
-                    "exact_match": c_exact / n,
-                    "correct": c_exact,
-                    "first_token_acc": c_first / n,
-                    "eos_hit_rate": c_eos / n,
-                    "avg_eos_position": (sum(c_eos_pos) / len(c_eos_pos)) if c_eos_pos else None,
-                    "premature_eos_rate": c_prem / n,
-                    "repetition_rate": c_rep / n,
-                    "entity_copy_acc": (c_ent_hit / c_ent_tot) if c_ent_tot > 0 else None,
-                    "entity_count": c_ent_tot,
-                    "unseen_entity_copy_acc": (c_unseen_hit / c_unseen_tot) if c_unseen_tot > 0 else None,
-                    "unseen_entity_count": c_unseen_tot,
-                    "mean_p_gen": sum(c_pgens) / max(1, len(c_pgens)),
-                },
+                "teacher_forced": tf_metrics,
+                "free_generation": fg_metrics,
+                "exposure_bias_gap": tf_metrics["exact_match"] - fg_metrics["exact_match"],
             }
             err_cases[cap] = err_list
 
-        n_tot = max(1, len(rows))
+        ov_tf = finalize_mode(tot_tf, len(rows))
+        ov_tf["token_acc"] = tf_corr / max(1, tf_tot)
+        ov_tf["loss_avg"] = sum(tf_losses) / max(1, len(tf_losses))
+
+        ov_fg = finalize_mode(tot_fg, len(rows))
+        ov_fg["mean_p_gen"] = sum(pgen_means) / max(1, len(pgen_means))
+
         overall = {
             "count": len(rows),
-            "teacher_forced": {
-                "token_acc": tf_corr / max(1, tf_tot),
-                "loss_avg": sum(tf_losses) / max(1, len(tf_losses)),
-            },
-            "free_generation": {
-                "exact_match": tot_exact / n_tot,
-                "correct": tot_exact,
-                "first_token_acc": tot_first / n_tot,
-                "eos_hit_rate": tot_eos / n_tot,
-                "avg_eos_position": (sum(eos_positions) / len(eos_positions)) if eos_positions else None,
-                "premature_eos_rate": tot_prem / n_tot,
-                "repetition_rate": tot_rep / n_tot,
-                "entity_copy_acc": (ent_hit / ent_tot) if ent_tot > 0 else None,
-                "entity_count": ent_tot,
-                "unseen_entity_copy_acc": (unseen_hit / unseen_tot) if unseen_tot > 0 else None,
-                "unseen_entity_count": unseen_tot,
-                "mean_p_gen": sum(pgen_means) / max(1, len(pgen_means)),
-            },
+            "teacher_forced": ov_tf,
+            "free_generation": ov_fg,
+            "exposure_bias_gap": ov_tf["exact_match"] - ov_fg["exact_match"],
         }
         return per_cap, err_cases, overall, tok_counter
 
@@ -468,13 +503,25 @@ def main():
                     "v7": v7_val_ov.get("first_token_acc"),
                     "v8": ov_val["free_generation"]["first_token_acc"],
                 },
+                "test_first_token_acc": {
+                    "v7": v7_test_ov.get("first_token_acc"),
+                    "v8": ov_test["free_generation"]["first_token_acc"],
+                },
                 "val_eos_hit_rate": {
                     "v7": v7_val_ov.get("eos_hit_rate"),
                     "v8": ov_val["free_generation"]["eos_hit_rate"],
                 },
+                "test_eos_hit_rate": {
+                    "v7": v7_test_ov.get("eos_hit_rate"),
+                    "v8": ov_test["free_generation"]["eos_hit_rate"],
+                },
                 "val_repetition_rate": {
                     "v7": v7_val_ov.get("repetition_rate"),
                     "v8": ov_val["free_generation"]["repetition_rate"],
+                },
+                "test_repetition_rate": {
+                    "v7": v7_test_ov.get("repetition_rate"),
+                    "v8": ov_test["free_generation"]["repetition_rate"],
                 },
             }
         except Exception as exc:
@@ -534,32 +581,42 @@ def main():
         f"- Checkpoint: `{ckpt_path}` (arch=`{ckpt.get('arch')}`, step=`{ckpt.get('step')}`, best_step=`{ckpt.get('best_step')}`)\n",
         f"- Params: `{ckpt.get('params')}` | Train time: `{ckpt.get('elapsed_sec')}`s | Peak RAM KB: `{ckpt.get('max_rss_kb')}`\n\n",
         "## Overall Summary (Teacher-Forced vs Free-Generation)\n\n",
-        "| Split | TF Token Acc | TF Loss | Free Exact | First Token | EOS Hit | Avg EOS Pos | Premature EOS | Rep Rate | Entity Copy | Unseen Entity Copy | Mean p_gen |\n",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
+        "| Split | Mode | Exact Match | Tok Acc | Loss | First Token | EOS Hit | Avg EOS Pos | Prem EOS | Rep Rate | Entity Copy | Unseen Copy | Mean p_gen |\n",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
     ]
     for split_name, ov in [("val", ov_val), ("test", ov_test)]:
         tf = ov["teacher_forced"]
         fg = ov["free_generation"]
         lines.append(
-            f"| {split_name} | {_fmt(tf['token_acc'])} | {_fmt(tf['loss_avg'])} | "
-            f"{_fmt(fg['exact_match'])} | {_fmt(fg['first_token_acc'])} | {_fmt(fg['eos_hit_rate'])} | "
-            f"{_fmt(fg['avg_eos_position'])} | {_fmt(fg['premature_eos_rate'])} | {_fmt(fg['repetition_rate'])} | "
-            f"{_fmt(fg['entity_copy_acc'])} | {_fmt(fg['unseen_entity_copy_acc'])} | {_fmt(fg['mean_p_gen'])} |\n"
+            f"| {split_name} | teacher_forced | {_fmt(tf['exact_match'])} | {_fmt(tf['token_acc'])} | {_fmt(tf['loss_avg'])} | "
+            f"{_fmt(tf['first_token_acc'])} | {_fmt(tf['eos_hit_rate'])} | {_fmt(tf['avg_eos_position'])} | "
+            f"{_fmt(tf['premature_eos_rate'])} | {_fmt(tf['repetition_rate'])} | {_fmt(tf['entity_copy_acc'])} | "
+            f"{_fmt(tf['unseen_entity_copy_acc'])} | N/A |\n"
+        )
+        lines.append(
+            f"| {split_name} | free_generation | {_fmt(fg['exact_match'])} | N/A | N/A | "
+            f"{_fmt(fg['first_token_acc'])} | {_fmt(fg['eos_hit_rate'])} | {_fmt(fg['avg_eos_position'])} | "
+            f"{_fmt(fg['premature_eos_rate'])} | {_fmt(fg['repetition_rate'])} | {_fmt(fg['entity_copy_acc'])} | "
+            f"{_fmt(fg['unseen_entity_copy_acc'])} | {_fmt(fg['mean_p_gen'])} |\n"
         )
 
     for split_name, per_cap in [("Validation", per_val), ("Test", per_test)]:
-        lines.append(f"\n## {split_name} per Capability\n\n")
+        lines.append(f"\n## {split_name} per Capability (Teacher-Forced vs Free-Generation)\n\n")
         lines.append(
-            "| Capability | Count | TF Acc | TF Loss | Free Exact | First | EOS Hit | Prem EOS | Rep | Entity Copy | Unseen Copy |\n"
-            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n"
+            "| Capability | Mode | Count | Exact | Tok Acc | Loss | First | EOS Pos | Rep | Entity Copy | Unseen Copy |\n"
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n"
         )
         for cap, v in per_cap.items():
             tf = v["teacher_forced"]
             fg = v["free_generation"]
             lines.append(
-                f"| {cap} | {v['count']} | {_fmt(tf['token_acc'])} | {_fmt(tf['loss_avg'])} | "
-                f"{_fmt(fg['exact_match'])} | {_fmt(fg['first_token_acc'])} | {_fmt(fg['eos_hit_rate'])} | "
-                f"{_fmt(fg['premature_eos_rate'])} | {_fmt(fg['repetition_rate'])} | "
+                f"| {cap} | teacher_forced | {v['count']} | {_fmt(tf['exact_match'])} | {_fmt(tf['token_acc'])} | {_fmt(tf['loss_avg'])} | "
+                f"{_fmt(tf['first_token_acc'])} | {_fmt(tf['avg_eos_position'])} | {_fmt(tf['repetition_rate'])} | "
+                f"{_fmt(tf['entity_copy_acc'])} | {_fmt(tf['unseen_entity_copy_acc'])} |\n"
+            )
+            lines.append(
+                f"| {cap} | free_generation | {v['count']} | {_fmt(fg['exact_match'])} | N/A | N/A | "
+                f"{_fmt(fg['first_token_acc'])} | {_fmt(fg['avg_eos_position'])} | {_fmt(fg['repetition_rate'])} | "
                 f"{_fmt(fg['entity_copy_acc'])} | {_fmt(fg['unseen_entity_copy_acc'])} |\n"
             )
 
@@ -577,13 +634,13 @@ def main():
     md_path.write_text("".join(lines), encoding="utf-8")
     print(f"OK report written to {json_path} and {md_path}")
     print(
-        f"VAL  TF_acc={ov_val['teacher_forced']['token_acc']:.4f} | "
+        f"VAL  TF_exact={ov_val['teacher_forced']['exact_match']:.4f} | "
         f"Free_exact={ov_val['free_generation']['exact_match']:.4f} | "
         f"Entity_copy={_fmt(ov_val['free_generation']['entity_copy_acc'])} | "
         f"Unseen_copy={_fmt(ov_val['free_generation']['unseen_entity_copy_acc'])}"
     )
     print(
-        f"TEST TF_acc={ov_test['teacher_forced']['token_acc']:.4f} | "
+        f"TEST TF_exact={ov_test['teacher_forced']['exact_match']:.4f} | "
         f"Free_exact={ov_test['free_generation']['exact_match']:.4f} | "
         f"Entity_copy={_fmt(ov_test['free_generation']['entity_copy_acc'])} | "
         f"Unseen_copy={_fmt(ov_test['free_generation']['unseen_entity_copy_acc'])}"

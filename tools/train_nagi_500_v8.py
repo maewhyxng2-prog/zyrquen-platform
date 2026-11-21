@@ -171,9 +171,10 @@ def main():
     ap.add_argument("--data", type=str, default="data/nagi_500_v3")
     ap.add_argument("--out", type=str, default="checkpoints/nagi_500_v8")
     ap.add_argument("--steps", type=int, default=500)
-    ap.add_argument("--batch_size", type=int, default=16)
-    ap.add_argument("--lr", type=float, default=2e-3)
-    ap.add_argument("--eval_every", type=int, default=25)
+    ap.add_argument("--batch_size", "--batch", dest="batch_size", type=int, default=4)
+    ap.add_argument("--seq", type=int, default=256)
+    ap.add_argument("--lr", type=float, default=0.001)
+    ap.add_argument("--eval_every", type=int, default=50)
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
@@ -185,6 +186,7 @@ def main():
     train_rows = load_jsonl(data_dir / "train.jsonl")
     val_rows = load_jsonl(data_dir / "val.jsonl")
     test_rows = load_jsonl(data_dir / "test.jsonl")
+    print(f"Train {len(train_rows)} Val {len(val_rows)} Test {len(test_rows)}")
     if not train_rows or not val_rows:
         print(f"BLOCKED empty dataset in {data_dir}")
         return
@@ -207,14 +209,24 @@ def main():
     unk_id = stoi["<unk>"]
     bos_id = stoi["<bos>"]
     eos_id = stoi["<eos>"]
+    print(f"Vocab token-level train-only {len(vocab)}")
 
     def encode_row(r):
-        src_ids = [bos_id] + [stoi.get(t, unk_id) for t in tokenize(r["input"])] + [eos_id]
+        src_toks = [stoi.get(t, unk_id) for t in tokenize(r["input"])]
         trg_ids = [bos_id] + [stoi.get(t, unk_id) for t in tokenize(r["target"])] + [eos_id]
+        if len(trg_ids) > args.seq:
+            return None
+        max_src_body = max(0, args.seq - 2)
+        if len(src_toks) > max_src_body:
+            src_toks = src_toks[:max_src_body]
+        src_ids = [bos_id] + src_toks + [eos_id]
         return src_ids, trg_ids
 
-    train_pairs = [encode_row(r) for r in train_rows]
-    val_pairs = [encode_row(r) for r in val_rows]
+    train_pairs = [p for p in (encode_row(r) for r in train_rows) if p is not None]
+    val_pairs = [p for p in (encode_row(r) for r in val_rows) if p is not None]
+    if not train_pairs or not val_pairs:
+        print("BLOCKED no valid encoded examples within seq limit")
+        return
 
     def make_batch(pairs):
         max_src = max(len(s) for s, _ in pairs)
@@ -233,9 +245,10 @@ def main():
     dec = PointerDecoder(VOCAB_SIZE, EMB_DIM, HID_DIM)
     model = Seq2Seq(enc, dec, device).to(device)
     total_params = sum(p.numel() for p in model.parameters())
+    assert total_params <= 5_000_000, f"Params {total_params} exceeds 5M cap"
     print(f"Model: seq2seq_attn_pointer | hid_dim={HID_DIM} | vocab={VOCAB_SIZE} | params={total_params}")
 
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=0.01)
     criterion = nn.NLLLoss(ignore_index=pad_id)
 
     def eval_val_loss():
@@ -251,15 +264,21 @@ def main():
         model.train()
         return sum(losses) / max(1, len(losses))
 
+    global_step = 0
     best_val_loss = float("inf")
     best_step = 0
+    no_improve = 0
     best_val_state = None
     best_optimizer_state = None
     train_losses = []
 
     for step in range(1, args.steps + 1):
+        global_step = step
         model.train()
-        batch = random.sample(train_pairs, min(args.batch_size, len(train_pairs)))
+        batch = [
+            train_pairs[((step - 1) * args.batch_size + i) % len(train_pairs)]
+            for i in range(args.batch_size)
+        ]
         src, trg = make_batch(batch)
 
         tf_ratio = max(0.5, 1.0 - 0.5 * (step / args.steps))
@@ -282,6 +301,12 @@ def main():
                 best_step = step
                 best_val_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
                 best_optimizer_state = optimizer.state_dict()
+                no_improve = 0
+            else:
+                no_improve += 1
+            if no_improve >= 2 and args.steps >= 500:
+                print(f"Early stop at step {step}")
+                break
 
     if best_val_state is not None:
         model.load_state_dict(best_val_state)
@@ -299,31 +324,34 @@ def main():
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_tmp = out_dir / f"step_{args.steps}.pt.tmp"
-    ckpt_path = out_dir / f"step_{args.steps}.pt"
+    ckpt_tmp = out_dir / f"step_{global_step}.pt.tmp"
+    ckpt_path = out_dir / f"step_{global_step}.pt"
 
     save_checkpoint(
         {
             "arch": "seq2seq_attn_pointer",
             "hid_dim": HID_DIM,
             "emb_dim": EMB_DIM,
+            "model": model.state_dict(),
+            "model_state": model.state_dict(),
+            "best_val_state": best_val_state,
+            "optimizer_state": best_optimizer_state,
             "vocab": vocab,
             "vocab_source": "train-only",
             "tokenizer": "token-level",
+            "loss_mode": "nll-pointer-copy",
             "dataset": str(data_dir),
             "seed": args.seed,
             "from_scratch": True,
-            "step": args.steps,
+            "step": global_step,
             "best_step": best_step,
+            "best_val": best_val_loss,
             "best_val_loss": best_val_loss,
             "val_loss": final_val_loss,
             "train_loss_last10": avg_train_loss,
             "params": total_params,
             "elapsed_sec": elapsed_sec,
             "max_rss_kb": max_rss_kb,
-            "model_state": model.state_dict(),
-            "best_val_state": best_val_state,
-            "optimizer_state": best_optimizer_state,
         },
         ckpt_tmp,
     )
@@ -337,11 +365,13 @@ def main():
         "vocab_size": VOCAB_SIZE,
         "vocab_source": "train-only",
         "tokenizer": "token-level",
+        "loss_mode": "nll-pointer-copy",
         "dataset": str(data_dir),
         "seed": args.seed,
         "from_scratch": True,
-        "step": args.steps,
+        "step": global_step,
         "best_step": best_step,
+        "best_val": best_val_loss,
         "best_val_loss": best_val_loss,
         "val_loss": final_val_loss,
         "train_loss_last10": avg_train_loss,
