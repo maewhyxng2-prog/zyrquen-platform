@@ -19,13 +19,13 @@ from apps.core.training.orchestrator import TrainingUnavailable
 from apps.api.database import SessionLocal, get_db
 from apps.api.models import User
 from apps.api.security import get_current_user
-from training_jobs import (
+from apps.api.training_jobs import (
     TrainingJobBusy,
     TrainingJobService,
     training_admin_emails,
 )
-from training_models import TrainingRun
-from training_schemas import (
+from apps.api.training_models import TrainingRun
+from apps.api.training_schemas import (
     TrainingRunRequest,
     TrainingRunResponse,
     TrainingTelemetryResponse,

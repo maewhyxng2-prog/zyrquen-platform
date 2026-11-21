@@ -7,10 +7,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from apps.api.database import Base, get_db
-from main import app
+from apps.api.main import app
 from apps.api.models import User
-from routers.training import get_current_user
-from training_models import TrainingRun
+from apps.api.routers.training import get_current_user
+from apps.api.training_models import TrainingRun
 from apps.core.training_infrastructure.monitoring.training_monitor import (
     TrainingMonitor,
 )

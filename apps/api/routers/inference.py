@@ -23,7 +23,7 @@ from apps.core.context import InferenceContext
 from apps.core.exceptions import InferenceError, ResourceLimitExceeded
 from apps.core.runtime import runtime
 from apps.core.streaming import StreamingInferenceEngine
-from routers.conversations import (
+from apps.api.routers.conversations import (
     _owned_conversation,
     persist_completed_assistant_message,
 )

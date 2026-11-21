@@ -15,8 +15,8 @@ from apps.core.training_infrastructure.recovery.checkpoint_recovery import (
 )
 from apps.api.database import Base
 from apps.api.models import User
-from training_jobs import TrainingJobService
-from training_models import TrainingRun
+from apps.api.training_jobs import TrainingJobService
+from apps.api.training_models import TrainingRun
 
 
 def _save_json(state, path):

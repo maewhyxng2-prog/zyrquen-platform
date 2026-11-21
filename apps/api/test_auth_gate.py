@@ -14,7 +14,7 @@ from apps.api.evaluation_models import EvaluationRun
 from apps.api.main import app
 from apps.api.models import User
 from apps.api.security import ALGORITHM
-from training_models import TrainingRun
+from apps.api.training_models import TrainingRun
 
 
 @pytest.fixture

@@ -16,7 +16,7 @@ from apps.core.training_infrastructure.recovery.checkpoint_recovery import (
 )
 from apps.core.training.orchestrator import PreparedTraining, TrainingOrchestrator
 from apps.core.training.orchestrator import TrainingUnavailable
-from training_models import TrainingRun
+from apps.api.training_models import TrainingRun
 
 logger = logging.getLogger(__name__)
 

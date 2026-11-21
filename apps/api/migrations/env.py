@@ -62,6 +62,8 @@ def run_migrations_online() -> None:
 
     with connection:
         verify_test_database_connection(connection, target)
+        if connection.in_transaction():
+            connection.rollback()
         context.configure(
             connection=connection,
             target_metadata=target_metadata,

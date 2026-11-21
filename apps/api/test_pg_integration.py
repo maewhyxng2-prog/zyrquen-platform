@@ -260,9 +260,10 @@ def test_quota_concurrency_and_idempotency(pg_engine, Session):
 def test_http_multi_user_auth_isolation_and_api_keys(pg_engine, Session):
     from apps.api.api_access_models import ApiKey
     from apps.api.api_access import api_key_digest
+    from apps.api.main import app
     from apps.api.models import User
 
-    client = TestClient(__import__("main").app)
+    client = TestClient(app)
     suffix = uuid.uuid4().hex
     email_a = f"a-{suffix}@example.test"
     email_b = f"b-{suffix}@example.test"

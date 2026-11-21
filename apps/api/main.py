@@ -10,15 +10,15 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from routers.auth import router as auth_router
-from routers.inference import router as inference_router
-from routers.training import router as training_router
-from routers.evaluation import router as evaluation_router
-from routers.conversations import router as conversations_router
-from routers.users import router as users_router
-from routers.usage import router as usage_router
-from routers.api_access import router as api_access_router
-from routers.admin import router as admin_router
+from apps.api.routers.auth import router as auth_router
+from apps.api.routers.inference import router as inference_router
+from apps.api.routers.training import router as training_router
+from apps.api.routers.evaluation import router as evaluation_router
+from apps.api.routers.conversations import router as conversations_router
+from apps.api.routers.users import router as users_router
+from apps.api.routers.usage import router as usage_router
+from apps.api.routers.api_access import router as api_access_router
+from apps.api.routers.admin import router as admin_router
 from apps.api import api_access_models  # noqa: F401
 from apps.api import usage_models  # noqa: F401
 
