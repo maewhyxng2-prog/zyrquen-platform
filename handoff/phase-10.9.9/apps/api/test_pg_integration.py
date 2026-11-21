@@ -236,9 +236,12 @@ def test_quota_concurrency_and_idempotency(pg_engine, Session):
         assert replay_created is False
         db.rollback()
 
+    from apps.api.usage import complete_inference, finish_inference
+    from apps.api.usage_models import InferenceUsage
+
     rollback_id = uuid.uuid4()
     with Session() as db:
-        reserve_inference(
+        usage, created = reserve_inference(
             db=db,
             user_id=replay_user_id,
             conversation_id=None,
@@ -249,12 +252,25 @@ def test_quota_concurrency_and_idempotency(pg_engine, Session):
             model_version=None,
             api_key_id=None,
         )
+        assert created is True
+        complete_inference(db, usage, input_tokens=10, output_tokens=20)
         db.rollback()
     with Session() as db:
-        from apps.api.usage_models import InferenceUsage
-        assert db.query(InferenceUsage).filter(
+        row = db.query(InferenceUsage).filter(
             InferenceUsage.request_id == rollback_id
-        ).first() is None
+        ).first()
+        assert row is not None
+        assert row.status == "running"
+        assert row.output_tokens == 0
+        assert row.reserved_tokens == 20
+        finish_inference(db, row, "failed")
+    with Session() as db:
+        released = db.query(InferenceUsage).filter(
+            InferenceUsage.request_id == rollback_id
+        ).first()
+        assert released is not None
+        assert released.status == "failed"
+        assert released.reserved_tokens == 0
 
 
 def test_http_multi_user_auth_isolation_and_api_keys(pg_engine, Session):
@@ -263,7 +279,7 @@ def test_http_multi_user_auth_isolation_and_api_keys(pg_engine, Session):
     from apps.api.main import app
     from apps.api.models import User
 
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 12345))
     suffix = uuid.uuid4().hex
     email_a = f"a-{suffix}@example.test"
     email_b = f"b-{suffix}@example.test"

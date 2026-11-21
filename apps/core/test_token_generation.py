@@ -69,8 +69,15 @@ def test_04_sampling_and_eos(tmp_path: Path):
     _init_loader(loader)
     assert loader.model.cfg.max_seq_len > 0
     assert loader.tokenizer.eos_id is not None
-    out = _run(loader, "hello world", 8, 0.7)
-    assert isinstance(out, str)
-    assert out.strip() != ""
-    n = _count_tokens(loader, out)
-    assert 0 < n <= 8
+    engine = _make_engine(loader)
+    ctx = InferenceContext(
+        user_id="00000000-0000-0000-0000-000000000001",
+        prompt="hello world",
+        max_tokens=8,
+        temperature=0.7,
+    )
+    res = asyncio.run(engine.generate_with_usage(ctx))
+    assert isinstance(res.text, str)
+    assert res.text.strip() != ""
+    assert 0 < res.output_tokens <= 8
+    assert res.stopped_reason in {"eos", "max_tokens"}

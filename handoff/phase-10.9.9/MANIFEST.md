@@ -18,7 +18,7 @@
 | 4 | `apps/api/routers/training.py` | 7654 | 226 | `97908ff1f9195b50fcabf14a36cca254d31b50c350ef5ec074669881e81c956f` | Canonicalize imports (`database`, `models`, `security`, `training_jobs`, `training_models`, `training_schemas`) เป็น `apps.api.*` |
 | 5 | `apps/api/routers/inference.py` | 15121 | 416 | `48219a4c4d76051b394de9604340ee5fab4444ab17712f0c212453c023b6f6ae` | Canonicalize import ของ `routers.conversations` เป็น `apps.api.routers.conversations` และรักษา canonical imports ของ `apps.api.*` |
 | 6 | `apps/api/training_jobs.py` | 8528 | 236 | `1e02bbf211cc61c67ec5e9ad5a4d09e7ef263dc3fa9a325ed55390655a9a9931` | Canonicalize import ของ `training_models` เป็น `apps.api.training_models` โดยคง `reserve_next_native_version` และกฎ Atomic Version Reservation เดิมไว้ครบถ้วน |
-| 7 | `apps/api/test_pg_integration.py` | 11957 | 389 | `f807f8d02ea071b50e95b2476b697c1c96b6306204ea72c58b97d625fe87e913` | เปลี่ยนใน `test_http_multi_user_auth_isolation_and_api_keys` จาก `TestClient(__import__("main").app)` เป็น `from apps.api.main import app` + `TestClient(app)` เพื่อแก้ปัญหา `InvalidRequestError: Table 'training_runs' is already defined` |
+| 7 | `apps/api/test_pg_integration.py` | 12629 | 405 | `8567339fb72677f69d45f5128ad4e728324ff16f1ef41cf7537fe8885415b9e1` | Canonicalize `from apps.api.main import app`; ใช้ `TestClient(app, client=("127.0.0.1", 12345))` เพื่อให้ `_client_ip()` ผ่าน IP validation ใน `/auth/login`; และปรับเคส `rollback_id` ให้ทดสอบ `complete_inference` + `db.rollback()` + `finish_inference(..., "failed")` เนื่องจาก `reserve_inference()` commit ในตัวเอง |
 | 8 | `apps/api/test_main.py` | 2121 | 65 | `d8355ef7265f9b04acee9d37394220b7b669cc58411c2de0ebc432514b2cd34d` | Canonicalize import เป็น `from apps.api.main import app` และ `from apps.api.operations import install_exception_logging` |
 | 9 | `apps/api/test_auth_gate.py` | 6605 | 221 | `ae8116a9c67186590f671ab677d3f66044bc830dbb1dd5069d924c78b5f15f55` | Canonicalize imports (`database`, `evaluation_models`, `main`, `models`, `security`, `training_models`) เป็น `apps.api.*` |
 | 10 | `apps/api/test_training.py` | 5653 | 188 | `a1fea24375e77edbce18c1d31d755571c82fa0fd6367df4cda2174d44a0d09f8` | Canonicalize imports (`database`, `main`, `models`, `routers.training`, `training_models`) เป็น `apps.api.*` |
@@ -39,7 +39,8 @@
 4. **PostgreSQL Integration & Database Safety:**
    * `apps/api/test_pg_integration.py` import `apps.api.main` โดยตรง
    * `apps/api/database_safety.py` ไม่ได้ถูกแก้ไข และยังคงการตรวจ fail-closed สำหรับ `ZYRQUEN_ENV=test`, ปฏิเสธ Production host/name, และตรวจ `public.zyrquen_environment_identity`
-5. **ไฟล์นอกขอบเขตชุด 11 ไฟล์ใน Workspace ปัจจุบัน (แจ้งเพื่อความโปร่งใส — ไม่รวมในชุด Patch นี้):**
+5. **ไฟล์นอกขอบเขตชุด 11 ไฟล์ใน Workspace ปัจจุบัน (แจ้งเพื่อความโปร่งใส — ไม่รวมในชุด Patch 11 ไฟล์นี้):**
+   * `apps/core/test_native_runtime.py` และ `apps/core/test_token_generation.py` (แก้ไขเพิ่มเติมจากผล CI Run `44887483286` สำหรับ `test_12_streaming_stops_at_eos` และ `test_04_sampling_and_eos` — ต้องนำไปพร้อมกันในรอบ Push แก้ CI)
    * `docs/engineering/ZYRQUEN_PHASE_READINESS.md` และ `docs/engineering/ZYRQUEN_PHASE_11_20_MASTER_ROADMAP.md` (งานเอกสาร Phase 11–20)
    * `README.md` (อัปเดตเอกสารจากรอบก่อนหน้า)
    * `apps/web/tsconfig.tsbuildinfo` (TypeScript incremental build cache — ห้าม commit เข้า Git)

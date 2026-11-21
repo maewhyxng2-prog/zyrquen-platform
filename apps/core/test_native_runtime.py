@@ -288,8 +288,10 @@ def _build_torch_registry_fixture(
     model = ZyrquenModel(cfg)
     with torch.no_grad():
         if force_eos_after_prefix:
-            model.embed.weight.zero_()
-            model.embed.weight[tok.eos_id].fill_(5.0)
+            for param in model.parameters():
+                param.zero_()
+            model.embed.weight[:, 0].fill_(1.0)
+            model.embed.weight[tok.eos_id, 0] = 10.0
             model.final_norm.weight.fill_(1.0)
         else:
             model.embed.weight[:N_SPECIAL].zero_()
