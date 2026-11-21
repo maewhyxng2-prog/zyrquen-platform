@@ -1,4 +1,4 @@
-from phase20 import SystemMaturity
+from phases.phase20 import SystemMaturity
 
 def test_end_to_end_all_pass():
     m = SystemMaturity()

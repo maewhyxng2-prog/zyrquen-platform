@@ -1,4 +1,4 @@
-from phase17 import MemoryStore
+from phases.phase17 import MemoryStore
 
 def test_tiered_memory_store_recall():
     m = MemoryStore()

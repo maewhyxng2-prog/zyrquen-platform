@@ -1,12 +1,10 @@
 # ZYRQUEN Ω∞
 
+![ZYRQUEN logo](apps/web/public/zyrquen-logo.svg)
+
 ZYRQUEN Ω∞ เป็นโครงการวิจัยและวิศวกรรมระยะยาวเพื่อพัฒนาแพลตฟอร์ม AI และระบบ Native General Intelligence (NGI) ที่ทำงานได้ด้วยตนเองบนโครงสร้างพื้นฐานอิสระ Repository ปัจจุบันประกอบด้วย Next.js Web Client, FastAPI Backend, โมดูล Native Model Runtime / Training Infrastructure และชั้นสัญญา Intelligence Phase 9 โดย **ยังไม่มี model weights ที่ผ่านการฝึกของ ZYRQUEN เอง** และ **ยังไม่ผ่านการรับรอง Production Deployment**
 
-<picture>
-  <source media="(forced-colors: active)" srcset="apps/web/public/zyrquen-logo-mono.svg">
-  <source media="(prefers-color-scheme: dark)" srcset="apps/web/public/zyrquen-logo-mono.svg">
-  <img src="apps/web/public/zyrquen-logo.svg" width="640" height="128" alt="ZYRQUEN animated geometric logo">
-</picture>
+
 
 ---
 

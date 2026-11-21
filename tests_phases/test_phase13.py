@@ -1,5 +1,5 @@
 import pytest
-from phase13 import check_governance, ingest_record, validate_record
+from phases.phase13 import check_governance, ingest_record, validate_record
 
 def test_ingestion_creates_record_with_provenance():
     r = ingest_record("manual", "mit", "Maew", "นี่คือข้อความตัวอย่างที่ยาวพอ")

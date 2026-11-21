@@ -1,4 +1,4 @@
-from phase12 import CapabilityRegistry, LocalRuleProvider, NativeIntelligence
+from phases.phase12 import CapabilityRegistry, LocalRuleProvider, NativeIntelligence
 
 def test_architecture_is_isolated():
     ni = NativeIntelligence()

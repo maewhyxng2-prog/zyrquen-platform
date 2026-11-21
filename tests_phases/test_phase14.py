@@ -1,4 +1,4 @@
-from phase14 import compare_benchmark, evaluate_case, regression_gate, reliability_score
+from phases.phase14 import compare_benchmark, evaluate_case, regression_gate, reliability_score
 
 def test_evaluate_pass_and_fail():
     assert evaluate_case({"name": "a", "ran": True, "passed": True, "evidence": "e1"})["status"] == "PASS"

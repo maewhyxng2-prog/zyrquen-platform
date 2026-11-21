@@ -1,4 +1,4 @@
-from phase19 import SafetyGovernance
+from phases.phase19 import SafetyGovernance
 
 def test_tool_sandbox_allowed():
     g = SafetyGovernance()

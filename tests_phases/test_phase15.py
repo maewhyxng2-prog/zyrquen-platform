@@ -1,4 +1,4 @@
-from phase15 import ModelConfig, ModelRegistry, check_compatibility
+from phases.phase15 import ModelConfig, ModelRegistry, check_compatibility
 
 def test_model_config_creates():
     c = ModelConfig(vocab=32000, hidden=256, layers=4, kv_cache_size=1024)

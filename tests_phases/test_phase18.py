@@ -1,4 +1,4 @@
-from phase18 import AdaptiveLearning
+from phases.phase18 import AdaptiveLearning
 
 def test_controlled_learning_valid_feedback_pending():
     m = AdaptiveLearning(mode="online")
