@@ -5,6 +5,10 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import {
+  PlatformHealthProvider,
+  usePlatformHealth,
+} from "@/hooks/usePlatformHealth";
 import type { Session } from "@/lib/types";
 import { Icon, type IconName } from "./Icon";
 import { StatusBadge } from "./StatusBadge";
@@ -30,8 +34,18 @@ const titles: Record<string, string> = {
 };
 
 export function AppShell({ children }: { children: ReactNode }) {
+  return (
+    <PlatformHealthProvider>
+      <AppShellInner>{children}</AppShellInner>
+    </PlatformHealthProvider>
+  );
+}
+
+function AppShellInner({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const { platformVersion, platformStage, modelVersion } = usePlatformHealth();
+  const topbarVersion = platformVersion || modelVersion;
 
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -307,6 +321,14 @@ export function AppShell({ children }: { children: ReactNode }) {
 
               <div className="breadcrumb">
                 <span>ZYRQUEN Ω∞</span>
+                {topbarVersion && (
+                  <span
+                    className="topbar-version"
+                    title={platformStage ?? undefined}
+                  >
+                    {topbarVersion}
+                  </span>
+                )}
                 <Icon name="chevron-right" size={13} />
                 <strong>{titles[pathname] || "แพลตฟอร์ม"}</strong>
               </div>

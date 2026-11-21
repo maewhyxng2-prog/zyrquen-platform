@@ -15,17 +15,17 @@ npm run dev
 
 Set `ZYRQUEN_API_BASE_URL` in `.env.local` to the FastAPI origin. The browser calls a same-origin Next.js proxy, so the backend does not need a browser CORS configuration for this application.
 
-## Routes and backend
- integration
+## Routes and backend integration
 
-- `/` dashboard: reads `GET /health` and `GET /v1/native-ai/health`.
+- Header and top navigation display the platform/model version only when returned by `GET /v1/native-ai/health` (failing closed as unknown when the backend is unavailable or unconfigured).
+- `/` dashboard: reads `GET /health` and `GET /v1/native-ai/health`, including `Generalization Score` and `Relational Reasoning Success Rate` only when evaluated metrics are returned by the backend.
 - `/login`: uses `POST /auth/register` and `POST /auth/login`; access tokens are stored in an HTTP-only cookie and forwarded only by the server proxy.
-- `/workspace`: posts authenticated inference requests to `POST /v1/native-ai/infer` and uses the authenticated conversation API for saved history. Inference remains unavailable without the local model artifact.
-- `/training`: documents the dataset and training core modules. It does not start or monitor training jobs; privileged training API routes exist separately.
+- `/workspace`: posts authenticated inference requests to `POST /v1/native-ai/infer` and uses the authenticated conversation API for saved history. Inference fails closed (`503`) when the FastAPI backend or local model artifact is unavailable.
+- `/training`: documents the dataset and training core modules and renders the Recharts capability radar only when measured backend capability scores exist (no simulated/default chart).
 - `/system`: reads actual API/runtime health and labels unexposed database, storage, and infrastructure checks unavailable.
 - `/settings`: shows server environment configuration and provides an actual local-history clearing control.
 
-The backend proxy allowlist is intentionally limited to the routes above and does not provide arbitrary upstream access.
+The backend proxy allowlist is intentionally limited to the routes above and fails closed without mock backend fallbacks.
 
 ## Branding
 

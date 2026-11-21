@@ -7,11 +7,6 @@ import {
   EMAIL_COOKIE,
   buildSessionCookieOptions,
 } from "@/lib/cookies";
-import {
-  getMockSessionStatus,
-  handleMockBackendRequest,
-  shouldUseMockBackend,
-} from "@/lib/mock-backend";
 
 type RouteContext = {
   params: Promise<{ path: string[] }>;
@@ -154,8 +149,7 @@ async function proxy(request: NextRequest, context: RouteContext) {
   if (accessToken && path !== "auth/login" && path !== "auth/register") {
     headers.set("Authorization", `Bearer ${accessToken}`);
   }
-  const useMockFallback = await shouldUseMockBackend(baseUrl, hasExplicitUrl);
-  if (!useMockFallback && !baseUrl) {
+  if (!baseUrl) {
     return NextResponse.json(
       {
         detail:
@@ -182,49 +176,34 @@ async function proxy(request: NextRequest, context: RouteContext) {
     let identityErrorText = "";
     let identityContentType = "application/json";
 
-    if (!useMockFallback && baseUrl) {
-      try {
-        const identityResponse = await fetch(`${baseUrl}/auth/me`, {
-          method: "GET",
-          headers: {
-            Authorization: authorizationHeader,
-            Accept: "application/json",
-          },
-          cache: "no-store",
-          signal: AbortSignal.any([
-            request.signal,
-            AbortSignal.timeout(hasExplicitUrl ? 10_000 : 1_500),
-          ]),
-        });
-        identityStatus = identityResponse.status;
-        identityContentType =
-          identityResponse.headers.get("content-type") ?? "application/json";
-        if (identityResponse.ok) {
-          identityPayload = (await identityResponse.json().catch(() => null)) as
-            | { id?: unknown; is_active?: unknown }
-            | null;
-        } else {
-          identityErrorText = await identityResponse.text();
-        }
-      } catch {
-        return NextResponse.json(
-          { detail: "ไม่สามารถยืนยันบัญชีกับ ZYRQUEN API ได้" },
-          { status: 503 },
-        );
-      }
-    }
-
-    if (useMockFallback) {
-      const mockIdentity = getMockSessionStatus(authorizationHeader);
-      identityStatus = mockIdentity.status;
-      if (identityStatus === 200) {
-        identityPayload = mockIdentity.payload as {
-          id?: unknown;
-          is_active?: unknown;
-        };
+    try {
+      const identityResponse = await fetch(`${baseUrl}/auth/me`, {
+        method: "GET",
+        headers: {
+          Authorization: authorizationHeader,
+          Accept: "application/json",
+        },
+        cache: "no-store",
+        signal: AbortSignal.any([
+          request.signal,
+          AbortSignal.timeout(hasExplicitUrl ? 10_000 : 1_500),
+        ]),
+      });
+      identityStatus = identityResponse.status;
+      identityContentType =
+        identityResponse.headers.get("content-type") ?? "application/json";
+      if (identityResponse.ok) {
+        identityPayload = (await identityResponse.json().catch(() => null)) as
+          | { id?: unknown; is_active?: unknown }
+          | null;
       } else {
-        identityErrorText = JSON.stringify(mockIdentity.payload);
+        identityErrorText = await identityResponse.text();
       }
+    } catch {
+      return NextResponse.json(
+        { detail: "ไม่สามารถยืนยันบัญชีกับ ZYRQUEN API ได้" },
+        { status: 503 },
+      );
     }
 
     if (identityStatus < 200 || identityStatus >= 300) {
@@ -264,49 +243,31 @@ async function proxy(request: NextRequest, context: RouteContext) {
   }
 
   let upstream: Response;
-  if (useMockFallback || !baseUrl) {
-    upstream = await handleMockBackendRequest({
+  const upstreamUrl = path ? `${baseUrl}/${path}` : `${baseUrl}/`;
+  try {
+    const timeoutMs = isInferenceRequest
+      ? 120_000
+      : hasExplicitUrl
+        ? 20_000
+        : 1_500;
+    upstream = await fetch(upstreamUrl, {
       method,
-      path,
-      authorizationHeader: headers.get("Authorization"),
-      rawBody: body,
+      headers,
+      body,
+      cache: "no-store",
+      signal: AbortSignal.any([
+        request.signal,
+        AbortSignal.timeout(timeoutMs),
+      ]),
     });
-  } else {
-    const upstreamUrl = path ? `${baseUrl}/${path}` : `${baseUrl}/`;
-    try {
-      const timeoutMs = isInferenceRequest
-        ? 120_000
-        : hasExplicitUrl
-          ? 20_000
-          : 1_500;
-      upstream = await fetch(upstreamUrl, {
-        method,
-        headers,
-        body,
-        cache: "no-store",
-        signal: AbortSignal.any([
-          request.signal,
-          AbortSignal.timeout(timeoutMs),
-        ]),
-      });
-    } catch {
-      if (!hasExplicitUrl) {
-        upstream = await handleMockBackendRequest({
-          method,
-          path,
-          authorizationHeader: headers.get("Authorization"),
-          rawBody: body,
-        });
-      } else {
-        return NextResponse.json(
-          {
-            detail:
-              "ไม่สามารถเชื่อมต่อกับ ZYRQUEN API ที่กำหนดไว้ได้ กรุณาตรวจสอบว่าบริการ API กำลังทำงานอยู่",
-          },
-          { status: 503 },
-        );
-      }
-    }
+  } catch {
+    return NextResponse.json(
+      {
+        detail:
+          "ไม่สามารถเชื่อมต่อกับ ZYRQUEN API ที่กำหนดไว้ได้ กรุณาตรวจสอบว่าบริการ API กำลังทำงานอยู่",
+      },
+      { status: 503 },
+    );
   }
 
   if (path === "auth/login" && upstream.ok) {

@@ -1,3 +1,4 @@
+import { CapabilityRadarChart } from "@/components/CapabilityRadarChart";
 import { PageHeader } from "@/components/PageHeader";
 import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -31,7 +32,7 @@ export default function TrainingPage() {
   return (
     <div className="page-stack">
       <PageHeader
-        description="แสดงโมดูลการเตรียมชุดข้อมูลและการฝึกโมเดล (Phase 3.3–3.4) ที่มีอยู่ใน Repository หน้านี้ไม่สั่งเริ่มงานและไม่สร้างข้อมูลจำลองการรันที่ไม่มีอยู่จริง"
+        description="แสดงโมดูลการเตรียมชุดข้อมูลและการฝึกโมเดล (Phase 3.3–3.4) ที่มีอยู่ใน Repository พร้อมแผนภาพความสามารถของรุ่นปัจจุบันจาก Backend โดยไม่สร้างข้อมูลจำลองการรันที่ไม่มีอยู่จริง"
         eyebrow="NATIVE AI / เครื่องมือจัดการ NATIVE MODEL"
         icon="layers"
         title="พื้นที่ทำงานสำหรับการฝึกอบรม"
@@ -45,6 +46,8 @@ export default function TrainingPage() {
           <p>โค้ดหลักพร้อมใช้งานในรูปแบบโมดูล Python แต่แอปพลิเคชัน API ปัจจุบันยังไม่ได้เปิดเส้นทางสำหรับจัดการชุดข้อมูล สั่งฝึกโมเดล ดูค่าชี้วัด หรือดูประวัติงานผ่านหน้าเว็บ</p>
         </div>
       </Panel>
+
+      <CapabilityRadarChart />
 
       <section className="capability-grid" aria-label="ความสามารถที่พัฒนาไว้ในโค้ดหลัก">
         <CapabilityPanel

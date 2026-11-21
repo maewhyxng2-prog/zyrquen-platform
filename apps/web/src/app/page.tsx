@@ -207,6 +207,131 @@ export default function DashboardPage() {
         </Panel>
       </section>
 
+      <section aria-label="การติดตามความคืบหน้า ZYRQUEN Ω∞">
+        <Panel className="progress-monitoring-panel">
+          <div className="panel-heading">
+            <div>
+              <div className="eyebrow">
+                การติดตามความคืบหน้า
+                {(nativeHealth?.platform_version || nativeHealth?.model_version)
+                  ? ` · ${nativeHealth.platform_version || nativeHealth.model_version}`
+                  : ""}
+              </div>
+              <h2>ตัวชี้วัดความก้าวหน้า ZYRQUEN Ω∞</h2>
+            </div>
+            <StatusBadge
+              tone={
+                nativeError
+                  ? "warn"
+                  : nativeHealth?.progress_metrics?.evaluation_status === "evaluated"
+                    ? "good"
+                    : "neutral"
+              }
+            >
+              {loading && !nativeHealth
+                ? "กำลังตรวจสอบ"
+                : nativeError
+                  ? "ไม่สามารถเชื่อมต่อ Backend"
+                  : nativeHealth?.progress_metrics?.evaluation_status === "evaluated"
+                    ? "มีผลประเมินจาก Backend"
+                    : "ยังไม่มีข้อมูลผลประเมินจาก Backend"}
+            </StatusBadge>
+          </div>
+
+          {(() => {
+            const pm = nativeHealth?.progress_metrics ?? null;
+            const genScore = pm?.generalization_score ?? null;
+            const relScore = pm?.relational_reasoning_success_rate ?? null;
+            const hasAnyMetric = genScore !== null || relScore !== null;
+
+            if (!hasAnyMetric) {
+              return (
+                <div className="unavailable-block">
+                  <strong>
+                    {loading && !nativeHealth
+                      ? "กำลังตรวจสอบค่า Generalization Score และ Relational Reasoning Success Rate"
+                      : nativeError
+                        ? "ไม่สามารถดึงตัวชี้วัดจาก Backend ได้"
+                        : "ยังไม่มีค่าชี้วัดความก้าวหน้าจาก Backend"}
+                  </strong>
+                  <p>
+                    {nativeError ||
+                      "Endpoint /v1/native-ai/health ยังไม่ได้ส่งค่า Generalization Score และ Relational Reasoning Success Rate ที่วัดผลจริงกลับมา ระบบจะไม่แสดงตัวเลขหรือกราฟจำลอง"}
+                  </p>
+                </div>
+              );
+            }
+
+            return (
+              <div className="progress-metrics-grid">
+                <div className="progress-metric-block">
+                  <div className="progress-metric-head">
+                    <span className="metric-label">GENERALIZATION SCORE</span>
+                  </div>
+                  <div className="progress-metric-value tabular-nums">
+                    {genScore !== null ? `${genScore.toFixed(1)}%` : "ไม่ระบุ"}
+                  </div>
+                  {genScore !== null && (
+                    <div
+                      aria-label="แถบความคืบหน้า Generalization Score"
+                      className="progress-track"
+                    >
+                      <div
+                        className="progress-fill"
+                        style={{
+                          width: `${Math.min(100, Math.max(0, genScore))}%`,
+                        }}
+                      />
+                    </div>
+                  )}
+                  <p className="progress-metric-note">
+                    {pm?.metrics_source
+                      ? `แหล่งข้อมูลจาก Backend: ${pm.metrics_source}`
+                      : "ค่าที่รายงานจาก Backend"}
+                  </p>
+                </div>
+
+                <div className="progress-metric-block">
+                  <div className="progress-metric-head">
+                    <span className="metric-label">
+                      RELATIONAL REASONING SUCCESS RATE
+                    </span>
+                  </div>
+                  <div className="progress-metric-value tabular-nums">
+                    {relScore !== null ? `${relScore.toFixed(1)}%` : "ไม่ระบุ"}
+                  </div>
+                  {relScore !== null && (
+                    <div
+                      aria-label="แถบความคืบหน้า Relational Reasoning Success Rate"
+                      className="progress-track"
+                    >
+                      <div
+                        className="progress-fill progress-fill-blue"
+                        style={{
+                          width: `${Math.min(100, Math.max(0, relScore))}%`,
+                        }}
+                      />
+                    </div>
+                  )}
+                  <p className="progress-metric-note">
+                    {pm?.metrics_source
+                      ? `แหล่งข้อมูลจาก Backend: ${pm.metrics_source}`
+                      : "ค่าที่รายงานจาก Backend"}
+                  </p>
+                </div>
+              </div>
+            );
+          })()}
+
+          <div className="panel-link-row">
+            <Link className="text-link" href="/training">
+              ตรวจสอบข้อมูลการฝึกอบรมและสถานะความสามารถ
+              <Icon name="arrow-right" size={15} />
+            </Link>
+          </div>
+        </Panel>
+      </section>
+
       <section className="dashboard-grid">
         <Panel className="dashboard-primary">
           <div className="panel-heading">

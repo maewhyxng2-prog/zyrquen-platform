@@ -2,47 +2,57 @@
 
 ![ZYRQUEN logo](apps/web/public/zyrquen-logo.svg)
 
-ZYRQUEN Ω∞ เป็นโครงการวิจัยและวิศวกรรมระยะยาวเพื่อพัฒนาแพลตฟอร์ม AI และระบบ Native General Intelligence (NGI) ที่ทำงานได้ด้วยตนเองบนโครงสร้างพื้นฐานอิสระ Repository ปัจจุบันประกอบด้วย Next.js Web Client, FastAPI Backend, โมดูล Native Model Runtime / Training Infrastructure และชั้นสัญญา Intelligence Phase 9 โดย **ยังไม่มี model weights ที่ผ่านการฝึกของ ZYRQUEN เอง** และ **ยังไม่ผ่านการรับรอง Production Deployment**
+ZYRQUEN Ω∞ เป็นโครงการวิจัยและวิศวกรรมระยะยาวเพื่อพัฒนาแพลตฟอร์ม AI และระบบ **Native General Intelligence (NGI)** ที่เรียนรู้ ให้เหตุผล วางแผน ตรวจสอบ และพัฒนาความสามารถได้ด้วยตนเองบนโครงสร้างพื้นฐานอิสระ (ไม่ใช่ Chatbot-only และไม่นำโมเดลภายนอกมาควบคุมหลัก)
 
-
+> **ข้อเท็จจริงสำคัญของสถานะปัจจุบัน:** Repository ปัจจุบันยัง **ไม่มี trained model weights ของ ZYRQUEN เอง**, **ไม่มีข้อมูล Mock/จำลองคะแนนที่ไม่มีอยู่จริง**, และ **ยังไม่ผ่านการรับรอง Production Deployment**
 
 ---
 
 ## สถานะตามหลักฐานใน Repository
 
 | ระดับหลักฐาน | สถานะปัจจุบัน | รายละเอียดที่ตรวจสอบได้จริง |
-| --- | --- | --- |
-| **Implementation** | มีโค้ดต้นฉบับใน Repository | Web Client (`apps/web/`), FastAPI Service (`apps/api/`), Native Runtime / Tokenizer / Model / Dataset / Training (`apps/core/`), Intelligence Phase 9.1–9.10 (`apps/core/intelligence/`) — Legacy Intelligence Contracts (ปิดตามขอบเขตเดิม), Phase 11–20 (`phases/phase11.py` - `phases/phase20.py`), Alembic Migrations (`apps/api/migrations/`), เอกสาร (`docs/`) |
-| **Unit Tests** | **Local Final Gate 11–20: `60 / 60 PASSED`** | `tests_phases/test_phase11.py` - `tests_phases/test_phase20.py` แต่ละ Phase `6 passed` รวม `60 passed in 0.18s` บนเครื่องท้องถิ่น (Local) |
-| **Integration Verification** | **Phase 10.9.9 Gate: `PASSED / CLOSED`** | CI Run `44893016007`, SHA `466b58a75419708a86469f59a903e322d85081d2`, 4/4 `web / docker / test / postgres-integration` สำเร็จ, docs commit `7a3c3be` |
-| **GitHub CI สำหรับ 11–20** | **ยังไม่ยืนยัน** | ห้ามอ้างว่า CI 4/4 สำหรับ 11–20 ผ่าน จนกว่าจะเห็น Workflow 4 Jobs สำเร็จบน SHA เดียวกัน — ตอนนี้มีแค่ Local `60/60` |
-| **Production Deployment** | ยังไม่พร้อมและยังไม่ได้ Deploy | ยังไม่มี trained ZYRQUEN model weights, ยังไม่ได้ provision Cloud / PostgreSQL / GPU / Monitoring / Alerting / Backup และห้ามระบุว่าเป็น Production Ready |
-
-เอกสารอ้างอิงหลัก:
-- [`ARCHITECTURE.md`](ARCHITECTURE.md)
-- [`docs/PHASE_9_STATUS.md`](docs/PHASE_9_STATUS.md)
-- [`docs/PHASES_11_20_INDEX.md`](docs/PHASES_11_20_INDEX.md) — สารบัญ Phase 11–20 ครบ
-- [`docs/engineering/ZYRQUEN_PHASE_READINESS.md`](docs/engineering/ZYRQUEN_PHASE_READINESS.md)
-- [`docs/operations/KNOWN_LIMITATIONS.md`](docs/operations/KNOWN_LIMITATIONS.md)
-- [`API_ACCESS.md`](API_ACCESS.md)
+|---|---|---|
+| **Implementation** | มีโค้ดต้นฉบับใน Repository | Web Client (`apps/web/`), FastAPI Service (`apps/api/`), Native Runtime / Tokenizer / Model / Dataset / Training (`apps/core/`), Legacy Intelligence Phase 9 (`apps/core/intelligence/`), Phase 11–20 (`phases/phase11.py`–`phases/phase20.py`), Alembic Migrations (`apps/api/migrations/`), และ Experiment Scripts (`tools/train_nagi_500_v7.py`, `tools/train_nagi_500_v8.py`, `tools/eval_nagi_500_v8.py`) |
+| **Phase 11–20 Unit Tests** | **Local Final Gate 11–20: `60 / 60 PASSED`** | `tests_phases/test_phase11.py`–`tests_phases/test_phase20.py` (แต่ละ Phase `6 passed`, ไม่สร้าง Phase 21 เพิ่ม) |
+| **Integration Verification** | **Phase 10.9.9 Gate: `PASSED / CLOSED`** | CI Run `44893016007`, SHA `466b58a75419708a86469f59a903e322d85081d2`, 4/4 `web / docker / test / postgres-integration` |
+| **GitHub CI สำหรับ 11–20** | **ยังไม่ยืนยัน** | ห้ามอ้างว่า CI 4/4 สำหรับ Phase 11–20 ผ่านจนกว่าจะเห็น Workflow 4 Jobs สำเร็จบน Commit SHA เดียวกัน |
+| **Native Model `v8` Experiment** | **ปิดการทดลองแล้ว (`FROZEN`)** | รายละเอียดโค้ดและข้อจำกัดบันทึกใน [`docs/V8_SUMMARY.md`](docs/V8_SUMMARY.md) และ [`docs/V8_EXPERIMENT_CLOSURE_REPORT.md`](docs/V8_EXPERIMENT_CLOSURE_REPORT.md) *(ตัวเลขรันไทม์จริงจาก Codespaces ยังสถานะ `BLOCKED IN WORKSPACE` จนกว่าจะแนบ `report.json`)* |
+| **Native Model `v9` Planning** | **วางแผนแล้ว (`NOT YET TRAINED`)** | ออกแบบ Dataset Disjoint 4 ชั้น, Slotizer แก้ `<unk>` collision, 4-Arm Protocol และ Acceptance Gates ใน [`docs/V9_BLUEPRINT.md`](docs/V9_BLUEPRINT.md) และ [`docs/V9_EXPERIMENT_PLAN.md`](docs/V9_EXPERIMENT_PLAN.md) *(ยังไม่ได้เริ่มฝึกโมเดลจริง)* |
+| **Production Deployment** | ยังไม่พร้อมและยังไม่ได้ Deploy | ยังไม่มี trained ZYRQUEN model weights และยังไม่ได้ provision Cloud / PostgreSQL / GPU / Monitoring / Backup |
 
 ---
 
-### Intelligence Architecture & Development Status
+## เส้นทางพัฒนา Native Model สู่ NGI (Capability-Driven Progression)
 
-ZYRQUEN ประกอบด้วยชั้นสัญญา Intelligence เดิมจาก Phase 9 และการพัฒนาต่อยอดใน Phase 11–20 โดยมี Phase 10.9.9 เป็น Gate Closure สำหรับการตรวจสอบ API และ Integration
+การพัฒนาโมเดลเดินตามความสามารถจริงที่ทดสอบได้ (ไม่เพิ่มรุ่นเพียงเพื่อไล่เลขเวอร์ชัน และคง Roadmap **Phase 11–20** เดิมโดยไม่สร้าง Phase 21 เพิ่ม):
 
-- **Phase 9.1–9.10:** Legacy Intelligence Contracts — ปิดงานตามขอบเขตเดิม
-- **Phase 10.9.9:** API / Integration Gate — `PASSED / CLOSED` ตาม GitHub Actions Run `44893016007`
-- **Phase 11–20:** Native Intelligence Development — `CODE DONE` ตามผล Local Final Gate `60 passed / 0 failed`
-- **GitHub CI Phase 11–20:** `NOT VERIFIED` — รอผล Workflow 4 Jobs บน Commit SHA เดียวกัน
+| รุ่น | หัวข้อพัฒนา | สถานะปัจจุบัน | เอกสารอ้างอิง |
+|---|---|---|---|
+| **v7** | Baseline Foundation (`TinyNGI` 2-layer LSTM) | ผ่านการทดลองฐาน (`FROZEN`) | `tools/train_nagi_500_v7.py` |
+| **v8** | Attention + Pointer-Copy (`BiGRU + Bahdanau + p_gen`) | ปิดการทดลองแล้ว (`FROZEN`) | [`docs/V8_SUMMARY.md`](docs/V8_SUMMARY.md), [`docs/V8_EXPERIMENT_CLOSURE_REPORT.md`](docs/V8_EXPERIMENT_CLOSURE_REPORT.md) |
+| **v9** | **Generalization** — Unseen Entity & OOD Template | **ขั้นถัดไป (Blueprint พร้อม / ยังไม่ฝึก)** | [`docs/V9_BLUEPRINT.md`](docs/V9_BLUEPRINT.md), [`docs/V9_EXPERIMENT_PLAN.md`](docs/V9_EXPERIMENT_PLAN.md) |
+| **v10** | Relational & Multi-step Reasoning | แผนขั้นถัดไป | [`docs/V9_BLUEPRINT.md`](docs/V9_BLUEPRINT.md) |
+| **v11** | Knowledge Integration | แผนขั้นถัดไป | [`docs/PHASE_17_SPEC.md`](docs/PHASE_17_SPEC.md) |
+| **v12** | Adaptive Learning | แผนขั้นถัดไป | [`docs/PHASE_18_SPEC.md`](docs/PHASE_18_SPEC.md) |
+| **v13** | Planning & Decomposition | แผนขั้นถัดไป | [`docs/PHASE_16_SPEC.md`](docs/PHASE_16_SPEC.md) |
+| **v14** | Verification & Self-Correction | แผนขั้นถัดไป | [`docs/V9_BLUEPRINT.md`](docs/V9_BLUEPRINT.md) |
+| **v15** | Autonomous Capability | แผนขั้นถัดไป | [`docs/PHASE_19_SPEC.md`](docs/PHASE_19_SPEC.md) |
+| **v16+** | Integrated Native Intelligence → **ZYRQUEN Ω∞ — NGI** | เป้าหมายระยะยาว | [`docs/PHASE_20_SPEC.md`](docs/PHASE_20_SPEC.md), [`docs/SCALING_POLICY.md`](docs/SCALING_POLICY.md) |
 
-Phase 9 เป็นส่วนหนึ่งของประวัติสถาปัตยกรรมและสัญญาของระบบ ไม่ใช่สถานะการพัฒนาปัจจุบัน และไม่ควรตีความว่า Phase 11–20 ผ่าน Production Verification แล้ว
+---
 
-**Current limitation:** ZYRQUEN ยังไม่มี Model Weights ที่ผ่านการฝึกของโครงการเอง และยังไม่มีหลักฐานรับรอง Production Deployment
+## เว็บแพลตฟอร์มและกฎความซื่อสัตย์ของข้อมูล (No Mock / Fail-Closed)
 
+ส่วนติดต่อเว็บใน [`apps/web/`](apps/web/README.md) เชื่อมต่อกับ FastAPI Backend เท่านั้น โดยไม่ใช้ Mock Backend หรือสร้างผลประเมินจำลอง:
 
-## ZYRQUEN — Phase 11–20 — CLOSED
+- **Version Indicator (Topbar & PageHeader):** แสดงเวอร์ชันที่ได้รับจาก Endpoint `/v1/native-ai/health` ของ Backend จริงเท่านั้น และแจ้ง `ยังไม่ระบุรุ่นจาก Backend` หรือ `ไม่ทราบรุ่น (Backend ไม่พร้อม)` เมื่อไม่มีข้อมูลจริง
+- **Dashboard (`/`):** แสดงความพร้อมบริการ API/Runtime พร้อมส่วน **ตัวชี้วัดความก้าวหน้า ZYRQUEN Ω∞** (`Generalization Score` และ `Relational Reasoning Success Rate`) จาก Backend — หากยังไม่มีผลประเมินจริงจะไม่แสดงตัวเลขหรือแถบความคืบหน้าปลอม
+- **Training Workspace (`/training`):** แสดงโมดูล Core (`apps/core/native/dataset.py`, `train.py`) ร่วมกับ **Capability Radar Chart (Recharts)** ซึ่งจะวาดกราฟเฉพาะเมื่อ Backend ส่งผลคะแนนความสามารถที่วัดผลจริงกลับมาเท่านั้น หากไม่มีจะแจ้งสถานะไม่มีข้อมูลจริง
+- **Branding SVG Assets (`apps/web/public/*.svg`):** ชุดเวกเตอร์ Color และ Monochrome รองรับ `prefers-reduced-motion` และผ่านเกณฑ์โครงสร้างตาม `tests/test_branding_svgs.py`
+
+---
+
+## ZYRQUEN — Phase 11–20 (CLOSED)
 
 | Phase | สถานะ | Commit | ผล Local |
 |---|---|---|---|
@@ -58,8 +68,31 @@ Phase 9 เป็นส่วนหนึ่งของประวัติส
 | 20 Native Intelligence System Maturity | `CODE DONE` | `fa7a65e` | `6 passed` |
 | 21 | `ไม่มี — 20 คือ Phase สุดท้าย` | — | — |
 
-**กติกาที่ยึดไว้ตลอด 11–20:** ไม่ Training จริง, ไม่แก้ Model Weights ตอน online, ไม่ใช้ External AI APIs, ไม่ Auto-promote, ไม่แก้ Auth / Quota / Database Schema / Migration, ไม่ Deploy Production อัตโนมัติ, แยก PASS / FAIL / BLOCKED / NOT RUN ชัดเจน — ห้ามนับ NOT RUN เป็น PASS
+**กติกาที่ยึดไว้ตลอดโครงการ:** ห้ามปลอมผลประเมิน, ห้ามใช้ Mock Runtime แทนโมเดลจริง, ไม่เอาโมเดลภายนอกมาควบคุมหลัก, ไม่แก้ไฟล์ `v7`/`v8` ที่ปิดแล้ว, แยกสถานะ `PASS / FAIL / BLOCKED / NOT RUN` ชัดเจน
+
+---
+
+## เอกสารอ้างอิงหลักและคำสั่งตรวจสอบ
+
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — สถาปัตยกรรมและขอบเขตระบบ
+- [`API_ACCESS.md`](API_ACCESS.md) — การใช้งาน API Key และ Native Inference Endpoint
+- [`docs/V8_SUMMARY.md`](docs/V8_SUMMARY.md) & [`docs/V8_EXPERIMENT_CLOSURE_REPORT.md`](docs/V8_EXPERIMENT_CLOSURE_REPORT.md) — สรุปการปิดการทดลอง `v8` และข้อจำกัด
+- [`docs/V9_BLUEPRINT.md`](docs/V9_BLUEPRINT.md) & [`docs/V9_EXPERIMENT_PLAN.md`](docs/V9_EXPERIMENT_PLAN.md) — พิมพ์เขียวและแผนการทดลอง `v9 Generalization`
+- [`docs/NATIVE_TRAINING_500_SPEC.md`](docs/NATIVE_TRAINING_500_SPEC.md) & [`docs/SCALING_POLICY.md`](docs/SCALING_POLICY.md) — สเปกการฝึกและการขยายขนาดโมเดล
+- [`docs/PHASES_11_20_INDEX.md`](docs/PHASES_11_20_INDEX.md) & [`docs/PHASE_9_STATUS.md`](docs/PHASE_9_STATUS.md) — ดัชนีสถานะ Phase 9 และ Phase 11–20
+- [`docs/engineering/ZYRQUEN_PHASE_READINESS.md`](docs/engineering/ZYRQUEN_PHASE_READINESS.md) & [`docs/operations/KNOWN_LIMITATIONS.md`](docs/operations/KNOWN_LIMITATIONS.md)
 
 ```bash
+# ตรวจสอบชุดทดสอบ Phase 11-20 (ต้องมี pytest: 60 passed)
 python -m pytest tests_phases/ -v
-# ต้องขึ้น 60 passed
+
+# ตรวจสอบ Pure-Python Native Runtime & Branding SVG Tests
+python3 -m apps.core.test_native_runtime
+python -m pytest tests/test_branding_svgs.py -v
+
+# ตรวจสอบ Frontend (Web Workspace)
+npm run test
+npm run lint
+npm run typecheck
+npm run build
+```
