@@ -79,30 +79,14 @@ def list_api_keys(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """Return key metadata only; listing must never invalidate an existing secret."""
     try:
-        keys = (
+        return (
             db.query(ApiKey)
             .filter(ApiKey.user_id == current_user.id)
             .order_by(ApiKey.created_at.desc(), ApiKey.id.desc())
             .all()
         )
-        now = datetime.now(timezone.utc)
-        rotated_any = False
-        for key in keys:
-            if (
-                key.revoked_at is None
-                and key.auto_rotate_enabled
-                and key.auto_rotate_interval_days
-                and key.next_rotation_at is not None
-                and _as_utc(key.next_rotation_at) <= now
-            ):
-                _rotate_key_record(key, db, current_user.id, "api_key.auto_rotated", now)
-                rotated_any = True
-        if rotated_any:
-            db.commit()
-            for key in keys:
-                db.refresh(key)
-        return keys
     except SQLAlchemyError:
         raise _database_failure(db) from None
 
