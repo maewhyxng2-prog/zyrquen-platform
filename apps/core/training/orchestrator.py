@@ -180,7 +180,6 @@ class TrainingOrchestrator:
                 vocab_size=tokenizer.vocab_size,
                 **cleaned_model_values,
             )
-            model_config.validate_parameter_budget(MAX_CPU_MODEL_PARAMETERS)
         except (TypeError, ValueError) as exc:
             raise TrainingUnavailable(
                 f"Training configuration is invalid: {exc}"
