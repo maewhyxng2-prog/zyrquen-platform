@@ -46,6 +46,12 @@ export function isAllowedBackendRoute(method: string, path: string): boolean {
   if (new RegExp(`^users/me/api-keys/${id}$`, "i").test(path)) {
     return normalizedMethod === "DELETE";
   }
+  if (new RegExp(`^users/me/api-keys/${id}/auto-rotate$`, "i").test(path)) {
+    return normalizedMethod === "PATCH";
+  }
+  if (new RegExp(`^users/me/api-keys/${id}/rotate$`, "i").test(path)) {
+    return normalizedMethod === "POST";
+  }
   if (new RegExp(`^users/me/api-keys/${id}/usage$`, "i").test(path)) {
     return normalizedMethod === "GET";
   }

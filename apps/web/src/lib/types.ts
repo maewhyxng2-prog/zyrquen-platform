@@ -100,6 +100,11 @@ export type ApiKeyMetadata = {
   createdAt: string;
   expiresAt: string;
   revokedAt: string | null;
+  autoRotateEnabled: boolean;
+  autoRotateIntervalDays: number | null;
+  lastRotatedAt: string | null;
+  nextRotationAt: string | null;
+  rotationCount: number;
 };
 
 export type CreatedApiKey = ApiKeyMetadata & { key: string };

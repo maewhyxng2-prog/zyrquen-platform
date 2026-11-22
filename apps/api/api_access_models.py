@@ -1,6 +1,7 @@
 import uuid
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -9,6 +10,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     Uuid,
+    false,
     func,
 )
 from sqlalchemy.orm import mapped_column
@@ -23,6 +25,10 @@ class ApiKey(Base):
         CheckConstraint(
             "scope = 'native:inference'",
             name="ck_api_keys_scope",
+        ),
+        CheckConstraint(
+            "auto_rotate_interval_days IS NULL OR (auto_rotate_interval_days >= 1 AND auto_rotate_interval_days <= 365)",
+            name="ck_api_keys_auto_rotate_interval",
         ),
         UniqueConstraint("key_hash", name="uq_api_keys_key_hash"),
         Index("ix_api_keys_user_created", "user_id", "created_at"),
@@ -46,6 +52,21 @@ class ApiKey(Base):
     )
     expires_at = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at = mapped_column(DateTime(timezone=True), nullable=True)
+    auto_rotate_enabled = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=false(),
+    )
+    auto_rotate_interval_days = mapped_column(Integer, nullable=True)
+    last_rotated_at = mapped_column(DateTime(timezone=True), nullable=True)
+    next_rotation_at = mapped_column(DateTime(timezone=True), nullable=True)
+    rotation_count = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
 
 
 class AuditLog(Base):

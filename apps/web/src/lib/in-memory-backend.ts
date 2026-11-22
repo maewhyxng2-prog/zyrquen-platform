@@ -55,6 +55,12 @@ type StoredApiKey = {
   createdAt: string;
   expiresAt: string;
   revokedAt: string | null;
+  autoRotateEnabled: boolean;
+  autoRotateIntervalDays: number | null;
+  lastRotatedAt: string | null;
+  nextRotationAt: string | null;
+  rotationCount: number;
+  validityDurationMs: number;
 };
 
 type StoredAuditEntry = {
@@ -718,6 +724,106 @@ function summarizeConversation(conv: StoredConversation) {
   };
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function parseAutoRotateSchedule(body: Record<string, unknown>):
+  | { ok: true; enabled: boolean; intervalDays: number | null }
+  | { ok: false; detail: string } {
+  const enabled = Boolean(body.auto_rotate_enabled);
+  if (!enabled) {
+    return { ok: true, enabled: false, intervalDays: null };
+  }
+  const rawDays = body.auto_rotate_interval_days;
+  if (
+    typeof rawDays !== "number" ||
+    !Number.isInteger(rawDays) ||
+    rawDays < 1 ||
+    rawDays > 365
+  ) {
+    return {
+      ok: false,
+      detail: "รอบเวลา Auto-rotate ต้องเป็นจำนวนเต็มระหว่าง 1 ถึง 365 วัน",
+    };
+  }
+  return { ok: true, enabled: true, intervalDays: rawDays };
+}
+
+function serializeApiKey(k: StoredApiKey) {
+  return {
+    id: k.id,
+    name: k.name,
+    key_prefix: k.keyPrefix,
+    scope: k.scope,
+    created_at: k.createdAt,
+    expires_at: k.expiresAt,
+    revoked_at: k.revokedAt,
+    auto_rotate_enabled: Boolean(k.autoRotateEnabled),
+    auto_rotate_interval_days: k.autoRotateIntervalDays ?? null,
+    last_rotated_at: k.lastRotatedAt ?? null,
+    next_rotation_at: k.nextRotationAt ?? null,
+    rotation_count: k.rotationCount ?? 0,
+  };
+}
+
+function rotateStoredApiKey(
+  store: InMemoryStore,
+  entry: StoredApiKey,
+  actorUserId: string,
+  action: "api_key.rotated" | "api_key.auto_rotated",
+): string {
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const secret = `zq_live_${randomBytes(18).toString("hex")}`;
+  entry.keyPrefix = secret.slice(0, 12);
+  entry.lastRotatedAt = nowIso;
+  entry.rotationCount = (entry.rotationCount ?? 0) + 1;
+
+  const intervalMs =
+    entry.autoRotateEnabled && entry.autoRotateIntervalDays
+      ? entry.autoRotateIntervalDays * DAY_MS
+      : 0;
+  entry.nextRotationAt = intervalMs
+    ? new Date(nowMs + intervalMs).toISOString()
+    : null;
+
+  const fallbackValidity = Math.max(
+    entry.validityDurationMs || 30 * DAY_MS,
+    intervalMs,
+  );
+  const currentExpiryMs = Date.parse(entry.expiresAt);
+  if (Number.isNaN(currentExpiryMs) || currentExpiryMs < nowMs + fallbackValidity) {
+    entry.expiresAt = new Date(nowMs + fallbackValidity).toISOString();
+  }
+
+  store.auditLogs.unshift({
+    id: randomUUID(),
+    actor_user_id: actorUserId,
+    action,
+    resource_id: entry.id,
+    created_at: nowIso,
+  });
+  return secret;
+}
+
+function applyDueAutoRotations(store: InMemoryStore, userId: string): void {
+  const nowMs = Date.now();
+  for (const entry of store.apiKeys.values()) {
+    if (
+      entry.userId !== userId ||
+      entry.revokedAt !== null ||
+      !entry.autoRotateEnabled ||
+      !entry.autoRotateIntervalDays ||
+      !entry.nextRotationAt
+    ) {
+      continue;
+    }
+    const dueMs = Date.parse(entry.nextRotationAt);
+    if (!Number.isNaN(dueMs) && dueMs <= nowMs) {
+      rotateStoredApiKey(store, entry, userId, "api_key.auto_rotated");
+    }
+  }
+}
+
 function buildUserUsageStats(userId: string) {
   const store = getStore();
   const records = store.usageRecords.filter((r) => r.userId === userId);
@@ -953,30 +1059,36 @@ export async function handleInMemoryBackendRequest(options: {
 
   if (path === "users/me/api-keys") {
     if (method === "GET") {
+      applyDueAutoRotations(store, currentUser.id);
       const keys = [...store.apiKeys.values()]
         .filter((k) => k.userId === currentUser.id)
         .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-        .map((k) => ({
-          id: k.id,
-          name: k.name,
-          key_prefix: k.keyPrefix,
-          scope: k.scope,
-          created_at: k.createdAt,
-          expires_at: k.expiresAt,
-          revoked_at: k.revokedAt,
-        }));
+        .map(serializeApiKey);
       return { status: 200, body: keys };
     }
     if (method === "POST") {
       const body = parseJsonBody(options.rawBody);
       const name = typeof body.name === "string" ? body.name.trim() : "";
       const expiresAt = typeof body.expires_at === "string" ? body.expires_at : "";
-      if (!name || !expiresAt) {
-        return { status: 422, body: { detail: "กรุณาระบุชื่อและวันหมดอายุของ API Key" } };
+      const expiryMs = Date.parse(expiresAt);
+      if (!name || !expiresAt || Number.isNaN(expiryMs) || expiryMs <= Date.now()) {
+        return {
+          status: 422,
+          body: { detail: "กรุณาระบุชื่อและวันหมดอายุในอนาคตของ API Key" },
+        };
+      }
+      const schedule = parseAutoRotateSchedule(body);
+      if (!schedule.ok) {
+        return { status: 422, body: { detail: schedule.detail } };
       }
       const id = randomUUID();
       const secret = `zq_live_${randomBytes(18).toString("hex")}`;
-      const createdAt = new Date().toISOString();
+      const nowMs = Date.now();
+      const createdAt = new Date(nowMs).toISOString();
+      const nextRotationAt =
+        schedule.enabled && schedule.intervalDays
+          ? new Date(nowMs + schedule.intervalDays * DAY_MS).toISOString()
+          : null;
       const entry: StoredApiKey = {
         id,
         userId: currentUser.id,
@@ -984,8 +1096,14 @@ export async function handleInMemoryBackendRequest(options: {
         keyPrefix: secret.slice(0, 12),
         scope: "inference:read_write",
         createdAt,
-        expiresAt,
+        expiresAt: new Date(expiryMs).toISOString(),
         revokedAt: null,
+        autoRotateEnabled: schedule.enabled,
+        autoRotateIntervalDays: schedule.intervalDays,
+        lastRotatedAt: null,
+        nextRotationAt,
+        rotationCount: 0,
+        validityDurationMs: Math.max(DAY_MS, expiryMs - nowMs),
       };
       store.apiKeys.set(id, entry);
       store.auditLogs.unshift({
@@ -998,17 +1116,75 @@ export async function handleInMemoryBackendRequest(options: {
       return {
         status: 201,
         body: {
-          id: entry.id,
-          name: entry.name,
-          key_prefix: entry.keyPrefix,
-          scope: entry.scope,
-          created_at: entry.createdAt,
-          expires_at: entry.expiresAt,
-          revoked_at: entry.revokedAt,
+          ...serializeApiKey(entry),
           key: secret,
         },
       };
     }
+  }
+
+  const apiKeyAutoRotateMatch = path.match(
+    /^users\/me\/api-keys\/([^/]+)\/auto-rotate$/i,
+  );
+  if (method === "PATCH" && apiKeyAutoRotateMatch) {
+    const key = store.apiKeys.get(apiKeyAutoRotateMatch[1]);
+    if (!key || key.userId !== currentUser.id) {
+      return { status: 404, body: { detail: "ไม่พบ API Key" } };
+    }
+    if (key.revokedAt) {
+      return {
+        status: 409,
+        body: { detail: "ไม่สามารถตั้งค่า Auto-rotate ให้ API Key ที่ถูกเพิกถอนแล้ว" },
+      };
+    }
+    const body = parseJsonBody(options.rawBody);
+    const schedule = parseAutoRotateSchedule(body);
+    if (!schedule.ok) {
+      return { status: 422, body: { detail: schedule.detail } };
+    }
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    key.autoRotateEnabled = schedule.enabled;
+    key.autoRotateIntervalDays = schedule.intervalDays;
+    key.nextRotationAt =
+      schedule.enabled && schedule.intervalDays
+        ? new Date(nowMs + schedule.intervalDays * DAY_MS).toISOString()
+        : null;
+    store.auditLogs.unshift({
+      id: randomUUID(),
+      actor_user_id: currentUser.id,
+      action: "api_key.auto_rotate_updated",
+      resource_id: key.id,
+      created_at: nowIso,
+    });
+    return { status: 200, body: serializeApiKey(key) };
+  }
+
+  const apiKeyRotateMatch = path.match(/^users\/me\/api-keys\/([^/]+)\/rotate$/i);
+  if (method === "POST" && apiKeyRotateMatch) {
+    const key = store.apiKeys.get(apiKeyRotateMatch[1]);
+    if (!key || key.userId !== currentUser.id) {
+      return { status: 404, body: { detail: "ไม่พบ API Key" } };
+    }
+    if (key.revokedAt) {
+      return {
+        status: 409,
+        body: { detail: "ไม่สามารถหมุนเวียน API Key ที่ถูกเพิกถอนแล้ว" },
+      };
+    }
+    const secret = rotateStoredApiKey(
+      store,
+      key,
+      currentUser.id,
+      "api_key.rotated",
+    );
+    return {
+      status: 200,
+      body: {
+        ...serializeApiKey(key),
+        key: secret,
+      },
+    };
   }
 
   const apiKeyUsageMatch = path.match(/^users\/me\/api-keys\/([^/]+)\/usage$/i);
@@ -1041,6 +1217,8 @@ export async function handleInMemoryBackendRequest(options: {
     }
     const now = new Date().toISOString();
     key.revokedAt = now;
+    key.autoRotateEnabled = false;
+    key.nextRotationAt = null;
     store.auditLogs.unshift({
       id: randomUUID(),
       actor_user_id: currentUser.id,

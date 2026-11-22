@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ApiKeyCreateRequest(BaseModel):
@@ -9,6 +9,8 @@ class ApiKeyCreateRequest(BaseModel):
 
     name: str = Field(min_length=1, max_length=80)
     expires_at: datetime
+    auto_rotate_enabled: bool = False
+    auto_rotate_interval_days: int | None = Field(default=None, ge=1, le=365)
 
     @field_validator("name")
     @classmethod
@@ -27,6 +29,29 @@ class ApiKeyCreateRequest(BaseModel):
             raise ValueError("วันหมดอายุ API Key ต้องอยู่ในอนาคต")
         return value
 
+    @model_validator(mode="after")
+    def validate_auto_rotate(self):
+        if self.auto_rotate_enabled and self.auto_rotate_interval_days is None:
+            raise ValueError("กรุณาระบุจำนวนวันสำหรับ Auto-rotate")
+        if not self.auto_rotate_enabled:
+            self.auto_rotate_interval_days = None
+        return self
+
+
+class ApiKeyAutoRotateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    auto_rotate_enabled: bool
+    auto_rotate_interval_days: int | None = Field(default=None, ge=1, le=365)
+
+    @model_validator(mode="after")
+    def validate_schedule(self):
+        if self.auto_rotate_enabled and self.auto_rotate_interval_days is None:
+            raise ValueError("กรุณาระบุจำนวนวันสำหรับ Auto-rotate")
+        if not self.auto_rotate_enabled:
+            self.auto_rotate_interval_days = None
+        return self
+
 
 class ApiKeyMetadata(BaseModel):
     id: UUID
@@ -36,6 +61,11 @@ class ApiKeyMetadata(BaseModel):
     created_at: datetime
     expires_at: datetime
     revoked_at: datetime | None
+    auto_rotate_enabled: bool = False
+    auto_rotate_interval_days: int | None = None
+    last_rotated_at: datetime | None = None
+    next_rotation_at: datetime | None = None
+    rotation_count: int = 0
 
 
 class ApiKeyCreated(ApiKeyMetadata):

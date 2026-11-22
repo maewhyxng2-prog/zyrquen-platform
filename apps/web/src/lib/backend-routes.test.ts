@@ -25,6 +25,18 @@ describe("backend proxy route allowlist", () => {
     ).toBe(true);
     expect(
       isAllowedBackendRoute(
+        "PATCH",
+        "users/me/api-keys/123e4567-e89b-42d3-a456-426614174000/auto-rotate",
+      ),
+    ).toBe(true);
+    expect(
+      isAllowedBackendRoute(
+        "POST",
+        "users/me/api-keys/123e4567-e89b-42d3-a456-426614174000/rotate",
+      ),
+    ).toBe(true);
+    expect(
+      isAllowedBackendRoute(
         "GET",
         "users/me/api-keys/123e4567-e89b-42d3-a456-426614174000/usage",
       ),
@@ -98,6 +110,18 @@ describe("backend proxy route allowlist", () => {
     expect(isAllowedBackendRoute("GET", "users/me/admin")).toBe(false);
     expect(isAllowedBackendRoute("PATCH", "users/me/usage")).toBe(false);
     expect(isAllowedBackendRoute("GET", "users/me/api-keys/unknown")).toBe(false);
+    expect(
+      isAllowedBackendRoute(
+        "POST",
+        "users/me/api-keys/123e4567-e89b-42d3-a456-426614174000/auto-rotate",
+      ),
+    ).toBe(false);
+    expect(
+      isAllowedBackendRoute(
+        "GET",
+        "users/me/api-keys/123e4567-e89b-42d3-a456-426614174000/rotate",
+      ),
+    ).toBe(false);
     expect(isAllowedBackendRoute("POST", "admin/overview")).toBe(false);
     expect(isAllowedBackendRoute("DELETE", "auth/login")).toBe(false);
     expect(isAllowedBackendRoute("POST", "health")).toBe(false);
