@@ -6,7 +6,7 @@ python-dotenv
 sqlalchemy
 psycopg[binary]
 pytest
-python-jose[cryptography]
+PyJWT[crypto]==2.15.1
 passlib[bcrypt]
 bcrypt<5
 alembic
