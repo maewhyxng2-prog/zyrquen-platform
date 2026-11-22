@@ -921,7 +921,9 @@ export default function SettingsPage() {
                             ? ` · หมุนเวียนล่าสุด ${new Date(key.lastRotatedAt).toLocaleString("th-TH")}`
                             : ""}
                           {key.nextRotationAt && !key.revokedAt
-                            ? ` · รอบหมุนเวียนถัดไป ${new Date(key.nextRotationAt).toLocaleString("th-TH")}`
+                            ? Date.parse(key.nextRotationAt) <= Date.now()
+                              ? " · ถึงกำหนดหมุนเวียนแล้ว — กรุณากดหมุนเวียนคีย์ทันที"
+                              : ` · รอบหมุนเวียนถัดไป ${new Date(key.nextRotationAt).toLocaleString("th-TH")}`
                             : ""}
                           {key.rotationCount > 0
                             ? ` · หมุนเวียนแล้ว ${key.rotationCount.toLocaleString("th-TH")} ครั้ง`
@@ -953,6 +955,12 @@ export default function SettingsPage() {
                               />
                               <span>กำหนดรอบหมุนเวียนสำหรับคีย์นี้</span>
                             </label>
+                            {draft.enabled && (
+                              <p className="settings-key-meta">
+                                เมื่อถึงกำหนด ระบบจะไม่เปลี่ยนคีย์เอง
+                                ให้กด “หมุนเวียนคีย์ทันที” และบันทึกคีย์ใหม่ในระบบที่ใช้งาน
+                              </p>
+                            )}
                             {draft.enabled && (
                               <div className="settings-rotate-fields">
                                 <select
