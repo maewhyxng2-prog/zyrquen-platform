@@ -9,7 +9,7 @@
 
 ## 1. Architectural Core & Continuity
 
-ZYRQUEN V12 สืบทอดแกนสถาปัตยกรรม Causal Decoder-Only Transformer ที่พัฒนาขึ้นเองใน `apps/core/native/model.py` (`ZyrquenModel`) และขยายบทบาทของ **Externalized Cognitive Scaffolding** (Memory Store, Knowledge System, Self-Verification Gate, Central Workflow Engine) ให้ทำงานสอดประสานกันตลอดการฝึกสะสม `50,000` Steps โดยไม่ฝังโค้ดหรือน้ำหนักจากโมเดลภายนอกใดๆ
+ZYRQUEN V12 สืบทอดแกนสถาปัตยกรรม Causal Decoder-Only Transformer ที่พัฒนาขึ้นเองใน `apps/core/native/model.py` (`ZyrquenModel`) และขยายบทบาทของ **Externalized Cognitive Scaffolding** (Memory Store, Knowledge System, Self-Verification Gate, Central Workflow Engine, และ **Deterministic Code/App Verification Sandbox**) ให้ทำงานสอดประสานกันตลอดการฝึกสะสม `50,000` Steps โดยไม่ฝังโค้ดหรือน้ำหนักจากโมเดลภายนอกใดๆ
 
 ### End-to-End Inference & Training Architecture
 
@@ -70,6 +70,9 @@ ZYRQUEN V12 สืบทอดแกนสถาปัตยกรรม Causal 
 เพื่อป้องกันการหลอกตัวเองว่าโมเดลฉลาดขึ้นจาก Rule ภายนอก:
 1. **Stage 1–4 (`steps 1–33,000`)** วัดความสามารถของ `ZyrquenModel` **ล้วนๆ (Standalone Native Weights)** บน Prompt ที่กำหนดโดยไม่มี Solver ภายนอกช่วยตอบ
 2. **Stage 5–6 (`steps 33,001–50,000`)** เชื่อมต่อ `MemoryStore` (สำหรับ Retrieve ข้อมูลตาม Tenant/Provenance) และ `Self-Verification Rules` (Phase 16) **แต่** คะแนน Reasoning/Belief-Revision ต้องวัดความสามารถของโมเดลในการประมวลผล `[source=...]` และแยก `fact`/`assumption`/`conflict` ด้วยตนเอง พร้อมรายงาน `standalone_model_score` แยกจาก `system_end_to_end_score` เสมอ
+3. **Native Software Engineering Execution Loop (Cross-Stage):**
+   - `ZyrquenModel` รับโจทย์ความต้องการ -> สร้าง Spec / Architecture / Schema / API / UI / Code / Tests ด้วย Native Inference ล้วน
+   - **Sandboxed Verification Harness (Deterministic, Non-AI):** คอมไพล์, รัน Unit/Integration/Hidden Tests, ตรวจ Security/RBAC และส่ง Compiler/Test Error Trace กลับเข้า Debugging Loop ของ `ZyrquenModel` (โดย Sandbox ไม่ได้เขียนโค้ดแทนโมเดล และไม่เรียก External Coding API)
 
 ---
 

@@ -30,6 +30,14 @@
 | **Stage 6** | **Self-Verification & Capability Integration** | `41,001 – 50,000` | `9,000` | `18` (`EXP-083..100`) | 50% Self-Verification (`true`/`false`/`unknown`, `fact`/`assumption`), 50% Balanced Joint Replay (All 6 Caps) | Cosine Decay `8e-5 -> 1e-5` | Full 4-Split Eval PASS (`V12 vs V11 & V10`); **V12 Final Gate PASS** |
 | **Total** | — | **`1 – 50,000`** | **`50,000`** | **`100`** | — | — | **Complete V12 Milestone** |
 
+### Cross-Stage Curriculum Rule: Native Software Engineering (Inside Existing 6 Stages)
+
+- **ห้ามเพิ่ม Stage 7 และห้ามขยายยอดรวมเกิน `50,000` Cumulative Steps:** ความสามารถด้าน Software Engineering (`CAP-SE-01..10`) กระจายตัวเป็น Cross-Stage Modules ตั้งแต่ Stage 1–6:
+  - **Stage 1–2:** Requirement Decomposition, Structured Schema/Code Formatting, Pattern Acquisition ครอบคลุม 8 App Domains
+  - **Stage 3–4:** Architecture DAG Design, Database Schema & API Contract Reasoning, Modular Full-Stack Code & UI Component Generation (รวม Transfer ข้าม App Domains ใน `ood`)
+  - **Stage 5–6:** Multi-File Memory Coherence (`MemoryStore`), Automated Test Synthesis, Compiler/Runtime Error Debugging, และ Security Patch Verification
+- **No Unverified Sub-Allocation:** สัดส่วน % ต่อ Stage ของ Software Engineering Tasks จะกำหนดเป็นตัวเลขทางการต่อเมื่อมี Verified SE Dataset Manifest และ CPU Token Throughput Benchmark แล้วเท่านั้น
+
 ---
 
 ## 3. Anti-Forgetting Replay & Stability Rules

@@ -26,6 +26,7 @@
 | **SV-02: Epistemic Tagging** (Phase 16) | Reasoning Step / Statement + Grounded Context | `fact`, `assumption`, `unverified` | บังคับให้แยกข้อเท็จจริงที่มีหลักฐานออกจากสมมติฐานและสิ่งที่ไม่รู้ |
 | **SV-03: Plan Trace Critique** | Goal + Preconditions + Proposed Action Sequence | `valid`, `invalid_precondition`, `invalid_cycle`, `invalid_goal` | จับข้อผิดพลาดในแผน Multi-step ก่อนตอบจริง |
 | **SV-04: Abstention Calibration** | Underspecified / Missing-Premise Query | `unknown` / `insufficient_evidence` | ลด Confident Hallucination เมื่อข้อมูลไม่พอ |
+| **SV-05: Code & Spec Audit** *(SE Track)* | Requirement Spec + Generated Schema/API/Code + Sandbox Error Trace | `consistent`, `missing_req`, `contract_mismatch`, `security_risk` | ให้โมเดลตรวจสอบข้อบกพร่องของโค้ดตนเองก่อนส่งเข้า Sandbox Harness (*ตัว Harness ยังคงเป็นผู้ตัดสิน PASS จริง*) |
 
 ---
 

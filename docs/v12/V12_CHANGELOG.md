@@ -10,6 +10,7 @@
 | Version | Date | Authoring Context | Summary of Changes |
 |---|---|---|---|
 | **`v12.0-blueprint.1`** | `2026-11-22` | V12 Preparation Package Initialization | จัดทำชุดเอกสาร Blueprint ล่วงหน้าของ **ZYRQUEN V12 (50,000 Cumulative Steps)** ครบทั้ง `23` ไฟล์ (`README.md` + `V12-DOC-01` ถึง `V12-DOC-22`) กำหนดแผน `6` Stages (`5,000 + 8,000 + 10,000 + 10,000 + 8,000 + 9,000 = 50,000` Steps, `>= 100` Sequential Verified Experiments) พร้อมล็อกเงื่อนไขห้ามเขียนโค้ดหรือเริ่มฝึกจนกว่า **V10 Final Closure** และ **V11 10K Final Gate** จะผ่านสมบูรณ์ และใส่ Mandatory Truthfulness Sections (`ASSUMPTIONS`, `OPEN DECISIONS`, `NOT VERIFIED`) ครบทุกฉบับ |
+| **`v12.0-blueprint.2`** | `2026-11-22` | Cross-Stage SE & App Generation Integration | บูรณาการ **Native Software Engineering & Autonomous Application Development** (`8` Target Application Domains + `CAP-SE-01..10`) เข้ากับชุดเอกสาร V12 เดิมแบบ Cross-Stage ภายใน `6` Stages และ `50,000` Cumulative Steps เดิม (ไม่สร้างไฟล์ซ้ำและไม่เพิ่ม Stage 7) พร้อมกำหนด Mandatory Executable Verification (`Compile / Unit / Integration / Hidden / Security`), Anti-Clone/Hidden-Test Leakage Guards (`CL-01..03`), `RB-SE-01..03`, `SV-05`, Sandbox Resource/Security Governance, และ Risks `R-V12-09..11` ในเอกสารที่เกี่ยวข้องโดยคงสถานะ `LOCKED` ไว้ครบถ้วน |
 
 ---
 

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { PageHeader } from "@/components/PageHeader";
 import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
+import { ClosureAudit } from "@/components/ClosureAudit";
 import { Icon } from "@/components/Icon";
 import { usePlatformHealth } from "@/hooks/usePlatformHealth";
 import { readSession } from "@/lib/api";
@@ -41,6 +42,7 @@ export default function DashboardPage() {
   } = usePlatformHealth();
   const [session, setSession] = useState<Session | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
+  const [closureRefreshTick, setClosureRefreshTick] = useState(0);
 
   const syncSession = useCallback(() => {
     readSession()
@@ -125,6 +127,7 @@ export default function DashboardPage() {
             onClick={() => {
               void refresh();
               syncSession();
+              setClosureRefreshTick((tick) => tick + 1);
             }}
             type="button"
           >
@@ -212,6 +215,10 @@ export default function DashboardPage() {
             </span>
           </div>
         </Panel>
+      </section>
+
+      <section aria-label="การตรวจสอบการปิดงาน V10 สู่ V11">
+        <ClosureAudit refreshTrigger={closureRefreshTick} />
       </section>
 
       <section aria-label="การติดตามความคืบหน้า ZYRQUEN Ω∞">

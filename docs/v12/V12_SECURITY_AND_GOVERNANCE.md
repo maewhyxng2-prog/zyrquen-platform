@@ -35,6 +35,19 @@
 
 ---
 
+## 3b. Sandbox & Generated-Code Security Governance (`CAP-SE-09..10`)
+
+1. **Strict Sandbox Isolation:** โค้ดแอปพลิเคชันที่โมเดลสร้างขึ้นห้ามรันบน Host Runtime โดยตรง ต้องประมวลผลภายใน Isolated Ephemeral Workdir ที่มี `realpath` Containment และไร้สิทธิ์เข้าถึง Production Secrets, Git Remotes, หรือ Checkpoints (`v7..v11`)
+2. **Zero External AI & Network Exfiltration:** Generated Code และ Evaluation Sandbox ห้ามเรียก External LLM APIs (`openai`, `anthropic`, `gemini`, `huggingface`), ห้ามเปิด Arbitrary Outbound Sockets, และอนุญาตเฉพาะ Approved Offline Dependency Allowlist
+3. **Mandatory Vulnerability Verification Gate:** ก่อนจะนับแอปว่าผ่าน `CAP-SE-09` ต้องผ่าน Deterministic Security Checks สำหรับ:
+   - Parameterized DB Queries (Zero String-Interpolated SQL)
+   - Server-Side Auth & Role/RBAC Checks (Zero Client-Only Trust)
+   - Path Containment & Safe Output Encoding (Zero Traversal / Raw HTML XSS)
+   - Zero Hardcoded API Keys, Tokens, or Credentials
+4. **Gated Deployment Boundary (`CAP-SE-10`):** การ Build/Package สำเร็จใน Sandbox ไม่เท่ากับอนุญาต Deploy จริง การ Push/Deploy ใดๆ ยังคงเป็น **Tier-3 / Human-Approved Action** เสมอ
+
+---
+
 ## 4. Mandatory Truthfulness Sections
 
 ### ASSUMPTIONS
@@ -44,5 +57,5 @@
 - **OD-V12-SEC-01:** นโยบาย Batch Approval vs Per-Experiment Token สำหรับ `100` Sequential Experiments (เช่น ออก Tier-2 Token ทีละ 1 Run เพื่อความปลอดภัยสูงสุด หรือ Bounded Stage Envelope Token ที่ยังบังคับ Evaluation Check ระหว่าง Run)
 
 ### NOT VERIFIED
-- Penetration Test และ Symlink/Path Traversal Stress Test เฉพาะ Artifacts V12 ยัง **NOT VERIFIED / NOT RUN**
+- Penetration Test, Sandbox Containment Stress Test, และ Symlink/Path Traversal Audit เฉพาะ Artifacts V12 ยัง **NOT VERIFIED / NOT RUN**
 - Workflow Enforcement ต่อการรันจริงระดับ 100 Sequential Experiments ยัง **NOT RUN**

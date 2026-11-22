@@ -9,9 +9,12 @@
 
 ## 1. Strategic Mission
 
-ZYRQUEN V12 เป็นแผนยกระดับ **Native General Intelligence (NGI)** จากระดับรากฐาน `10,000` Steps ใน V11 สู่ **ระดับเสถียรภาพและขีดความสามารถเชิงลึก (50,000 Cumulative Steps)** เพื่อให้โมเดลที่ฝึกจากศูนย์ (`random initialization`) สามารถบูรณาการทั้งการแทนความหมาย (Native Representation), การรับรู้และทบทวนความรู้ (Knowledge Acquisition & Memory Integration), การให้เหตุผลเชิงโครงสร้าง (Abstract & Relational Reasoning), การวางแผนหลายขั้นตอนพร้อมถ่ายทอดสู่บริบทนอกโดเมน (Multi-step Planning & OOD Transfer), และการตรวจสอบตนเองอย่างซื่อสัตย์ (Self-Verification) ภายในระบบควบคุมเดียวกัน
+ZYRQUEN V12 เป็นแผนยกระดับ **Native General Intelligence (NGI)** จากระดับรากฐาน `10,000` Steps ใน V11 สู่ **ระดับเสถียรภาพและขีดความสามารถเชิงลึก (50,000 Cumulative Steps)** พร้อมเป้าหมายคู่ขนานอย่างเป็นทางการคือ **Native Software Engineering & Autonomous Application Development** เพื่อให้โมเดลที่ฝึกจากศูนย์ (`random initialization`) สามารถบูรณาการทั้งการแทนความหมาย, การรับรู้ความรู้, การให้เหตุผลเชิงโครงสร้าง, การวางแผนหลายขั้นตอน, การตรวจสอบตนเอง, และการ **ออกแบบ สร้าง ทดสอบ ตรวจสอบความปลอดภัย และส่งมอบแอปพลิเคชันที่ทำงานได้จริง** ภายในระบบควบคุมเดียวกัน
 
-**หลักการสำคัญ:** ตัวเลข `50,000` Steps คือ **เป้าหมายสะสมที่ต้องพิสูจน์ผลผ่าน Gate ทุกขั้น** ไม่ใช่การสั่งรันลวดเดียวโดยไม่ตรวจสอบ และไม่ใช่ใบอนุญาตให้ข้าม V10 Closure หรือ V11
+**หลักการสำคัญ:**
+- ตัวเลข `50,000` Steps คือ **เป้าหมายสะสมที่ต้องพิสูจน์ผลผ่าน Gate ทุกขั้น** ไม่ใช่การสั่งรันลวดเดียวโดยไม่ตรวจสอบ และไม่ใช่ใบอนุญาตให้ข้าม V10 Closure หรือ V11
+- **Cross-Stage Capability Rule:** ความสามารถด้าน Software Engineering (`CAP-SE-01..10`) ผสานเข้าใน **ทั้ง 6 Stages เดิม** ไม่ใช่การเพิ่ม Stage ที่ 7 และไม่เพิ่มยอดรวมเกิน `50,000` Steps โดยการจัดสรรย่อยในแต่ละ Stage ต้องอิงจากขนาด Dataset และ Benchmark จริงก่อนเสมอ
+- **Execution Truth Rule:** การสร้างเพียงหน้าตา UI หรือโค้ดที่รันไม่ได้ **ไม่นับว่าผ่าน** — แอปที่สร้างต้องคอมไพล์และผ่านการทดสอบจริงครบทั้ง Unit, Integration, E2E/Hidden และ Security Verification
 
 ---
 
@@ -40,7 +43,18 @@ ZYRQUEN V12 เป็นแผนยกระดับ **Native General Intellig
 | **Stage 4** | **Multi-step Planning & OOD Transfer** | `10,000` | `33,000` | `20` (`EXP-047..066`) | Dependency DAG Ordering, Impossible-Plan Detection, Depth/Entity/Template OOD Transfer (6–10+ hops) | `multi_step_planning` & `ood_transfer` PASS on `ood`; Stage 1–3 zero regression |
 | **Stage 5** | **Memory & Knowledge Integration** | `8,000` | `41,000` | `16` (`EXP-067..082`) | Grounded `MemoryStore` Recall, `[source=...]` Citation, Conflict Detection & Belief Revision, Tenant/PII Guard | Override vs Conflict PASS; Phase 17 Tenant/PII Isolation PASS |
 | **Stage 6** | **Self-Verification & Capability Integration** | `9,000` | `50,000` | `18` (`EXP-083..100`) | Claim Verification (`true`/`false`/`unknown`), `fact`/`assumption`/`unverified` Tagging, Joint Anti-Regression Sweep | Full 4-Split Eval PASS (`V12 vs V11 & V10`); `zero_regression=True` |
-| **Total** | **ZYRQUEN V12 Cumulative Target** | **`50,000`** | **`50,000`** | **`100`** | — | **V12 Final Release Gate PASS** |
+| **Total** | **ZYRQUEN V12 Cumulative Target** | **`50,000`** | **`50,000`** | **`100`** | **Dual Mission: NGI + Cross-Stage Native Software Engineering** | **V12 Final Release Gate PASS** |
+
+### Cross-Stage Integration of Native Software Engineering (`8` App Domains, `10` Capabilities)
+
+- **Stage 1 (`5K`):** Code & UI/Schema Tokenization, Requirement Framing, Structured AST/JSON Output Primitives
+- **Stage 2 (`8K`):** Domain Knowledge Acquisition สำหรับ **8 Application Domains** (Task Management, Finance/Accounting, E-Commerce, Education, Business/CRM/Analytics, Developer Tools, Automation/IoT Device Control, Social/Messaging), Database & API Patterns
+- **Stage 3 (`10K`):** System Architecture Decomposition, Relational Schema Design (`Database Engineering`), API Contract Reasoning (`API Engineering`)
+- **Stage 4 (`10K`):** Multi-step Full-Stack Application Planning, UI/UX + Frontend/Backend Code Generation และ Cross-Domain App Transfer (`OOD`)
+- **Stage 5 (`8K`):** Stateful Project Context & Memory Integration (เชื่อม Spec, Schema, API, Codebases และ Dependency Graph แบบ Multi-File)
+- **Stage 6 (`9K`):** Automated Testing Synthesis, Debugging/Patching Loops, Security Verification และ Delivery Readiness Check (Compile + Unit + Integration + Hidden + Security PASS)
+
+> **ข้อจำกัดด้านการจัดสรรย่อย:** สัดส่วนตัวเลข Step ย่อยของงาน Software Engineering ภายในแต่ละ Stage ยัง **ไม่ได้แยกตัวเลขตายตัว (TBD upon Dataset & Benchmark Readiness)** เพื่อไม่ให้แบ่ง Step โดยไร้หลักฐานว่าข้อมูลและทรัพยากรบน CPU เพียงพอ
 
 ---
 

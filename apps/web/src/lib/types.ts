@@ -131,3 +131,69 @@ export type Conversation = {
 };
 
 export type StatusTone = "good" | "warn" | "bad" | "neutral" | "info";
+
+export type ClosureAuditStatus =
+  | "PASS"
+  | "STATIC PASS"
+  | "IMPLEMENTED"
+  | "BLOCKED"
+  | "NOT RUN"
+  | "FAILED";
+
+export type V10ContractCheckItem = {
+  label: string;
+  passed: boolean;
+  detail: string;
+};
+
+export type V10ContractAudit = {
+  id: string;
+  code: string;
+  title: string;
+  stage: string;
+  status: ClosureAuditStatus;
+  anchor: string;
+  summary: string;
+  checks: V10ContractCheckItem[];
+};
+
+export type V10ClosureStage = {
+  id: string;
+  title: string;
+  status: ClosureAuditStatus;
+  summary: string;
+  blockers: string[];
+};
+
+export type V10ClosureAudit = {
+  schema: string;
+  checked_at: string;
+  overall_status: ClosureAuditStatus;
+  static_status: ClosureAuditStatus;
+  runtime_status: ClosureAuditStatus;
+  contracts_passed_count: number;
+  contracts_total: number;
+  v11_gate: {
+    target_version: string;
+    unlocked: boolean;
+    status: "READY" | "LOCKED";
+    prerequisite_summary: string;
+  };
+  runtime_environment: {
+    torch_installed: boolean;
+    native_runtime_status: string;
+    native_model_loaded: boolean;
+    is_trained: boolean;
+    active_model_version: string | null;
+    eval_report_configured: boolean;
+    eval_report_status: string | null;
+    registry_configured: boolean;
+    verified_v10_models: number;
+    dataset_configured: boolean;
+    tokenizer_configured: boolean;
+  };
+  blockers: string[];
+  contracts: V10ContractAudit[];
+  stages: V10ClosureStage[];
+};
+

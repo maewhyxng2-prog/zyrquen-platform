@@ -30,6 +30,9 @@
 | **TL-01** | Template Overlap in `ood` | Surface Templates ของ `ood` ต้องไม่มี Structural Signature ซ้ำกับ Templates ใน `train` | Hard Fail |
 | **SL-01** | Sequence Truncation Leakage | ห้าม Truncate คำตอบหรือ `<EOS>` ออก ทำให้โมเดลประเมินบนคำตอบขาดช่วง | Hard Fail |
 | **DL-01** | Exact / Near-Duplicate Record | SHA-256 และ Normalized Canonical Hash ระหว่าง Split ต้องไม่ซ้ำกัน (`0` collisions) | Hard Fail |
+| **CL-01** | Source/Test Answer Memorization | ห้ามนำ Reference Solutions หรือ Test Assertions ของ `validation`/`unseen`/`ood` App Benchmarks ปะปนใน Train | Hard Fail |
+| **CL-02** | Hidden Evaluation Test Isolation | Hidden Integration/Security Test Suites ต้องอยู่นอก Training & Tokenizer Corpus 100% | Hard Fail |
+| **CL-03** | AST Structural Clone Detection | ห้ามใช้ App Code ที่มี AST Subtree Similarity สูงเกินเกณฑ์ข้าม `train` กับ `ood` Tasks | Hard Fail |
 
 ---
 

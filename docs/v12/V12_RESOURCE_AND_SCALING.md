@@ -44,6 +44,19 @@
 
 ---
 
+## 3b. Native Software Engineering Sandbox Resource Guardrails
+
+การประเมินแอปพลิเคชันที่โมเดลสร้างขึ้น (`CAP-SE-01..10`) ต้องไม่แย่งทรัพยากรหรือทำให้ Training Run ล่ม:
+
+| Sandbox Constraint | Enforced Policy | Failure / Exceed Action |
+|---|---|---|
+| **Sequential Execution Lock** | ห้ามรัน App Build/Test Sandbox พร้อม Training Loop ภายใน Memory Envelope เดียวกัน | Defer Sandbox Eval until Run Checkpoint Complete |
+| **Memory & Disk Boundary** | Sandbox Process ต้องอยู่ใต้ `RAM_HARD_GB = 3.5 GB` และเคารพ `DISK_RESERVE_GB >= 2.0 GB` | Abort Sandbox Test + Purge Ephemeral Build Temp Dir |
+| **Per-Task Timeout** | กำหนด Hard Timeout ต่อ 1 App Compile/Test Run *(ค่าตัวเลขจริง = `TBD` หลัง Benchmark บน Target CPU)* | Terminate Process + Record `TIMEOUT / FAILED` (ห้ามค้างถาวร) |
+| **Zero Unapproved Network/Cloud** | ห้ามดาวน์โหลด Packages จากอินเทอร์เน็ตหรือ Provision Cloud DB/GPU ระหว่าง Sandbox Run | Hard Block + Security Audit Event |
+
+---
+
 ## 4. Mandatory Truthfulness Sections
 
 ### ASSUMPTIONS
@@ -52,6 +65,7 @@
 ### OPEN DECISIONS
 - **OD-V12-RES-01:** นโยบายจัดเก็บ Optimizer State (`optimizer.pt`) ของ Intermediate 500-step Runs (เก็บเฉพาะ Weight-Only สำหรับ Intermediate Non-Boundary Runs หลังผ่าน Next-Stage Gate เพื่อประหยัด Disk หรือ Archive ทั้งชุด)
 - **OD-V12-RES-02:** การขออนุมัติปรับ `MAX_STEPS` ต่อ Run จาก `500` เป็น `1,000` หาก CPU Latency จริงต่ำพอและต้องการลด Overhead การเปิด/ปิด Process
+- **OD-V12-RES-03:** ค่า Per-Task Sandbox Timeout และ Ephemeral Artifact Cache Ceiling สำหรับ Compile/Integration Checks ของ Generated Applications
 
 ### NOT VERIFIED
-- ตัวเลข `sec/step` จริง, `Peak RSS` จริง (MB/GB), และ Checkpoint Disk Footprint จริงบน PyTorch CPU ยัง **NOT VERIFIED / NOT RUN** (container ปัจจุบันไม่มี `torch`)
+- ตัวเลข `sec/step` จริง, `Peak RSS` จริง (MB/GB), Sandbox Build Latency จริง, และ Checkpoint Disk Footprint จริงบน PyTorch CPU ยัง **NOT VERIFIED / NOT RUN** (container ปัจจุบันไม่มี `torch`)

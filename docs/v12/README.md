@@ -1,6 +1,6 @@
 # ZYRQUEN Ω∞ — V12 Complete Documentation Package (Index)
 
-- **Document Set Version:** `v12.0-blueprint.1`
+- **Document Set Version:** `v12.0-blueprint.2`
 - **Status:** `BLUEPRINT ONLY — PREPARATION TARGET — LOCKED UNTIL V10 & V11 FINAL GATES PASS`
 - **Prerequisite Chain:** `V10 Runtime Closure PASS -> V11 10,000-Step Final Gate PASS -> V12 Stage Gate Execution`
 - **Rule:** `50,000` Cumulative Training Steps เป็น **เป้าหมายสะสมล่วงหน้าเพื่อเตรียมความพร้อม** ไม่ใช่คำสั่งให้เริ่มฝึกทันที ห้ามเขียน Source Code ของ V12, ห้ามเริ่ม Training/Inference, ห้ามแก้ `v7`/`v8`/`v9`/`v10` หรือ Checkpoints เดิม, ห้ามแก้ `phases/phase11..20` หรือสร้าง Phase 21 และห้าม Commit/Push/Merge/Deploy จนกว่า V10 และ V11 จะผ่าน Final Gate ครบตามลำดับ
@@ -9,7 +9,7 @@
 
 ## 1. Purpose of This Package
 
-ชุดเอกสาร `docs/v12/` จัดทำขึ้นล่วงหน้าเป็น **Single Source of Truth ด้านสถาปัตยกรรม, สเปกโมเดล, ข้อมูล, แผนฝึกสะสม 50,000 Steps, การประเมิน, ความปลอดภัย, และ Gate ปล่อยรุ่น** สำหรับ **ZYRQUEN V12** เพื่อให้หลังการปิด V10 (Runtime Closure) และ V11 (10,000 Steps) แล้ว ทีมวิศวกรรมสามารถเข้าสู่ V12 ได้อย่างมีวินัย ตรวจสอบย้อนกลับได้ทุก Step และปราศจากโมเดลภายนอกหรือผลลัพธ์ปลอม
+ชุดเอกสาร `docs/v12/` จัดทำขึ้นล่วงหน้าเป็น **Single Source of Truth ด้านสถาปัตยกรรม, สเปกโมเดล, ข้อมูล, แผนฝึกสะสม 50,000 Steps, การประเมิน, ความปลอดภัย, และ Gate ปล่อยรุ่น** สำหรับ **ZYRQUEN V12** โดยมีเป้าหมายคู่ขนาน (Dual Mission) คือ **Native General Intelligence (NGI)** + **Native Software Engineering & Autonomous Application Development** เพื่อให้หลังการปิด V10 (Runtime Closure) และ V11 (10,000 Steps) แล้ว ZYRQUEN สามารถทั้งคิดแก้ปัญหาและสร้างแอปพลิเคชันที่คอมไพล์และผ่านการทดสอบจริงได้ด้วยความสามารถ Native ของตนเอง ภายใต้การตรวจสอบย้อนกลับทุก Step และปราศจากโมเดลภายนอกหรือผลลัพธ์ปลอม
 
 ---
 
@@ -24,8 +24,8 @@
 | **Tokenizer Contract** | Byte-level BPE (`ZyrquenTokenizer`), `SCHEMA_V2 = "zyrquen.tokenizer.v2"`, 4 control tokens + 32 atomic `<slot_0>..<slot_31>` tokens, train-only BPE merges, EL-05 enforced | `apps/core/native/tokenizer.py` |
 | **SFT Format Contract** | `SFT_FORMAT_VERSION = "zyrquen.sft.v1"`, `SFT_SEP = "\n### Response:\n"`, `IGNORE_INDEX = -100` (สืบทอด `UN`/`OO` slot binding หลัง V11 เปิดใช้งานแล้ว) | `apps/core/native/sft.py` |
 | **Training Horizon** | **`50,000` Cumulative Global Optimizer Steps** แบ่ง **6 Stages** (`5K + 8K + 10K + 10K + 8K + 9K`), อย่างน้อย **`>= 100` Disjoint Experiments** ภายใต้ `MAX_STEPS = 500`/experiment เว้นแต่ขออนุมัติขยายเพดานพร้อม Benchmark | `V12_TRAINING_PLAN.md`, `autonomous_training_loop.py` |
-| **Core Capabilities (6)** | `abstract_reasoning`, `relational_generalization`, `ood_transfer`, `multi_step_planning`, `self_verification`, `knowledge_integration` (พร้อม Domain-Scale Coverage & Belief Revision) | `V12_CAPABILITY_SPECIFICATION.md` |
-| **Evaluation Splits (4)** | `train`, `validation`, `unseen`, `ood` + Anti-Regression vs V10 & V11 Baselines | `V12_EVALUATION_PLAN.md`, `V12_V11_COMPATIBILITY.md` |
+| **Core Capabilities (6 + Cross-Stage SE)** | 6 NGI Capabilities (`abstract_reasoning`, `relational_generalization`, `ood_transfer`, `multi_step_planning`, `self_verification`, `knowledge_integration`) + Cross-Stage **Native Software Engineering (`CAP-SE-01..10`)** ครอบคลุม 8 Application Domains | `V12_CAPABILITY_SPECIFICATION.md` |
+| **Evaluation Splits (4 + E2E Sandbox)** | `train`, `validation`, `unseen`, `ood` + Deterministic App Build/Test/Security Verification (`Compile`, `Unit`, `Integration`, `Hidden`, `Security`) + Anti-Regression vs V10 & V11 Baselines | `V12_EVALUATION_PLAN.md`, `V12_TEST_STRATEGY.md` |
 | **Governance** | Central Workflow Engine + `WorkflowResourceGuard` + Tier-2 HMAC-SHA256 Single-Use Approval + Zero Auto-Train / Zero Auto-Promote | `apps/core/workflow/` |
 
 ---

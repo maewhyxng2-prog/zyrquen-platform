@@ -38,6 +38,16 @@
 - **6 Capability Metrics:** `cap_abstract_reasoning_accuracy`, `cap_relational_generalization_accuracy`, `cap_ood_transfer_accuracy`, `cap_multi_step_planning_accuracy`, `cap_knowledge_integration_accuracy`, `cap_self_verification_accuracy`
 - **`regression_comparison`:** Delta เทียบกับ **V10 Baseline**, **V11 10K Final Baseline**, และ **Prior V12 Stage Checkpoint** โดย `zero_regression = True` (หรือมี Negative Delta ใน Tolerance Gate ที่อนุมัติล่วงหน้าเท่านั้น)
 
+### 3b. Native Software Engineering Execution Metrics (`CAP-SE-01..10`)
+
+การประเมินแอปพลิเคชันที่ ZYRQUEN สร้างขึ้นห้ามใช้การให้คะแนนด้วยตาหรือ LLM ภายนอก ต้องวัดผ่าน **Deterministic Execution Harness** ตามเกณฑ์จริง:
+- **`se_compile_pass_rate`:** สัดส่วนแอป/โมดูลที่ Build / Typecheck / Syntax Compile ผ่านจริง
+- **`se_unit_test_pass_rate`:** อัตราการผ่านของ Unit Tests ที่ตรวจสอบตรรกะโมดูลย่อย
+- **`se_integration_test_pass_rate`:** อัตราการผ่านของ API + Database Schema/Migration Integration Tests
+- **`se_hidden_eval_pass_rate`:** อัตราการผ่านของ **Hidden Acceptance Tests** ที่โมเดลไม่เคยเห็นใน Prompt/Train
+- **`se_security_check_pass_rate`:** อัตราการผ่านการตรวจ Static Scan + RBAC + Injection + Path Traversal Guards
+- **`se_debug_repair_rate`:** อัตราที่โมเดลแก้ Bug จาก Real Compiler/Test Error Trace สำเร็จใน Sandbox โดยไม่ทำให้ Test เดิมพัง
+
 ---
 
 ## 4. Anti-False-PASS Rules (Zero Exceptions)

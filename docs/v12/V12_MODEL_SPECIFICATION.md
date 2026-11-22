@@ -44,6 +44,9 @@ $$P = V \cdot D + L \cdot (4D^2 + 3DF + 2D) + D$$
 1. **Architecture Immutability Within a Lineage:** การฝึกต่อเนื่อง `1 -> 50,000` Steps ในหนึ่ง Lineage ต้องคงค่า `(V, L, H, D, F, tie_embeddings)` เท่าเดิมทุก Stage เพื่อไม่ให้ Checkpoint Incompatible
 2. **Tier Escalation Protocol:** หากต้องขยับจาก `V12-Tier0` ไป `V12-Tier1` ต้องเปิดเป็น **New Versioned Lineage (`v12.1-tier1`)** พร้อม New Random Initialization หรือ Approved Weight Transfer Proof และเริ่มนับ Cumulative Evaluation Integrity ใหม่สำหรับ Lineage นั้น (ห้ามปะปน Checkpoint ต่างขนาดในเส้นทางเดียว)
 3. **RoPE & Sequence Length:** `rope_theta = 10000.0` (ค่าเริ่มต้นของ `ZyrquenConfig`), `dropout = 0.0` ถึง `0.05` (กำหนดเฉพาะตาม Stage Config และบันทึกใน Checkpoint Manifest)
+4. **Code & Multi-Module Representation (`Native Software Engineering`):**
+   - ใช้ Byte-level BPE (`zyrquen.tokenizer.v2`) ที่รองรับทั้งโค้ด (TypeScript, Python, SQL, JSON, CSS), Unicode/Thai Requirements, และ Entity/Identifier Slot Tokens (`<slot_0>..<slot_31>`) แบบ Lossless
+   - งาน Multi-File Application Generation ต้องใช้วิธี **Modular File-by-File & Contract-Grounded Generation** (Spec -> Schema -> API -> Module -> Tests) เพื่อให้อยู่ภายในงบ Context Window (`max_seq_len = 256..512`) และ `Tier0 <= 5M` หรือ `Tier1` เฉพาะเมื่อ Benchmark ยืนยันความจำเป็น
 
 ---
 

@@ -18,6 +18,9 @@
 | **R-V12-06** | **Data** | **Subtle Shortcut / Leakage Across 251K Examples:** Entity หรือ Template รั่วข้าม 4 Splits | Critical | Exhaustive Solver + `EL-01..06`, `TL-01`, `SL-01`, `DL-01` Audit + Manifest SHA-256 Pinning | Leakage Violation `>= 1` record |
 | **R-V12-07** | **Governance** | **Scope Creep / Premature V12 Execution:** ข้าม V10 Closure หรือ V11 เพื่อมารัน 50K ก่อนเวลา | Critical | Hard Prerequisite Gate (`G-V12-ENTRY`), Status Locks ในเอกสาร, และ Tier-2 Token Rejection | พยายามรัน V12 ขณะที่ V10/V11 ยังไม่ `PASS` |
 | **R-V12-08** | **Integrity** | **External Model / Scripted Fake Fallback:** แอบต่อ External API หรือ Hardcoded Rules เพื่อโชว์ผลผ่าน | Critical | AST Import Gate, Native-Only Policy, Standalone vs System Score Separation | ตรวจพบ External Import/API/Fake Answer |
+| **R-V12-09** | **SE Execution** | **Uncompilable Code / UI-Only Illusion (`CAP-SE`):** โมเดลสร้าง UI หรือข้อความที่ดูคล้ายแอปแต่ Build ไม่ผ่านหรือ State ไม่ทำงานจริง | High | Mandatory Sandbox Compile/Unit/Integration/Hidden Gates + Hard Disqualification Rule | Compile fail หรือ UI ไม่มี Executable Pass |
+| **R-V12-10** | **SE Data / Eval** | **Test Memorization / Reward Hacking (`CAP-SE`):** โมเดลจำ Visible Unit Tests หรือ Hardcode เฉพาะ Case ตัวอย่าง | High | `CL-01..03` AST Clone/Hidden-Test Isolation + Unseen Spec Variations | Hidden Test Fail ขณะ Visible Test Pass |
+| **R-V12-11** | **SE Security** | **Insecure Generated Apps (`CAP-SE-09`):** แอปที่สร้างมีช่องโหว่ SQLi, XSS, Broken RBAC, Path Traversal หรือ Execute Arbitrary Commands | Critical | Isolated Sandbox + Static/Dynamic Security Gate (`CAP-SE-09`) + Zero Host Exec | ตรวจพบ Security Violation `>= 1` จุด |
 
 ---
 
@@ -30,4 +33,4 @@
 - **OD-V12-RSK-01:** แนวทางรับมือกรณี **R-V12-03** (CPU ช้ากว่าที่คาดสำหรับ 50K Steps) — ระหว่างลด Batch/Seq Budget, ขอเปลี่ยน Tier Hardware CPU (ไม่เสียเงิน), หรือขออนุมัติ Compute Policy แยกต่างหาก
 
 ### NOT VERIFIED
-- ความน่าจะเป็นเชิงสถิติของการเกิด Loss Collapse และ Catastrophic Forgetting บน `50,000` Steps สำหรับ `ZyrquenModel` ยัง **NOT VERIFIED / NOT RUN**
+- ความน่าจะเป็นเชิงสถิติของการเกิด Loss Collapse, Catastrophic Forgetting, และ SE Multi-File Compilation Failure บน `50,000` Steps สำหรับ `ZyrquenModel` ยัง **NOT VERIFIED / NOT RUN**

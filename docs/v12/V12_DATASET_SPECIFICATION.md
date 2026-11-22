@@ -38,6 +38,15 @@
 
 > **หมายเหตุสำคัญ:** ตัวเลข `251,500` ตัวอย่างถูกออกแบบให้เพียงพอที่จะป้องกันไม่ให้โมเดลวนเห็นตัวอย่างซ้ำมากเกินไป (Over-Epoching) ในช่วง `50,000` Steps (และสามารถ Generate แบบ Parametric Deterministically ภายใต้ Seed ที่แยกตาม Split ได้โดยไม่ใช้ Disk เกิน `DISK_RESERVE_GB`)
 
+### 3b. Native Software Engineering Dataset Track (Cross-Stage Corpus Specification)
+
+ข้อมูลสำหรับฝึกและประเมิน `CAP-SE-01..10` ต้องอยู่ในรูปแบบ **Executable Spec-to-App Bundles** ครอบคลุม 8 App Domains (Task Manager, Finance, E-Commerce, Education, Business/CRM, Dev Tools, IoT/Automation, Social/Messaging) โดยทุกตัวอย่างต้องประกอบด้วย:
+1. **`requirement_spec` & `constraints`:** โจทย์ความต้องการ + Boundary Rules (เช่น Auth, DB Constraints, Budget/Error Handling)
+2. **`reference_artifacts` (Verified By Execution, Not External LLMs):** Schema, API Spec, UI/Code Modules ที่รันผ่าน Deterministic Test Harness ใน Sandbox แล้ว 100%
+3. **`executable_tests` (`unit`, `integration`, `security`):** ชุดทดสอบที่รันยืนยันผลจริงได้ — **ห้ามนำ Code Snippets ที่ไม่ผ่าน Compile/Test หรือ Scrape มาแบบไม่มี Execution Ground Truth เข้า Training Pool**
+4. **Strict Split Isolation (`train` / `validation` / `unseen` / `ood`):** แยก App Templates, Domain Entities, Schema Layouts และ Debug Error Signatures ข้าม Split ชัดเจน (เช่น Train บน Task/Finance/Store/Edu และทดสอบ `ood` Transfer บน Business/IoT/Novel Schemas)
+5. **Sizing Status (`TBD`):** จำนวนตัวอย่างของ Software Engineering Track จะกำหนดและผนวกรวมเข้าสมดุล Corpus **หลัง** สร้างและรัน Leakage + Sandbox Verification ของ Generator V12 ผ่านแล้วเท่านั้น (ไม่เดาตัวเลขลอยๆ)
+
 ---
 
 ## 4. Required Record Schema & Provenance

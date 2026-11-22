@@ -14,6 +14,7 @@ const routes: Record<string, ReadonlySet<string>> = {
     "v1/workflows/audit-logs",
     "v1/models/registry",
     "v1/models/registry/compare",
+    "v1/v10/closure-audit",
   ]),
   POST: new Set([
     "auth/login",

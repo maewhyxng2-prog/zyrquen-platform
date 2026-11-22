@@ -18,6 +18,7 @@
 | **Model Registry** | `apps/core/native/registry.py::ModelRegistry` | บันทึก Lineage `v12.x`, `attach_evaluation_evidence`, `compare_versions`, `promote` | ห้ามแก้ไข/ลบ `FROZEN_BASELINE_NAMES` หรือ V7..V11 Versions |
 | **Inference & Conversations API** | `apps/api/routers/inference.py`, `conversations.py` | ชี้ Active Promoted Checkpoint ของ V12 เฉพาะเมื่อ `V12 Release Gate = PASS` | ต้องคง Explicit Disclosure ของ Model Version & Status เสมอ |
 | **Memory & Epistemic Verification** | Phase 16 & Phase 17 Modules (`phases/phase16.py`, `phase17.py`) | เชื่อมต่อแบบ Adapter Layer ใน Workflow/Inference Pipeline สำหรับ Stage 5–6 | **ห้ามแก้ไฟล์ `phases/phase11..20.py` หรือสร้าง Phase 21** |
+| **App Build & Verification Harness** *(V12 SE Extension)* | Sandboxed Runner + `CentralWorkflowOrchestrator` + `EvaluationEngine` | เชื่อมต่อ Generation ของ `ZyrquenModel` เข้ากับ Compile, Unit/Integration/Hidden Tests และ Security Scans | Deterministic Execution เท่านั้น ห้ามใช้ External LLM ช่วยเขียน/แก้โค้ด และต้องผ่าน Tier-2 Isolation Rules |
 
 ---
 

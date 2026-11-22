@@ -17,7 +17,9 @@ from apps.api.workflow_schemas import (
     ModelStageRequest,
     TriggerWorkflowRequest,
 )
+from apps.core.native.closure_audit import build_v10_closure_audit
 from apps.core.native.registry import ModelRegistry, RegistryError
+from apps.core.runtime import runtime
 from apps.core.workflow import (
     ApprovalViolationError,
     CentralWorkflowOrchestrator,
@@ -46,6 +48,12 @@ def _get_model_registry() -> tuple[ModelRegistry | None, str]:
     if not path.exists():
         return None, f"Model registry root does not exist: {path}"
     return ModelRegistry(path), str(path)
+
+
+@router.get("/v1/v10/closure-audit")
+def get_v10_closure_audit():
+    """Return real-time V10 integration contract & closure gate verification status."""
+    return build_v10_closure_audit(runtime_health=runtime.get_health_status())
 
 
 @router.get("/v1/workflows/definitions")

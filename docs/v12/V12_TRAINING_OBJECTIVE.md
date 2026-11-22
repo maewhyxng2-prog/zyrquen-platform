@@ -30,6 +30,8 @@ $$\mathcal{L}_{\text{SFT}}(\theta) = -\frac{1}{|M|} \sum_{t \in M} \log P_\theta
 | **`slot_token_acc`** | Token-level Accuracy เฉพาะ Token `<slot_0>..<slot_31>` | ตรวจสอบ Entity Binding Fidelity (V12 Stage 1–4) |
 | **`tf_fg_gap` (Teacher-Forcing vs Free-Generation Gap)** | ผลต่าง Exact Match ระหว่าง Teacher-Forced Next-Token กับ Free Autoregressive Decoding | ป้องกัน Exposure Bias ที่มักซ่อนตัวหลัง Loss ต่ำ |
 | **`entropy_collapse_flag`** | ตรวจจับ Logit Entropy ต่ำผิดปกติร่วมกับ `unseen`/`ood` ตกต่ำ | หยุด Training เมื่อเกิด Mode/Loss Collapse |
+| **`ast_syntax_valid_rate`** *(SE Diagnostic)* | สัดส่วนโค้ด/Schema/SQL ที่โมเดลสร้างแล้ว Parse ผ่าน AST/Syntax Parser จริง | วัดความถูกต้องเชิงไวยากรณ์แยกจาก Cross-Entropy Loss |
+| **`repair_patch_convergence`** *(SE Diagnostic)* | อัตราที่ Debugging Prompt พร้อม Error Trace ทำให้ Loss/Test Status ดีขึ้นโดยไม่ทำลายส่วนอื่น | วัดความสามารถ Debugging จริงโดยไม่ใช้อีกโมเดลช่วยแก้ |
 
 ---
 

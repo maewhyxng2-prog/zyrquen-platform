@@ -23,6 +23,9 @@
 | **RB-04** | **OOD Structural & Template Shift** | ถามคำตอบแบบ Backward Query, Double-Negated Framing, Unseen Surface Templates | **TL-01 Verified:** Surface Signature ต่างจาก Train 100% |
 | **RB-05** | **Multi-Step DAG Planning** | วางลำดับ Action ตาม Preconditions/Effects (4–8 Actions) + Goal Verification | **Impossible Plan Slice (30%):** ใส่ Cycle หรือ Missing Precondition -> โมเดลต้องตอบ `impossible` ไม่ใช่เดาลำดับมั่ว |
 | **RB-06** | **Counterfactual & Perturbed Logic** | เปลี่ยน Fact เพียง 1 จุดใน Context แล้วถามผลกระทบต่อข้อสรุป | วัดว่า Sensitivity ต่อการเปลี่ยนแปลง Logic จริงสูงกว่า Memorized Priors |
+| **RB-SE-01** | **Requirement-to-Architecture Decomposition** | แปลงโจทย์แอป (เช่น Store + Inventory + Auth + Reports) เป็น Module Boundaries + Dependency DAG | ตรวจ Cyclic Dependency, Missing Auth Boundary, และ Requirement Coverage |
+| **RB-SE-02** | **Relational Schema & API Consistency** | ออกแบบ DB Tables/Foreign Keys + REST/GraphQL Contracts ให้สอดคล้องกันข้าม Entities | ตรวจ Schema Normalization, Orphan Keys, และ Contract Mismatch ผ่าน Verifier |
+| **RB-SE-03** | **Fault Localization & Patch Reasoning** | วิเคราะห์ Real Compiler/Test Trace + Multi-file Code Context เพื่อชี้ Root Cause และสร้าง Minimal Patch | ตรวจผ่าน Hidden Regression Tests หลัง Patch (ไม่ใช่แค่เดาบรรทัดผิด) |
 
 ---
 
