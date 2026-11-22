@@ -5,7 +5,7 @@ from pathlib import Path
 VERSIONS_DIR = Path(__file__).resolve().parent / "migrations" / "versions"
 
 
-def test_migration_chain_is_linear_and_heads_at_07():
+def test_migration_chain_is_linear_and_heads_at_09():
     revisions = {}
     for path in VERSIONS_DIR.glob("*.py"):
         module = importlib.import_module(
@@ -13,19 +13,21 @@ def test_migration_chain_is_linear_and_heads_at_07():
         )
         revisions[module.revision] = module.down_revision
 
-    assert set(revisions) == {
-        "20261120_01",
-        "20261120_02",
-        "20261120_03",
-        "20261120_04",
-        "20261120_05",
-        "20261120_06",
-        "20261120_07",
+    expected = {
+        *(f"20261120_{number:02d}" for number in range(1, 8)),
+        "20261121_08",
+        "20261121_09",
     }
+    assert set(revisions) == expected
     assert revisions["20261120_01"] is None
-    for current in range(2, 8):
-        revision = f"20261120_{current:02d}"
-        assert revisions[revision] == f"20261120_{current - 1:02d}"
+
+    ordered = [
+        *(f"20261120_{number:02d}" for number in range(1, 8)),
+        "20261121_08",
+        "20261121_09",
+    ]
+    for previous, current in zip(ordered, ordered[1:]):
+        assert revisions[current] == previous
 
 
 def test_revision_01_bootstraps_users_for_empty_database():
