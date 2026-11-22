@@ -381,7 +381,7 @@ export default function SettingsPage() {
       );
       const verifiedSession = await readSession();
       if (!verifiedSession.authenticated || verifiedSession.userId !== ownerId) {
-        throw new Error("บัญชีผู้ใช้เปลี่ยนระหว่างอัปเดตตาราง Auto-rotate");
+        throw new Error("บัญชีผู้ใช้เปลี่ยนระหว่างอัปเดตกำหนดรอบหมุนเวียน");
       }
       setApiKeys((current) =>
         current.map((item) => (item.id === updated.id ? updated : item)),
@@ -392,15 +392,15 @@ export default function SettingsPage() {
       }));
       setApiKeysNotice(
         updated.autoRotateEnabled && updated.autoRotateIntervalDays
-          ? `ตั้งค่า Auto-rotate สำหรับ "${updated.name}" ทุก ${updated.autoRotateIntervalDays} วันแล้ว`
-          : `ปิด Auto-rotate สำหรับ "${updated.name}" แล้ว`,
+          ? `บันทึกกำหนดรอบหมุนเวียนสำหรับ "${updated.name}" ทุก ${updated.autoRotateIntervalDays} วันแล้ว (ต้องกดหมุนเวียนเองเมื่อถึงกำหนด)`
+          : `ยกเลิกกำหนดรอบหมุนเวียนสำหรับ "${updated.name}" แล้ว`,
       );
     } catch (reason) {
       if (sessionRef.current?.userId !== ownerId) return;
       setApiKeysError(
         reason instanceof Error
           ? reason.message
-          : "ไม่สามารถบันทึกตาราง Auto-rotate ได้",
+          : "ไม่สามารถบันทึกกำหนดรอบหมุนเวียนได้",
       );
     } finally {
       setSavingScheduleKeyId(null);
@@ -815,13 +815,17 @@ export default function SettingsPage() {
                       disabled={apiKeySaving}
                       onChange={(event) => setCreateAutoRotateEnabled(event.target.checked)}
                     />
-                    <span>เปิดใช้ Auto-rotate (หมุนเวียนคีย์อัตโนมัติตามกำหนด)</span>
+                    <span>กำหนดรอบการหมุนเวียนคีย์ (ต้องยืนยันหมุนเวียนเองเมื่อถึงกำหนด)</span>
                   </label>
+                  <p className="settings-key-meta">
+                    กำหนดวันเป้าหมายเท่านั้น ระบบจะไม่เปลี่ยน API Key เอง
+                    เมื่อถึงกำหนด ให้กดปุ่มหมุนเวียนและบันทึก Key ใหม่ในระบบที่ใช้งาน
+                  </p>
                   {createAutoRotateEnabled && (
                     <div className="settings-rotate-fields">
                       <select
                         id="api-key-rotate-preset"
-                        aria-label="รอบเวลา Auto-rotate"
+                        aria-label="รอบการหมุนเวียนคีย์"
                         className="settings-select"
                         value={createRotatePreset}
                         disabled={apiKeySaving}
@@ -837,7 +841,7 @@ export default function SettingsPage() {
                       {createRotatePreset === "custom" && (
                         <input
                           id="api-key-rotate-days"
-                          aria-label="จำนวนวัน Auto-rotate"
+                          aria-label="จำนวนวันระหว่างการหมุนเวียน"
                           className="settings-input"
                           type="number"
                           min={1}
@@ -906,8 +910,8 @@ export default function SettingsPage() {
                             {key.revokedAt
                               ? "เพิกถอนแล้ว"
                               : key.autoRotateEnabled && key.autoRotateIntervalDays
-                                ? `Auto-rotate ทุก ${key.autoRotateIntervalDays} วัน`
-                                : "ปิด Auto-rotate"}
+                                ? `กำหนดรอบทุก ${key.autoRotateIntervalDays} วัน`
+                                : "ไม่กำหนดรอบหมุนเวียน"}
                           </StatusBadge>
                         </div>
                         <code>{key.keyPrefix}… · {key.scope}</code>
@@ -947,12 +951,12 @@ export default function SettingsPage() {
                                   }))
                                 }
                               />
-                              <span>เปิดใช้ Auto-rotate สำหรับคีย์นี้</span>
+                              <span>กำหนดรอบหมุนเวียนสำหรับคีย์นี้</span>
                             </label>
                             {draft.enabled && (
                               <div className="settings-rotate-fields">
                                 <select
-                                  aria-label={`ตาราง Auto-rotate ของ ${key.name}`}
+                                  aria-label={`กำหนดรอบหมุนเวียนของ ${key.name}`}
                                   className="settings-select"
                                   value={draft.preset}
                                   disabled={savingScheduleKeyId === key.id}
@@ -975,7 +979,7 @@ export default function SettingsPage() {
                                 </select>
                                 {draft.preset === "custom" && (
                                   <input
-                                    aria-label={`จำนวนวัน Auto-rotate ของ ${key.name}`}
+                                    aria-label={`จำนวนวันระหว่างการหมุนเวียน ของ ${key.name}`}
                                     className="settings-input"
                                     type="number"
                                     min={1}
@@ -1010,7 +1014,7 @@ export default function SettingsPage() {
                               >
                                 {savingScheduleKeyId === key.id
                                   ? "กำลังบันทึกตาราง..."
-                                  : "บันทึกตาราง Auto-rotate"}
+                                  : "บันทึกกำหนดรอบหมุนเวียน"}
                               </button>
                               <button
                                 className="button button-secondary"
