@@ -112,6 +112,26 @@ def test_logout_revokes_token_against_backend(auth_client):
     )
 
 
+def test_token_algorithm_allowlist_rejects_unexpected_algorithm(auth_client):
+    client, _ = auth_client
+    user_id, _ = _register_and_login(client, "algorithm@example.com")
+    wrong_algorithm_token = jwt.encode(
+        {
+            "sub": user_id,
+            "jti": str(uuid.uuid4()),
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
+        },
+        "test-secret-key-for-auth-gate-only",
+        algorithm="HS384",
+    )
+
+    response = client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {wrong_algorithm_token}"},
+    )
+    assert response.status_code == 401
+
+
 def test_expired_token_and_inactive_account_are_rejected(auth_client):
     client, session_factory = auth_client
     user_id, _ = _register_and_login(client, "carol@example.com")
