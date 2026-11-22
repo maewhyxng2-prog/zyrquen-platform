@@ -11,7 +11,7 @@ ZYRQUEN Ω∞ เป็นโครงการวิจัยและวิศ
 ## สถานะตามหลักฐานใน Repository
 
 | ระดับหลักฐาน | สถานะปัจจุบัน | รายละเอียดที่ตรวจสอบได้จริง |
-|---|---|---|
+| :--- | :--- | :--- |
 | **Implementation** | มีโค้ดต้นฉบับใน Repository | Web Client (`apps/web/`), FastAPI Service (`apps/api/`), Native Runtime / Tokenizer / Model / Dataset / Training (`apps/core/`), Legacy Intelligence Phase 9 (`apps/core/intelligence/`), Phase 11–20 (`phases/phase11.py`–`phases/phase20.py`), Alembic Migrations (`apps/api/migrations/`), และ Experiment Scripts (`tools/train_nagi_500_v7.py`, `tools/train_nagi_500_v8.py`, `tools/eval_nagi_500_v8.py`) |
 | **Phase 11–20 Unit Tests** | **Local Final Gate 11–20: `60 / 60 PASSED`** | `tests_phases/test_phase11.py`–`tests_phases/test_phase20.py` (แต่ละ Phase `6 passed`, ไม่สร้าง Phase 21 เพิ่ม) |
 | **Integration Verification** | **Phase 10.9.9 Gate: `PASSED / CLOSED`** | CI Run `44893016007`, SHA `466b58a75419708a86469f59a903e322d85081d2`, 4/4 `web / docker / test / postgres-integration` |
@@ -27,7 +27,7 @@ ZYRQUEN Ω∞ เป็นโครงการวิจัยและวิศ
 การพัฒนาโมเดลเดินตามความสามารถจริงที่ทดสอบได้ (ไม่เพิ่มรุ่นเพียงเพื่อไล่เลขเวอร์ชัน และคง Roadmap **Phase 11–20** เดิมโดยไม่สร้าง Phase 21 เพิ่ม):
 
 | รุ่น | หัวข้อพัฒนา | สถานะปัจจุบัน | เอกสารอ้างอิง |
-|---|---|---|---|
+| :--- | :--- | :--- | :--- |
 | **v7** | Baseline Foundation (`TinyNGI` 2-layer LSTM) | ผ่านการทดลองฐาน (`FROZEN`) | `tools/train_nagi_500_v7.py` |
 | **v8** | Attention + Pointer-Copy (`BiGRU + Bahdanau + p_gen`) | ปิดการทดลองแล้ว (`FROZEN`) | [`docs/V8_SUMMARY.md`](docs/V8_SUMMARY.md), [`docs/V8_EXPERIMENT_CLOSURE_REPORT.md`](docs/V8_EXPERIMENT_CLOSURE_REPORT.md) |
 | **v9** | **Generalization** — Unseen Entity & OOD Template | **ขั้นถัดไป (Blueprint พร้อม / ยังไม่ฝึก)** | [`docs/V9_BLUEPRINT.md`](docs/V9_BLUEPRINT.md), [`docs/V9_EXPERIMENT_PLAN.md`](docs/V9_EXPERIMENT_PLAN.md) |
@@ -55,7 +55,7 @@ ZYRQUEN Ω∞ เป็นโครงการวิจัยและวิศ
 ## ZYRQUEN — Phase 11–20 (CLOSED)
 
 | Phase | สถานะ | Commit | ผล Local |
-|---|---|---|---|
+| :--- | :--- | :--- | :--- |
 | 11 Workspace Intelligence | `CODE DONE` | `ade8e2f` | `6 passed` |
 | 12 Native Intelligence Foundation | `CODE DONE` | `93dbbf8` | `6 passed` |
 | 13 Knowledge & Data Pipeline | `CODE DONE` | `7b32fb7` | `6 passed` |
@@ -95,4 +95,3 @@ npm run test
 npm run lint
 npm run typecheck
 npm run build
-```
