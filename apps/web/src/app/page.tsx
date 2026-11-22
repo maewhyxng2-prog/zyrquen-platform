@@ -2,17 +2,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  ReferenceLine,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import { PageHeader } from "@/components/PageHeader";
 import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -39,36 +28,6 @@ type ProgressDatum = {
   target: number | null;
   fill: string;
 };
-
-function ProgressTooltip({
-  active,
-  payload,
-}: {
-  active?: boolean;
-  payload?: Array<{ payload?: ProgressDatum }>;
-}) {
-  if (!active || !payload || payload.length === 0) {
-    return null;
-  }
-  const item = payload[0]?.payload;
-  if (!item) return null;
-
-  return (
-    <div className="radar-tooltip">
-      <strong>{item.metric}</strong>
-      <div className="radar-tooltip-row">
-        <span>คะแนนจาก Backend</span>
-        <span className="tabular-nums">{item.score.toFixed(1)}%</span>
-      </div>
-      {item.target !== null && (
-        <div className="radar-tooltip-row">
-          <span>เป้าหมาย</span>
-          <span className="tabular-nums">{item.target.toFixed(1)}%</span>
-        </div>
-      )}
-    </div>
-  );
-}
 
 export default function DashboardPage() {
   const {
@@ -445,56 +404,18 @@ export default function DashboardPage() {
                       </span>
                     )}
                   </div>
-                  <div
-                    aria-label="กราฟเปรียบเทียบ Generalization Score และ Relational Reasoning Success Rate"
-                    className="progress-chart-stage"
-                  >
-                    <ResponsiveContainer height="100%" width="100%">
-                      <BarChart
-                        data={chartData}
-                        layout="vertical"
-                        margin={{ top: 6, right: 20, left: 10, bottom: 4 }}
-                      >
-                        <CartesianGrid
-                          horizontal={false}
-                          stroke="#223242"
-                          strokeDasharray="3 3"
-                        />
-                        <XAxis
-                          domain={[0, 100]}
-                          tick={{ fill: "#647589", fontSize: 10 }}
-                          tickFormatter={(value: number) => `${value}%`}
-                          type="number"
-                        />
-                        <YAxis
-                          dataKey="metric"
-                          tick={{ fill: "#9aaabc", fontSize: 11 }}
-                          type="category"
-                          width={150}
-                        />
-                        <Tooltip
-                          content={<ProgressTooltip />}
-                          cursor={{ fill: "rgba(69, 214, 232, 0.06)" }}
-                        />
-                        {sharedTarget !== null && (
-                          <ReferenceLine
-                            stroke="#a5eef7"
-                            strokeDasharray="4 4"
-                            x={sharedTarget}
-                          />
-                        )}
-                        <Bar
-                          barSize={22}
-                          dataKey="score"
-                          radius={[0, 6, 6, 0]}
-                        >
-                          {chartData.map((entry) => (
-                            <Cell fill={entry.fill} key={entry.metric} />
-                          ))}
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
+                  <div className="progress-chart-stage">
+        <table>
+          <tbody>
+            {chartData.map((entry) => (
+              <tr key={entry.metric}>
+                <td>{entry.metric}</td>
+                <td>{entry.score}%</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
                 </div>
               </>
             );

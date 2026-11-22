@@ -7,11 +7,6 @@ import {
   EMAIL_COOKIE,
   buildSessionCookieOptions,
 } from "@/lib/cookies";
-import {
-  handleInMemoryBackendRequest,
-  verifyInMemorySession,
-} from "@/lib/in-memory-backend";
-
 type RouteContext = {
   params: Promise<{ path: string[] }>;
 };
@@ -163,7 +158,7 @@ async function proxy(request: NextRequest, context: RouteContext) {
     );
   }
 
-  let useInMemory = !baseUrl;
+  const useInMemory = !baseUrl;
 
   if (requiresExpectedIdentity) {
     const expectedUserId = request.headers
@@ -208,8 +203,8 @@ async function proxy(request: NextRequest, context: RouteContext) {
         }
       } catch {
         if (!hasExplicitUrl) {
-          useInMemory = true;
-        } else {
+        return NextResponse.json({ detail: "backend_not_configured" }, { status: 503 });
+      } else {
           return NextResponse.json(
             { detail: "ไม่สามารถยืนยันบัญชีกับ ZYRQUEN API ได้" },
             { status: 503 },
@@ -218,15 +213,9 @@ async function proxy(request: NextRequest, context: RouteContext) {
       }
     }
 
-    if (useInMemory) {
-      const localIdentity = verifyInMemorySession(accessToken);
-      identityStatus = localIdentity.status;
-      identityPayload = localIdentity.payload as {
-        id?: unknown;
-        is_active?: unknown;
-      };
-      identityErrorText = JSON.stringify(localIdentity.payload);
-    }
+  if (useInMemory) {
+    return NextResponse.json({ detail: "backend_not_configured" }, { status: 503 });
+  }
 
     if (identityStatus < 200 || identityStatus >= 300) {
       const response = new NextResponse(identityErrorText, {
@@ -285,7 +274,7 @@ async function proxy(request: NextRequest, context: RouteContext) {
       });
     } catch {
       if (!hasExplicitUrl) {
-        useInMemory = true;
+        return NextResponse.json({ detail: "backend_not_configured" }, { status: 503 });
       } else {
         return NextResponse.json(
           {
@@ -299,12 +288,7 @@ async function proxy(request: NextRequest, context: RouteContext) {
   }
 
   if (useInMemory || !upstream) {
-    upstream = await handleInMemoryBackendRequest({
-      method,
-      path,
-      authorizationHeader: headers.get("Authorization"),
-      rawBody: body,
-    });
+    return NextResponse.json({ detail: "backend_not_configured" }, { status: 503 });
   }
 
   if (path === "auth/login" && upstream.ok) {

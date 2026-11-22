@@ -1,4 +1,3 @@
-import { CapabilityRadarChart } from "@/components/CapabilityRadarChart";
 import { WorkflowConsole } from "@/components/WorkflowConsole";
 import { PageHeader } from "@/components/PageHeader";
 import { Panel } from "@/components/Panel";
@@ -48,7 +47,6 @@ export default function TrainingPage() {
         </div>
       </Panel>
 
-      <CapabilityRadarChart />
 
       <WorkflowConsole />
 

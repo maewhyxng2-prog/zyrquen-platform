@@ -6,8 +6,6 @@ import {
   EMAIL_COOKIE,
   buildSessionCookieOptions,
 } from "@/lib/cookies";
-import { verifyInMemorySession } from "@/lib/in-memory-backend";
-
 function clearSessionCookies(request: NextRequest, response: NextResponse) {
   const expiredCookie = buildSessionCookieOptions(request, 0);
   response.cookies.set(ACCESS_COOKIE, "", expiredCookie);
@@ -137,8 +135,7 @@ export async function GET(request: NextRequest) {
         { status: 503, headers: { "Cache-Control": "no-store" } },
       );
     }
-    const localSession = verifyInMemorySession(accessToken);
-    return buildSessionResponse(request, localSession.status, localSession.payload);
+    return NextResponse.json({ authenticated: false, email: null, userId: null, verified: false, error: "backend_not_configured" }, { status: 503, headers: { "Cache-Control": "no-store" } });
   }
 
   let upstream: Response;
@@ -154,8 +151,7 @@ export async function GET(request: NextRequest) {
     });
   } catch {
     if (!hasExplicitUrl) {
-      const localSession = verifyInMemorySession(accessToken);
-      return buildSessionResponse(request, localSession.status, localSession.payload);
+      return NextResponse.json({ authenticated: false, email: null, userId: null, verified: false, error: "backend_not_configured" }, { status: 503, headers: { "Cache-Control": "no-store" } });
     }
     return NextResponse.json(
       {

@@ -6,8 +6,6 @@ import {
   EMAIL_COOKIE,
   buildSessionCookieOptions,
 } from "@/lib/cookies";
-import { logoutInMemorySession } from "@/lib/in-memory-backend";
-
 function clearCookies(request: NextRequest, response: NextResponse) {
   const expired = buildSessionCookieOptions(request, 0);
   response.cookies.set(ACCESS_COOKIE, "", expired);
@@ -46,11 +44,8 @@ export async function POST(request: NextRequest) {
       clearCookies(request, response);
       return response;
     }
-    const result = logoutInMemorySession(accessToken);
-    const response = NextResponse.json(result, {
-      headers: { "Cache-Control": "no-store" },
-    });
-    clearCookies(request, response);
+    const response = NextResponse.json({ error: "backend_not_configured" }, { status: 503, headers: { "Cache-Control": "no-store" } });
+        clearCookies(request, response);
     return response;
   }
 
@@ -67,11 +62,8 @@ export async function POST(request: NextRequest) {
     });
   } catch {
     if (!hasExplicitUrl) {
-      const result = logoutInMemorySession(accessToken);
-      const response = NextResponse.json(result, {
-        headers: { "Cache-Control": "no-store" },
-      });
-      clearCookies(request, response);
+      const response = NextResponse.json({ error: "backend_not_configured" }, { status: 503, headers: { "Cache-Control": "no-store" } });
+        clearCookies(request, response);
       return response;
     }
     const response = NextResponse.json(
