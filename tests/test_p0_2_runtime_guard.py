@@ -48,11 +48,16 @@ def test_cpu_steps_cap_is_single_value():
 
 def test_orchestrator_run_wires_runtime_guard_and_fails_closed():
     src = inspect.getsource(orch_mod.TrainingOrchestrator.run)
-    assert "TrainingRuntimeGuard" in src, "run() must construct TrainingRuntimeGuard"
-    assert "runtime_guard=runtime_guard" in src or "runtime_guard = " in src or "runtime_guard=" in src, (
+    assert "_create_training_runtime_guard(run_dir, run_id)" in src, (
+        "run() must construct the shared TrainingRuntimeGuard through its fail-closed factory"
+    )
+    assert "runtime_guard=runtime_guard" in src, (
         "run() must pass runtime_guard to train/train_sft"
     )
     assert "stopped_reason" in src, "run() must fail closed on guard stopped_reason"
+    factory = inspect.getsource(orch_mod._create_training_runtime_guard)
+    assert "TrainingRuntimeGuard(" in factory
+    assert "WorkflowAuditLogger(" in factory
 
 
 def test_train_entrypoints_accept_runtime_guard():
@@ -113,3 +118,17 @@ def test_orchestrator_guard_persists_audit_events(tmp_path, monkeypatch):
         event["event_type"] == "training.ram_soft_warning"
         for event in events
     )
+
+
+def test_guard_audit_failure_fails_closed(tmp_path):
+    class _BrokenAudit:
+        def record(self, **_kw):
+            raise OSError("audit database unavailable")
+
+    g = _make_guard(tmp_path, rss_gb=4.0, audit_logger=_BrokenAudit())
+    try:
+        g.check_runtime("before_step", step=1)
+    except RuntimeError as exc:
+        assert "audit" in str(exc).lower()
+    else:
+        raise AssertionError("guard must fail closed when audit persistence fails")
