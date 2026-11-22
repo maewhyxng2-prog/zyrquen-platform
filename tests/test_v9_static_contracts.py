@@ -80,6 +80,15 @@ class TestTrainV9PureHelpers(unittest.TestCase):
         self.assertEqual(len(b1), 6)
         self.assertTrue(all(len(b) == 4 for b in b1))
 
+    def test_collect_runtime_environment_pure_python(self) -> None:
+        env = t9.collect_runtime_environment(None, None)
+        self.assertIn("python_version", env)
+        self.assertIn("platform", env)
+        self.assertIsNotNone(env["cpu_count"])
+        self.assertFalse(env["cuda_available"])
+        self.assertIsNone(env["torch_version"])
+        self.assertIsNone(env["gpu_name"])
+
 
 class TestEvalV9PureHelpers(unittest.TestCase):
     def test_calc_repetition_patterns(self) -> None:

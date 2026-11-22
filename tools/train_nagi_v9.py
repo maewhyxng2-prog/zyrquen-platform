@@ -100,14 +100,27 @@ def set_seed(seed: int, torch_mod=None) -> None:
 
 
 def collect_runtime_environment(torch_mod=None, device=None) -> dict[str, Any]:
+    cuda_ok = bool(torch_mod.cuda.is_available()) if torch_mod is not None else False
+    gpu_name = None
+    gpu_total_mem_mb = None
+    if cuda_ok and torch_mod is not None:
+        try:
+            gpu_name = torch_mod.cuda.get_device_name(0)
+            props = torch_mod.cuda.get_device_properties(0)
+            gpu_total_mem_mb = round(props.total_memory / (1024 * 1024), 2)
+        except Exception:
+            pass
     return {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "python_version": platform.python_version(),
         "platform": platform.platform(),
+        "machine": platform.machine(),
         "cpu_count": os.cpu_count(),
         "torch_version": getattr(torch_mod, "__version__", None) if torch_mod is not None else None,
         "device": str(device) if device is not None else None,
-        "cuda_available": bool(torch_mod.cuda.is_available()) if torch_mod is not None else False,
+        "cuda_available": cuda_ok,
+        "gpu_name": gpu_name,
+        "gpu_total_mem_mb": gpu_total_mem_mb,
         "cudnn_deterministic": (
             bool(torch_mod.backends.cudnn.deterministic)
             if torch_mod is not None and hasattr(torch_mod, "backends") and hasattr(torch_mod.backends, "cudnn")
@@ -1329,6 +1342,7 @@ def run_readiness(args, data_dir: Path, out_dir: Path, audit_report: dict[str, A
         "overfit_exact": f"{exact_ok}/{len(mini_rows)}",
         "checks": checks,
         "samples": sample_results,
+        "environment": collect_runtime_environment(torch_mod, device),
         "elapsed_sec": round(time.time() - t0, 2),
         "max_rss_kb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
     }
@@ -1662,6 +1676,7 @@ def run_train(args, data_dir: Path, out_dir: Path, audit_report: dict[str, Any])
                 "best_step": best_step,
                 "no_improve": no_improve,
                 "elapsed_sec": round(time.time() - t0, 2),
+                "max_rss_kb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
             }
             with metrics_log_path.open("a", encoding="utf-8") as mf:
                 mf.write(json.dumps(rec) + "\n")
@@ -1749,6 +1764,18 @@ def run_train(args, data_dir: Path, out_dir: Path, audit_report: dict[str, Any])
         "last_checkpoint": str(last_path) if last_path.is_file() else None,
         "last_checkpoint_sha256": sha256_file(last_path) if last_path.is_file() else None,
         "environment": env_meta,
+        "hardware": {
+            "device": str(device),
+            "cpu_count": env_meta.get("cpu_count"),
+            "gpu_name": env_meta.get("gpu_name"),
+            "gpu_total_mem_mb": env_meta.get("gpu_total_mem_mb"),
+            "peak_cuda_mem_mb": (
+                round(torch_mod.cuda.max_memory_allocated() / (1024 * 1024), 2)
+                if torch_mod.cuda.is_available()
+                else None
+            ),
+            "max_rss_kb": max_rss_kb,
+        },
         "elapsed_sec": elapsed_sec,
         "max_rss_kb": max_rss_kb,
     }
