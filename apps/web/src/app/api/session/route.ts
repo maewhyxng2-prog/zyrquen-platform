@@ -1,6 +1,13 @@
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
-import { resolveApiBaseUrl } from "@/lib/api-config";
+import {
+  hasExplicitExternalApiUrl,
+  resolveApiBaseUrl,
+} from "@/lib/api-config";
+import {
+  handleInMemoryBackendRequest,
+  shouldUseInMemoryBackend,
+} from "@/lib/in-memory-backend";
 import {
   ACCESS_COOKIE,
   EMAIL_COOKIE,
@@ -119,23 +126,33 @@ export async function GET(request: NextRequest) {
 
   const configuredUrl = process.env.ZYRQUEN_API_BASE_URL;
   const baseUrl = resolveApiBaseUrl(configuredUrl, process.env.NODE_ENV);
-  const hasExplicitUrl = Boolean(configuredUrl?.trim());
+  const hasExplicitUrl = hasExplicitExternalApiUrl(configuredUrl);
   const authorization = `Bearer ${accessToken}`;
 
-  if (!baseUrl) {
-    if (hasExplicitUrl) {
-      return NextResponse.json(
-        {
-          authenticated: false,
-          email: null,
-          userId: null,
-          verified: false,
-          error: "ค่า ZYRQUEN_API_BASE_URL ไม่ถูกต้องสำหรับตรวจสอบเซสชัน",
-        },
-        { status: 503, headers: { "Cache-Control": "no-store" } },
-      );
-    }
-    return NextResponse.json({ authenticated: false, email: null, userId: null, verified: false, error: "backend_not_configured" }, { status: 503, headers: { "Cache-Control": "no-store" } });
+  if (!baseUrl && hasExplicitUrl) {
+    return NextResponse.json(
+      {
+        authenticated: false,
+        email: null,
+        userId: null,
+        verified: false,
+        error: "ค่า ZYRQUEN_API_BASE_URL ไม่ถูกต้องสำหรับตรวจสอบเซสชัน",
+      },
+      { status: 503, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
+  if (await shouldUseInMemoryBackend(baseUrl, hasExplicitUrl)) {
+    const inMemory = await handleInMemoryBackendRequest({
+      method: "GET",
+      path: "auth/me",
+      authorizationHeader: authorization,
+    });
+    return buildSessionResponse(
+      request,
+      inMemory.status,
+      (inMemory.body ?? {}) as Record<string, unknown>,
+    );
   }
 
   let upstream: Response;
@@ -151,7 +168,16 @@ export async function GET(request: NextRequest) {
     });
   } catch {
     if (!hasExplicitUrl) {
-      return NextResponse.json({ authenticated: false, email: null, userId: null, verified: false, error: "backend_not_configured" }, { status: 503, headers: { "Cache-Control": "no-store" } });
+      const inMemory = await handleInMemoryBackendRequest({
+        method: "GET",
+        path: "auth/me",
+        authorizationHeader: authorization,
+      });
+      return buildSessionResponse(
+        request,
+        inMemory.status,
+        (inMemory.body ?? {}) as Record<string, unknown>,
+      );
     }
     return NextResponse.json(
       {

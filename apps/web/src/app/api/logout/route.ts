@@ -1,6 +1,13 @@
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
-import { resolveApiBaseUrl } from "@/lib/api-config";
+import {
+  hasExplicitExternalApiUrl,
+  resolveApiBaseUrl,
+} from "@/lib/api-config";
+import {
+  handleInMemoryBackendRequest,
+  shouldUseInMemoryBackend,
+} from "@/lib/in-memory-backend";
 import {
   ACCESS_COOKIE,
   EMAIL_COOKIE,
@@ -27,25 +34,34 @@ export async function POST(request: NextRequest) {
 
   const configuredUrl = process.env.ZYRQUEN_API_BASE_URL;
   const baseUrl = resolveApiBaseUrl(configuredUrl, process.env.NODE_ENV);
-  const hasExplicitUrl = Boolean(configuredUrl?.trim());
+  const hasExplicitUrl = hasExplicitExternalApiUrl(configuredUrl);
   const authorization = `Bearer ${accessToken}`;
 
-  if (!baseUrl) {
-    if (hasExplicitUrl) {
-      const response = NextResponse.json(
-        {
-          authenticated: false,
-          revoked: false,
-          detail:
-            "ล้างคุกกี้ในเบราว์เซอร์แล้ว แต่ค่า ZYRQUEN_API_BASE_URL ไม่ถูกต้อง จึงไม่สามารถเพิกถอน Token ฝั่ง Backend ได้",
-        },
-        { status: 503, headers: { "Cache-Control": "no-store" } },
-      );
-      clearCookies(request, response);
-      return response;
-    }
-    const response = NextResponse.json({ error: "backend_not_configured" }, { status: 503, headers: { "Cache-Control": "no-store" } });
-        clearCookies(request, response);
+  if (!baseUrl && hasExplicitUrl) {
+    const response = NextResponse.json(
+      {
+        authenticated: false,
+        revoked: false,
+        detail:
+          "ล้างคุกกี้ในเบราว์เซอร์แล้ว แต่ค่า ZYRQUEN_API_BASE_URL ไม่ถูกต้อง จึงไม่สามารถเพิกถอน Token ฝั่ง Backend ได้",
+      },
+      { status: 503, headers: { "Cache-Control": "no-store" } },
+    );
+    clearCookies(request, response);
+    return response;
+  }
+
+  if (await shouldUseInMemoryBackend(baseUrl, hasExplicitUrl)) {
+    await handleInMemoryBackendRequest({
+      method: "POST",
+      path: "auth/logout",
+      authorizationHeader: authorization,
+    });
+    const response = NextResponse.json(
+      { authenticated: false, revoked: true },
+      { headers: { "Cache-Control": "no-store" } },
+    );
+    clearCookies(request, response);
     return response;
   }
 
@@ -62,8 +78,16 @@ export async function POST(request: NextRequest) {
     });
   } catch {
     if (!hasExplicitUrl) {
-      const response = NextResponse.json({ error: "backend_not_configured" }, { status: 503, headers: { "Cache-Control": "no-store" } });
-        clearCookies(request, response);
+      await handleInMemoryBackendRequest({
+        method: "POST",
+        path: "auth/logout",
+        authorizationHeader: authorization,
+      });
+      const response = NextResponse.json(
+        { authenticated: false, revoked: true },
+        { headers: { "Cache-Control": "no-store" } },
+      );
+      clearCookies(request, response);
       return response;
     }
     const response = NextResponse.json(

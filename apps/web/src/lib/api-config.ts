@@ -31,3 +31,16 @@ export function resolveApiBaseUrl(
     return null;
   }
 }
+
+export function hasExplicitExternalApiUrl(
+  configuredUrl: string | undefined,
+): boolean {
+  const value = configuredUrl?.trim();
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return !isLoopbackHostname(url.hostname);
+  } catch {
+    return true;
+  }
+}

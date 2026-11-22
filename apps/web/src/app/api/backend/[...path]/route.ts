@@ -1,7 +1,14 @@
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
-import { resolveApiBaseUrl } from "@/lib/api-config";
+import {
+  hasExplicitExternalApiUrl,
+  resolveApiBaseUrl,
+} from "@/lib/api-config";
 import { isAllowedBackendRoute } from "@/lib/backend-routes";
+import {
+  handleInMemoryBackendRequest,
+  shouldUseInMemoryBackend,
+} from "@/lib/in-memory-backend";
 import {
   ACCESS_COOKIE,
   EMAIL_COOKIE,
@@ -89,6 +96,53 @@ function respondFromLogin(
   return response;
 }
 
+function buildInMemoryHttpResponse(
+  request: NextRequest,
+  path: string,
+  method: string,
+  accessToken: string | undefined,
+  body: string | undefined,
+  isInferenceStream: boolean,
+  inMemory: Awaited<ReturnType<typeof handleInMemoryBackendRequest>>,
+): NextResponse {
+  if (path === "auth/login" && inMemory.status >= 200 && inMemory.status < 300) {
+    return respondFromLogin(
+      request,
+      (inMemory.body ?? {}) as { access_token?: unknown },
+      body,
+    );
+  }
+
+  if (inMemory.stream) {
+    const headers = new Headers(inMemory.headers);
+    headers.set("cache-control", "no-store");
+    if (isInferenceStream) {
+      headers.set("x-accel-buffering", "no");
+    }
+    return new NextResponse(inMemory.stream, {
+      status: inMemory.status,
+      headers,
+    });
+  }
+
+  const response = NextResponse.json(inMemory.body, {
+    status: inMemory.status,
+    headers: { "cache-control": "no-store" },
+  });
+  if (
+    inMemory.status === 401 &&
+    accessToken &&
+    path !== "auth/login" &&
+    path !== "auth/register" &&
+    method !== "OPTIONS"
+  ) {
+    const expired = buildSessionCookieOptions(request, 0);
+    response.cookies.set(ACCESS_COOKIE, "", expired);
+    response.cookies.set(EMAIL_COOKIE, "", expired);
+  }
+  return response;
+}
+
 async function proxy(request: NextRequest, context: RouteContext) {
   const { path: segments } = await context.params;
   const path = segments.join("/");
@@ -100,7 +154,7 @@ async function proxy(request: NextRequest, context: RouteContext) {
 
   const configuredUrl = process.env.ZYRQUEN_API_BASE_URL;
   const baseUrl = resolveApiBaseUrl(configuredUrl, process.env.NODE_ENV);
-  const hasExplicitUrl = Boolean(configuredUrl?.trim());
+  const hasExplicitUrl = hasExplicitExternalApiUrl(configuredUrl);
   const isInferenceStream = path === "v1/native-ai/infer/stream";
   const isInferenceRequest =
     path === "v1/native-ai/infer" || isInferenceStream;
@@ -158,7 +212,7 @@ async function proxy(request: NextRequest, context: RouteContext) {
     );
   }
 
-  const useInMemory = !baseUrl;
+  let useInMemory = await shouldUseInMemoryBackend(baseUrl, hasExplicitUrl);
 
   if (requiresExpectedIdentity) {
     const expectedUserId = request.headers
@@ -203,8 +257,8 @@ async function proxy(request: NextRequest, context: RouteContext) {
         }
       } catch {
         if (!hasExplicitUrl) {
-        return NextResponse.json({ detail: "backend_not_configured" }, { status: 503 });
-      } else {
+          useInMemory = true;
+        } else {
           return NextResponse.json(
             { detail: "ไม่สามารถยืนยันบัญชีกับ ZYRQUEN API ได้" },
             { status: 503 },
@@ -213,9 +267,19 @@ async function proxy(request: NextRequest, context: RouteContext) {
       }
     }
 
-  if (useInMemory) {
-    return NextResponse.json({ detail: "backend_not_configured" }, { status: 503 });
-  }
+    if (useInMemory) {
+      const identityRes = await handleInMemoryBackendRequest({
+        method: "GET",
+        path: "auth/me",
+        authorizationHeader,
+      });
+      identityStatus = identityRes.status;
+      if (identityRes.status >= 200 && identityRes.status < 300) {
+        identityPayload = identityRes.body as { id?: unknown; is_active?: unknown };
+      } else {
+        identityErrorText = JSON.stringify(identityRes.body ?? {});
+      }
+    }
 
     if (identityStatus < 200 || identityStatus >= 300) {
       const response = new NextResponse(identityErrorText, {
@@ -254,7 +318,12 @@ async function proxy(request: NextRequest, context: RouteContext) {
   }
 
   let upstream: Response | null = null;
-  const upstreamUrl = baseUrl ? (path ? `${baseUrl}/${path}` : `${baseUrl}/`) : "";
+  const search = request.nextUrl.search;
+  const upstreamUrl = baseUrl
+    ? path
+      ? `${baseUrl}/${path}${search}`
+      : `${baseUrl}/${search}`
+    : "";
   if (!useInMemory && upstreamUrl) {
     try {
       const timeoutMs = isInferenceRequest
@@ -274,7 +343,7 @@ async function proxy(request: NextRequest, context: RouteContext) {
       });
     } catch {
       if (!hasExplicitUrl) {
-        return NextResponse.json({ detail: "backend_not_configured" }, { status: 503 });
+        useInMemory = true;
       } else {
         return NextResponse.json(
           {
@@ -287,7 +356,26 @@ async function proxy(request: NextRequest, context: RouteContext) {
     }
   }
 
-  if (useInMemory || !upstream) {
+  if (useInMemory) {
+    const inMemory = await handleInMemoryBackendRequest({
+      method,
+      path,
+      searchParams: request.nextUrl.searchParams,
+      authorizationHeader: headers.get("Authorization"),
+      rawBody: body,
+    });
+    return buildInMemoryHttpResponse(
+      request,
+      path,
+      method,
+      accessToken,
+      body,
+      isInferenceStream,
+      inMemory,
+    );
+  }
+
+  if (!upstream) {
     return NextResponse.json({ detail: "backend_not_configured" }, { status: 503 });
   }
 
