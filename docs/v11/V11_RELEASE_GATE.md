@@ -8,9 +8,9 @@
 
 ## 1. Pre-Start Gate (Gate 0: Before Any V11 Code or Training)
 
-- [ ] **V10 Final Closure Gate = `PASS`** (V10-A, V10-B, V10-C, V10-D ครบถ้วนและปิดช่องโหว่ Governance/False-PASS แล้ว)
-- [ ] **V11 Blueprint Consistency Audit = `PASS`** (เอกสาร 22 ฉบับ + `README.md` ผ่านการตรวจและผู้ดูแลอนุมัติ)
-- [ ] **Open Decisions Resolved:** ประเด็น `OD-*` ที่จำเป็นต่อ Stage 1 ได้รับการตัดสินใจเป็นลายลักษณ์อักษร
+- [ ] **V10 Runtime Closure Gate = `PASS`** (Static/Governance `V10-A..D` ผ่านแล้ว; ต้องรัน PyTorch CPU Training + Evaluation จริงพร้อม Tier-2 HMAC Approval และมี V10 Baseline Checkpoints & Reports จริงก่อนเปิด V11)
+- [ ] **V11 Blueprint Consistency Audit = `PASS`** (เอกสาร 22 ฉบับ + `README.md` สอดคล้องครบทั้ง Stage Exits `1000→3000→5000→7000→9000→10000`, `sft.py` `UN`/`OO` deferral, และ Global vs Experiment accounting)
+- [ ] **Open Decisions Resolved & Change Approval Issued:** ประเด็น `OD-*` รวมถึงการอนุมัติขยาย `_V10_ENTITY_RE` ใน `sft.py` รองรับ `UN`/`OO` ได้รับอนุมัติ **หลัง** V10 Runtime Closure แล้วเท่านั้น
 
 ---
 
@@ -24,10 +24,10 @@
 
 ---
 
-## 3. Execution & Training Gate (Gate 2: 6 Stages / 10,000 Steps)
+## 3. Execution & Training Gate (Gate 2: 6 Stages / 10,000 Cumulative Global Steps / `>= 20` Experiments)
 
-- [ ] **Stages 1–6 Completed Sequentially:** ครบ `10,000` Steps โดยไม่มี `loss_diverged` (NaN/Inf), ไม่มี `ram_hard_stop`, ไม่มี `disk_reserve_violated`
-- [ ] **All Stage Exit Gates Verified:** บันทึก Evaluation Report และ Milestone Snapshot หลังจบทุก Stage (`1000, 3000, 5000, 7000, 8500, 10000`)
+- [ ] **Stages 1–6 Completed Sequentially:** ครบ `10,000` Cumulative Global Steps (`>= 20` disjoint `<= 500`-step experiments) โดยไม่มี `loss_diverged` (NaN/Inf), ไม่มี `ram_hard_stop`, ไม่มี `disk_reserve_violated`, และไม่นับ step ซ้ำหรือข้ามช่วง
+- [ ] **All Stage Exit Gates Verified:** บันทึก Evaluation Report และ Milestone Snapshot หลังจบทุก Stage (`1000, 3000, 5000, 7000, 9000, 10000`)
 - [ ] **Final Checkpoint Registered:** ลงทะเบียนเข้า `ModelRegistry` เป็น `ZYRQUEN-Native-X.Y.Z` พร้อมตรวจ `verify()` และ `check_compatibility()` = `True`
 
 ---

@@ -5,8 +5,10 @@ Reuses: handlers.groups, governance, resource_guard,
 native.train.TrainConfig, native.checkpoint.VersionedCheckpointManager.
 
 Evidence-locked facts:
-- handle_training_execute is a hook returning NOT RUN / training_hook_not_implemented.
-  Wrapper must propagate NOT RUN, never claim COMPLETED.
+- handle_training_execute routes to TrainingOrchestrator (SFT or token-stream LM)
+  only after Tier-2 HMAC approval and returns NOT RUN / BLOCKED when torch or
+  configuration prerequisites are unavailable; wrapper must propagate NOT RUN / BLOCKED
+  and never claim COMPLETED falsely.
 - TrainConfig defaults (batch=16, max_steps=1000) violate Budget Lock.
   Wrapper must override to batch<=4, steps<=500, block_size<=256.
 - handle_training_preflight only checks dataset_dir, not caps.
@@ -207,7 +209,7 @@ class AutonomousTrainingLoop:
                     evidence={"stage": "disk_guard", **disk_info},
                 )
 
-        # 5. Execute via handler with RAM monitor around it. Handler returns NOT RUN today.
+        # 5. Execute via handler with RAM monitor around it (propagates NOT RUN/BLOCKED honestly).
         if execute_fn is None:
             from apps.core.workflow.handlers.groups import handle_training_execute as execute_fn  # type: ignore
 

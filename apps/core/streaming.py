@@ -4,7 +4,12 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel, Field
 
-from apps.core.native.sft import SFT_FORMAT_VERSION, encode_sft_prompt
+from apps.core.native.sft import (
+    SFT_FORMAT_VERSION,
+    bind_ephemeral_slots,
+    encode_sft_prompt,
+    restore_ephemeral_slots,
+)
 from apps.core.native.tokenizer import N_SPECIAL
 
 from .context import InferenceContext
@@ -46,8 +51,11 @@ def _encode_prompt(
     if not hasattr(tokenizer, "encode"):
         raise InferenceError("Native tokenizer does not expose encode().")
     if prompt_format == SFT_FORMAT_VERSION:
+        effective_prompt = prompt
+        if getattr(tokenizer, "supports_atomic_slots", False):
+            effective_prompt, _, _ = bind_ephemeral_slots(prompt)
         try:
-            token_ids = encode_sft_prompt(tokenizer, prompt)
+            token_ids = encode_sft_prompt(tokenizer, effective_prompt)
         except Exception as exc:
             raise InferenceError(f"Failed to encode SFT prompt: {exc}") from exc
     else:
@@ -177,7 +185,15 @@ class StreamingInferenceEngine:
             model = self.loader.model
             max_seq_len = _max_seq_len_for(self.loader, model)
             prompt_format = getattr(self.loader, "prompt_format", None)
-            prompt_ids = _encode_prompt(tokenizer, context.prompt, prompt_format=prompt_format)
+            slot_binding = None
+            if (
+                prompt_format == SFT_FORMAT_VERSION
+                and getattr(tokenizer, "supports_atomic_slots", False)
+            ):
+                bound_prompt, _, slot_binding = bind_ephemeral_slots(context.prompt)
+                prompt_ids = [int(tok) for tok in encode_sft_prompt(tokenizer, bound_prompt)]
+            else:
+                prompt_ids = _encode_prompt(tokenizer, context.prompt, prompt_format=prompt_format)
             input_tokens = len(prompt_ids)
             if input_tokens > max_seq_len:
                 raise ResourceLimitExceeded(
@@ -207,6 +223,8 @@ class StreamingInferenceEngine:
                     break
                 output_tokens += 1
                 text = decoder.decode_token(tok_id)
+                if slot_binding is not None:
+                    text = restore_ephemeral_slots(text, slot_binding)
                 input_ids = torch.cat(
                     [input_ids, tok_t.reshape(1, 1).to(device)],
                     dim=1,

@@ -493,3 +493,167 @@ class CentralWorkflowOrchestrator:
                 time.sleep(min(0.25, step.retry_backoff_sec))
 
         return "ABORT"
+
+    # ------------------------------------------------------------------
+    # Tier-2 HMAC-Verified Model Registry Lifecycle Operations
+    # ------------------------------------------------------------------
+    def _consume_lifecycle_approval(
+        self,
+        *,
+        approval_id: str,
+        expected_action_type: str,
+        actor_id: str,
+        resource: str,
+    ) -> dict[str, Any]:
+        token_id = str(approval_id or "").strip()
+        if not token_id:
+            self.audit.record(
+                actor_id=actor_id,
+                event_type=f"{expected_action_type}.approval_denied",
+                resource=resource,
+                decision="DENIED",
+                details={"reason": "missing_approval_id"},
+            )
+            raise ApprovalViolationError(
+                f"Tier-2 approval_id is required for {expected_action_type}."
+            )
+        try:
+            consumed = self.governance.verify_and_consume_by_id(
+                token_id,
+                expected_action_type=expected_action_type,
+            )
+        except ApprovalViolationError as exc:
+            self.audit.record(
+                actor_id=actor_id,
+                event_type=f"{expected_action_type}.approval_denied",
+                resource=resource,
+                decision="DENIED",
+                details={"approval_id": token_id, "reason": str(exc)},
+            )
+            raise
+        return consumed
+
+    def stage_model_with_approval(
+        self,
+        registry: Any,
+        version: str,
+        *,
+        approval_id: str,
+        actor_id: str,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        consumed = self._consume_lifecycle_approval(
+            approval_id=approval_id,
+            expected_action_type="model.stage",
+            actor_id=actor_id,
+            resource=f"model:{version}",
+        )
+        compat = registry.check_compatibility(version)
+        if not compat["compatible"]:
+            from apps.core.native.registry import RegistryError
+
+            self.audit.record(
+                actor_id=actor_id,
+                event_type="model.stage.failed",
+                resource=f"model:{version}",
+                decision="FAILED",
+                details={"approval_id": consumed["id"], "reasons": compat["reasons"]},
+            )
+            raise RegistryError(f"Compatibility check failed: {compat['reasons']}")
+        rec = registry.set_lifecycle_status(
+            version,
+            "staging",
+            approval_id=consumed["id"],
+            approved_by=actor_id,
+            reason=reason,
+        )
+        self.audit.record(
+            actor_id=actor_id,
+            event_type="model.stage.completed",
+            resource=f"model:{version}",
+            decision="STAGED",
+            details={"approval_id": consumed["id"], "reason": reason},
+        )
+        return {"status": "staged", "record": rec, "compatibility": compat}
+
+    def promote_model_with_approval(
+        self,
+        registry: Any,
+        version: str,
+        *,
+        approval_id: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        consumed = self._consume_lifecycle_approval(
+            approval_id=approval_id,
+            expected_action_type="model.promote",
+            actor_id=actor_id,
+            resource=f"model:{version}",
+        )
+        try:
+            registry.promote(
+                version,
+                enforce_evaluation_gate=True,
+                approval_id=consumed["id"],
+                approved_by=actor_id,
+            )
+        except Exception as exc:
+            self.audit.record(
+                actor_id=actor_id,
+                event_type="model.promote.failed",
+                resource=f"model:{version}",
+                decision="FAILED",
+                details={"approval_id": consumed["id"], "error": str(exc)},
+            )
+            raise
+        self.audit.record(
+            actor_id=actor_id,
+            event_type="model.promote.completed",
+            resource=f"model:{version}",
+            decision="PROMOTED",
+            details={"approval_id": consumed["id"], "active_version": registry.active_version()},
+        )
+        return {
+            "status": "promoted",
+            "active_version": registry.active_version(),
+            "record": registry.get(version),
+        }
+
+    def rollback_model_with_approval(
+        self,
+        registry: Any,
+        *,
+        to_version: str | None = None,
+        approval_id: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        consumed = self._consume_lifecycle_approval(
+            approval_id=approval_id,
+            expected_action_type="model.rollback",
+            actor_id=actor_id,
+            resource=f"model:{to_version or 'previous'}",
+        )
+        try:
+            target = registry.rollback(to_version, approval_id=consumed["id"])
+        except Exception as exc:
+            self.audit.record(
+                actor_id=actor_id,
+                event_type="model.rollback.failed",
+                resource=f"model:{to_version or 'previous'}",
+                decision="FAILED",
+                details={"approval_id": consumed["id"], "error": str(exc)},
+            )
+            raise
+        self.audit.record(
+            actor_id=actor_id,
+            event_type="model.rollback.completed",
+            resource=f"model:{target}",
+            decision="ROLLED_BACK",
+            details={"approval_id": consumed["id"], "active_version": target},
+        )
+        return {
+            "status": "rolled_back",
+            "active_version": target,
+            "record": registry.get(target),
+        }
+

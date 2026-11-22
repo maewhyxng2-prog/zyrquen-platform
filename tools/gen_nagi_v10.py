@@ -933,6 +933,15 @@ def build_manifest(
             ),
         },
         "split_isolation": isolation,
+        "sources": {
+            "nagi_v10_deterministic_generator": {
+                "path": "tools/gen_nagi_v10.py",
+                "license": "internal-native-research",
+                "sha256": sha256_file(Path(__file__).resolve()),
+                "generator_version": GENERATOR_VERSION,
+                "seed": seed,
+            }
+        },
         "splits": split_records,
         "files": file_records,
         "content_sha256": content_sha256,

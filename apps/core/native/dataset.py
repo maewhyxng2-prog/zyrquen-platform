@@ -237,14 +237,31 @@ def prepare_dataset(sources: Iterable[Source], out_dir: str | Path,
 
 
 def _verify_and_open_split(dataset_dir: str | Path, split: str) -> Path:
+    if not isinstance(split, str) or not split or "/" in split or "\\" in split or ".." in split:
+        raise ValueError(f"invalid split name: {split!r}")
     d = Path(dataset_dir)
-    manifest = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+    if d.is_symlink() or not d.is_dir():
+        raise ValueError(f"dataset directory missing or symlinked: {d}")
+    manifest_path = d / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise ValueError("dataset manifest.json missing or symlinked")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict) or manifest.get("schema") != SCHEMA:
+        raise ValueError("invalid dataset manifest schema")
+    files = manifest.get("files")
+    if not isinstance(files, dict):
+        raise ValueError("dataset manifest missing files mapping")
     name = f"{split}.jsonl"
-    if name not in manifest["files"]:
+    if name not in files or not isinstance(files[name], dict) or "sha256" not in files[name]:
         raise ValueError(f"unknown split: {split}")
-    if _sha256_file(d / name) != manifest["files"][name]["sha256"]:
+    split_path = d / name
+    if split_path.is_symlink() or not split_path.is_file():
+        raise ValueError(f"split file missing or symlinked: {name}")
+    if not split_path.resolve().is_relative_to(d.resolve()):
+        raise ValueError(f"split path escapes dataset directory: {name}")
+    if _sha256_file(split_path) != files[name]["sha256"]:
         raise ValueError(f"dataset integrity check failed: {name}")
-    return d / name
+    return split_path
 
 
 def load_split(dataset_dir: str | Path, split: str) -> Iterator[str]:

@@ -167,15 +167,29 @@ def _sha256(path: Path) -> str:
 
 def _verify_dataset(dataset_dir: Path) -> dict:
     """Re-verify every split file and the content hash against the dataset manifest."""
+    if dataset_dir.is_symlink() or not dataset_dir.is_dir():
+        raise RegistryError("dataset directory missing or symlinked")
+    resolved_root = dataset_dir.resolve()
     mpath = dataset_dir / "manifest.json"
-    if not mpath.is_file():
-        raise RegistryError("dataset manifest.json not found")
+    if mpath.is_symlink() or not mpath.is_file():
+        raise RegistryError("dataset manifest.json not found or symlinked")
     manifest = json.loads(mpath.read_text(encoding="utf-8"))
-    files = manifest.get("files", {})
+    if not isinstance(manifest, dict):
+        raise RegistryError("dataset manifest.json must be a JSON object")
+    files = manifest.get("files")
+    if not isinstance(files, dict):
+        raise RegistryError("dataset manifest missing files mapping")
     for split in SPLITS:
         entry = files.get(f"{split}.jsonl")
         path = dataset_dir / f"{split}.jsonl"
-        if entry is None or not path.is_file() or _sha256(path) != entry["sha256"]:
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("sha256"), str)
+            or path.is_symlink()
+            or not path.resolve().is_relative_to(resolved_root)
+            or not path.is_file()
+            or _sha256(path) != entry["sha256"]
+        ):
             raise RegistryError(f"dataset integrity check failed: {split}.jsonl")
     combined = hashlib.sha256("".join(files[f"{s}.jsonl"]["sha256"] for s in SPLITS).encode()).hexdigest()
     if combined != manifest.get("content_sha256"):
@@ -382,7 +396,7 @@ class ModelRegistry:
                  parent: str | None = None, reservation_token: str | None = None,
                  architecture: dict | None = None, training_metadata: dict | None = None,
                  hardware: dict | None = None, capabilities: dict | None = None,
-                 frozen: bool = False) -> dict:
+                 frozen: bool = False, prompt_format: str | None = None) -> dict:
         if not _VERSION.match(version):
             raise RegistryError("invalid version name (use letters, digits, . _ - ; max 64 chars)")
         if version in FROZEN_BASELINE_NAMES:
@@ -457,6 +471,9 @@ class ModelRegistry:
 
             resolved_arch = architecture if architecture is not None else state.get("model_config")
             resolved_training = training_metadata if training_metadata is not None else state.get("config")
+            resolved_prompt_format = (
+                prompt_format if prompt_format is not None else state.get("prompt_format")
+            )
             record = {
                 "version": version,
                 "created_at": datetime.now(timezone.utc).isoformat(),
@@ -474,6 +491,7 @@ class ModelRegistry:
                 "architecture": resolved_arch,
                 "training_config": resolved_training,
                 "model_config": state.get("model_config"),
+                "prompt_format": resolved_prompt_format if isinstance(resolved_prompt_format, str) else None,
                 "hardware": hardware,
                 "capabilities": capabilities or {},
                 "metrics": metrics or {},

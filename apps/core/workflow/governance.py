@@ -17,6 +17,7 @@ TIER2_GATED_ACTIONS = frozenset(
     {
         "training.execute",
         "compute.paid_gpu",
+        "model.stage",
         "model.promote",
         "model.rollback",
         "architecture.modify",

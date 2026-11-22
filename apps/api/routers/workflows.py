@@ -259,23 +259,20 @@ def stage_model_version(
     registry, info = _get_model_registry()
     if registry is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=info)
-    if not body.approval_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Tier-2 approval_id is required to stage a model version.",
-        )
+    engine = get_workflow_engine()
     try:
-        compat = registry.check_compatibility(version)
-        if not compat["compatible"]:
-            raise RegistryError(f"Compatibility check failed: {compat['reasons']}")
-        rec = registry.set_lifecycle_status(
+        return engine.stage_model_with_approval(
+            registry,
             version,
-            "staging",
             approval_id=body.approval_id,
-            approved_by=current_user.email,
+            actor_id=current_user.email,
             reason=body.reason,
         )
-        return {"status": "staged", "record": rec, "compatibility": compat}
+    except ApprovalViolationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Tier-2 stage approval rejected: {exc}",
+        ) from exc
     except RegistryError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
@@ -289,23 +286,19 @@ def promote_model_version(
     registry, info = _get_model_registry()
     if registry is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=info)
-    if not body.approval_id:
+    engine = get_workflow_engine()
+    try:
+        return engine.promote_model_with_approval(
+            registry,
+            version,
+            approval_id=body.approval_id,
+            actor_id=current_user.email,
+        )
+    except ApprovalViolationError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Tier-2 approval_id is required to promote a model version.",
-        )
-    try:
-        registry.promote(
-            version,
-            enforce_evaluation_gate=True,
-            approval_id=body.approval_id,
-            approved_by=current_user.email,
-        )
-        return {
-            "status": "promoted",
-            "active_version": registry.active_version(),
-            "record": registry.get(version),
-        }
+            detail=f"Tier-2 promote approval rejected: {exc}",
+        ) from exc
     except RegistryError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
@@ -313,22 +306,23 @@ def promote_model_version(
 @router.post("/v1/models/registry/rollback")
 def rollback_model_version(
     body: ModelRollbackRequest,
-    _: User = Depends(require_admin),
+    current_user: User = Depends(require_admin),
 ):
     registry, info = _get_model_registry()
     if registry is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=info)
-    if not body.approval_id:
+    engine = get_workflow_engine()
+    try:
+        return engine.rollback_model_with_approval(
+            registry,
+            to_version=body.to_version,
+            approval_id=body.approval_id,
+            actor_id=current_user.email,
+        )
+    except ApprovalViolationError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Tier-2 approval_id is required to rollback a production model version.",
-        )
-    try:
-        target = registry.rollback(body.to_version, approval_id=body.approval_id)
-        return {
-            "status": "rolled_back",
-            "active_version": target,
-            "record": registry.get(target),
-        }
+            detail=f"Tier-2 rollback approval rejected: {exc}",
+        ) from exc
     except RegistryError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc

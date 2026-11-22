@@ -25,7 +25,10 @@
 {
     "model": model.state_dict(),
     "optimizer": optimizer.state_dict(),
-    "step": step,                      # Global step (0..10000)
+    "step": step,                      # Cumulative global step (0..10000)
+    "experiment_index": exp_idx,       # Monotonic experiment counter (1..20+)
+    "experiment_steps": exp_steps,     # Executed steps in this run (<= 500)
+    "global_step_start": start_step,   # Exact previous global step (no gap/overlap)
     "batch_rng": rng.getstate(),       # Python RNG state
     "rng": capture_rng_state(),        # Python + Torch CPU RNG state
     "config": cfg.__dict__,            # TrainConfig snapshot
@@ -53,8 +56,8 @@
 
 ## 4. Stage Milestone Retention Strategy
 
-เพราะ `CheckpointManager` เก็บ Rolling Window (`keep_last`, เช่น 3 ไฟล์ล่าสุด), ในแผน 10,000 Steps / 6 Stages:
-- **End-of-Stage Milestones** (`step 1000, 3000, 5000, 7000, 8500, 10000`) ควรลงทะเบียนเข้า `ModelRegistry` (`register_next_native_version` -> Immutable Snapshot ใน `artifacts/ZYRQUEN-Native-X.Y.Z/`) หรือเก็บใน milestone manifest เพื่อไม่ให้ `keep_last` ลบ Checkpoint ปิด Stage ทิ้ง และป้องกันพื้นที่ Disk เกินงบ `<= 1.0 GB` ต่อ run
+เพราะ `CheckpointManager` เก็บ Rolling Window (`keep_last`, เช่น 3 ไฟล์ล่าสุด), ในแผน 10,000 Steps / 6 Stages (`>= 20` Experiments):
+- **End-of-Stage Milestones** (`step 1000, 3000, 5000, 7000, 9000, 10000`) ควรลงทะเบียนเข้า `ModelRegistry` (`register_next_native_version` -> Immutable Snapshot ใน `artifacts/ZYRQUEN-Native-X.Y.Z/`) หรือเก็บใน milestone manifest เพื่อไม่ให้ `keep_last` ลบ Checkpoint ปิด Stage ทิ้ง และป้องกันพื้นที่ Disk เกินงบ `<= 1.0 GB` ต่อ run
 
 ---
 

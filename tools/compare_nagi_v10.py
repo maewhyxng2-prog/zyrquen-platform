@@ -42,10 +42,10 @@ CAPABILITY_KEYS = (
 
 METRIC_KEYS = (
     "exact_match",
-    "unseen_accuracy",
-    "ood_accuracy",
-    "reasoning_accuracy",
-    "generalization_score",
+    "validation_exact_match",
+    "test_exact_match",
+    "eos_hit_rate",
+    *(f"cap_{cap}_accuracy" for cap in CAPABILITY_KEYS),
 )
 
 VALID_STATUSES = {

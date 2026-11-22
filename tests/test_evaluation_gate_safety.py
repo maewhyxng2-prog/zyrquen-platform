@@ -18,8 +18,8 @@ from apps.core.native.dataset import PrepConfig, Source, prepare_dataset
 from apps.core.native.registry import ModelRegistry, RegistryError
 from apps.core.native.tokenizer import BASE_VOCAB, ZyrquenTokenizer
 from apps.core.training_infrastructure.recovery.checkpoint_recovery import CheckpointManager
-from apps.core.workflow import ApprovalViolationError
-from apps.core.workflow.governance import WorkflowGovernance
+from apps.core.workflow import ApprovalViolationError, CentralWorkflowOrchestrator
+from apps.core.workflow.governance import TIER2_GATED_ACTIONS, WorkflowGovernance
 from apps.core.workflow.handlers.groups import handle_data_verify_and_audit, handle_evaluation_gate
 from apps.core.workflow.models import LeakageGateFailedError, WorkflowStepSpec
 from apps.core.workflow.store import WorkflowStore
@@ -393,6 +393,176 @@ class TestEvaluationGateFalsePassClosure(unittest.TestCase):
             self.assertEqual(consumed["status"], "consumed")
             with self.assertRaises(ApprovalViolationError):
                 gov.verify_and_consume_by_id(approved["id"], expected_action_type="training.execute")
+
+    def test_v10_false_pass_missing_assessment_status_or_baseline_regression_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reg, rec1 = _create_dummy_registry_and_version(root, version="ZYRQUEN-Native-0.1.0")
+            ckpt_sha = rec1["checkpoint"]["sha256"]
+
+            # 1. Missing acceptance_assessment -> FAIL & quarantined
+            r_no_assess = _valid_v10_report(ckpt_sha, version="ZYRQUEN-Native-0.1.0")
+            del r_no_assess["acceptance_assessment"]
+            p1 = root / "no_assess.json"
+            p1.write_text(json.dumps(r_no_assess), encoding="utf-8")
+            res1 = handle_evaluation_gate(
+                {"run_id": "run-no-assess"},
+                {"report_path": str(p1), "registry_root": str(reg.root), "model_version": "ZYRQUEN-Native-0.1.0"},
+            )
+            self.assertEqual(res1.verdict, "FAIL")
+            self.assertIn("acceptance_assessment_missing_or_invalid", res1.output["failures"])
+            self.assertEqual(reg.get("ZYRQUEN-Native-0.1.0")["lifecycle_status"], "quarantined")
+
+            # 2. Capability dict missing status or missing score -> FAIL
+            r_no_status = _valid_v10_report(ckpt_sha, version="ZYRQUEN-Native-0.1.0")
+            r_no_status["capability_evaluation"]["abstract_reasoning"] = {"exact_match": 0.99}
+            r_no_status["capability_evaluation"]["relational_generalization"] = {"status": "PASS"}
+            p2 = root / "cap_partial.json"
+            p2.write_text(json.dumps(r_no_status), encoding="utf-8")
+            res2 = handle_evaluation_gate(
+                {"run_id": "run-cap-partial"},
+                {"report_path": str(p2), "registry_root": str(reg.root), "model_version": "ZYRQUEN-Native-0.1.0"},
+            )
+            self.assertEqual(res2.verdict, "FAIL")
+            self.assertTrue(any("capability_unknown_status:abstract_reasoning" in f for f in res2.output["failures"]))
+            self.assertTrue(any("capability_no_score:relational_generalization" in f for f in res2.output["failures"]))
+
+            # 3. Promote baseline v0.1.0; then candidate v0.1.1 with empty regression_comparison -> FAIL
+            v1_pass = _valid_v10_report(ckpt_sha, version="ZYRQUEN-Native-0.1.0")
+            pv1 = root / "v1_pass.json"
+            pv1.write_text(json.dumps(v1_pass), encoding="utf-8")
+            handle_evaluation_gate(
+                {"run_id": "run-v1"},
+                {"report_path": str(pv1), "registry_root": str(reg.root), "model_version": "ZYRQUEN-Native-0.1.0"},
+            )
+            reg.promote("ZYRQUEN-Native-0.1.0", enforce_evaluation_gate=True, approval_id="init-prod")
+
+            # Register v0.1.1
+            rec2 = reg.register(
+                "ZYRQUEN-Native-0.1.1",
+                root / "ckpts",
+                root / "tokenizer.json",
+                root / "dataset",
+                parent="ZYRQUEN-Native-0.1.0",
+            )
+            v2_no_cmp = _valid_v10_report(rec2["checkpoint"]["sha256"], version="ZYRQUEN-Native-0.1.1")
+            pv2 = root / "v2_no_cmp.json"
+            pv2.write_text(json.dumps(v2_no_cmp), encoding="utf-8")
+            res3 = handle_evaluation_gate(
+                {"run_id": "run-v2-nocmp"},
+                {"report_path": str(pv2), "registry_root": str(reg.root), "model_version": "ZYRQUEN-Native-0.1.1"},
+            )
+            self.assertEqual(res3.verdict, "FAIL")
+            self.assertIn("missing_baseline_regression_comparison", res3.output["failures"])
+            self.assertFalse(res3.output["zero_regression"])
+            self.assertEqual(reg.get("ZYRQUEN-Native-0.1.1")["lifecycle_status"], "quarantined")
+
+    def test_orchestrator_enforces_tier2_hmac_and_audit_on_stage_promote_rollback(self):
+        self.assertIn("model.stage", TIER2_GATED_ACTIONS)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reg, rec1 = _create_dummy_registry_and_version(root, version="ZYRQUEN-Native-0.1.0")
+            rec2 = reg.register(
+                "ZYRQUEN-Native-0.1.1",
+                root / "ckpts",
+                root / "tokenizer.json",
+                root / "dataset",
+                parent="ZYRQUEN-Native-0.1.0",
+            )
+
+            # Verify both candidates legitimately
+            for ver, sha in (
+                (rec1["version"], rec1["checkpoint"]["sha256"]),
+                (rec2["version"], rec2["checkpoint"]["sha256"]),
+            ):
+                rep = _valid_v10_report(sha, version=ver)
+                if ver == "ZYRQUEN-Native-0.1.1":
+                    rep["regression_comparison"] = [
+                        {"baseline": "ZYRQUEN-Native-0.1.0", "zero_regression": True}
+                    ]
+                rp = root / f"eval_{ver}.json"
+                rp.write_text(json.dumps(rep), encoding="utf-8")
+                res = handle_evaluation_gate(
+                    {"run_id": f"eval-{ver}"},
+                    {"report_path": str(rp), "registry_root": str(reg.root), "model_version": ver},
+                )
+                self.assertEqual(res.verdict, "PASS")
+
+            orch = CentralWorkflowOrchestrator(db_path=root / "wf.db", approval_secret="s" * 32)
+            run_id = orch.store.create_run(
+                workflow_key="lifecycle.test",
+                workflow_version="1.0.0",
+                trigger_type="manual",
+                trigger_payload={},
+                steps=[{"step_key": "gate", "depends_on": [], "lane": "governance"}],
+                requested_by_user_id="admin-1",
+            )[0]["id"]
+
+            def _mint_approved_token(action_type: str) -> str:
+                step = WorkflowStepSpec(
+                    step_key=f"step-{action_type}",
+                    handler_key="security.audit",
+                    action_type=action_type,
+                    lane="governance",
+                    tier="tier2_approval",
+                )
+                pending = orch.governance.ensure_pending_approval(
+                    run_id=run_id, step=step, requested_by_user_id="admin-1", scope="model"
+                )
+                approved = orch.governance.decide_approval(
+                    pending["id"], approve=True, approver_user_id="admin-1", approver_role="admin", reason="verified"
+                )
+                return approved["id"]
+
+            # Forged approval rejected on stage, promote, and rollback
+            with self.assertRaises(ApprovalViolationError):
+                orch.stage_model_with_approval(reg, rec1["version"], approval_id="forged-id", actor_id="a@example.com")
+            with self.assertRaises(ApprovalViolationError):
+                orch.promote_model_with_approval(reg, rec1["version"], approval_id="forged-id", actor_id="a@example.com")
+            with self.assertRaises(ApprovalViolationError):
+                orch.rollback_model_with_approval(reg, approval_id="forged-id", actor_id="a@example.com")
+
+            # Wrong action_type token rejected (training.execute token cannot promote)
+            train_tok = _mint_approved_token("training.execute")
+            with self.assertRaises(ApprovalViolationError):
+                orch.promote_model_with_approval(reg, rec1["version"], approval_id=train_tok, actor_id="a@example.com")
+
+            # Valid single-use tokens for stage -> promote v0.1.0 -> promote v0.1.1 -> rollback to v0.1.0
+            stage_tok = _mint_approved_token("model.stage")
+            staged = orch.stage_model_with_approval(
+                reg, rec1["version"], approval_id=stage_tok, actor_id="admin@example.com", reason="canary"
+            )
+            self.assertEqual(staged["status"], "staged")
+            with self.assertRaises(ApprovalViolationError):
+                orch.stage_model_with_approval(reg, rec1["version"], approval_id=stage_tok, actor_id="admin@example.com")
+
+            prom1_tok = _mint_approved_token("model.promote")
+            p1_res = orch.promote_model_with_approval(
+                reg, rec1["version"], approval_id=prom1_tok, actor_id="admin@example.com"
+            )
+            self.assertEqual(p1_res["active_version"], rec1["version"])
+
+            prom2_tok = _mint_approved_token("model.promote")
+            p2_res = orch.promote_model_with_approval(
+                reg, rec2["version"], approval_id=prom2_tok, actor_id="admin@example.com"
+            )
+            self.assertEqual(p2_res["active_version"], rec2["version"])
+
+            rb_tok = _mint_approved_token("model.rollback")
+            rb_res = orch.rollback_model_with_approval(
+                reg, approval_id=rb_tok, actor_id="admin@example.com"
+            )
+            self.assertEqual(rb_res["active_version"], rec1["version"])
+
+            audit_events = {item["event_type"] for item in orch.store.list_audit_logs(limit=100)}
+            self.assertTrue(
+                {
+                    "model.stage.approval_denied",
+                    "model.stage.completed",
+                    "model.promote.completed",
+                    "model.rollback.completed",
+                }.issubset(audit_events)
+            )
 
 
 if __name__ == "__main__":

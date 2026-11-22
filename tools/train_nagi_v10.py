@@ -50,7 +50,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from apps.core.native.config import NATIVE_MODEL_TYPE, ZyrquenConfig  # noqa: E402
 from apps.core.native.registry import ModelRegistry, RegistryError  # noqa: E402
+from apps.core.native.sft import SFT_FORMAT_VERSION  # noqa: E402
+from apps.core.native.tokenizer import ZyrquenTokenizer  # noqa: E402
 from apps.core.resource import ResourceManager  # noqa: E402
 from apps.core.workflow.autonomous_training_loop import (  # noqa: E402
     DISK_RESERVE_GB,
@@ -103,8 +106,8 @@ COMPLETE_LOOP_TIMEOUT_SECONDS = 60 * 60
 TRAINING_HOOK_IMPLEMENTED = True
 PAID_GPU_ALLOWED = False
 TRAINING_IMPLEMENTATION_STATUS = "wired_to_native_sft_hook"
-MODEL_ARCHITECTURE_STATUS = "pending_review"
-TRAINING_OBJECTIVE_STATUS = "pending_review"
+MODEL_ARCHITECTURE_STATUS = "APPROVED"
+TRAINING_OBJECTIVE_STATUS = "APPROVED"
 
 
 @dataclass
@@ -252,6 +255,38 @@ def validate_config(config: TrainingConfig) -> None:
         raise PreflightError("Learning rate must be positive")
     if config.weight_decay < 0:
         raise PreflightError("Weight decay cannot be negative")
+
+    try:
+        native_cfg = ZyrquenConfig(max_seq_len=config.sequence_length)
+        native_cfg.validate_parameter_budget(config.max_parameters)
+    except ValueError as exc:
+        raise PreflightError(f"Native architecture budget invalid: {exc}") from exc
+
+
+def inspect_tokenizer(tokenizer_path: Path | None, config: TrainingConfig) -> dict[str, Any] | None:
+    if tokenizer_path is None:
+        return None
+    if not tokenizer_path.is_file() or tokenizer_path.is_symlink():
+        raise PreflightError(f"Tokenizer file missing or symlinked: {tokenizer_path}")
+    try:
+        tok = ZyrquenTokenizer.load(tokenizer_path)
+        native_cfg = ZyrquenConfig(
+            vocab_size=tok.vocab_size,
+            max_seq_len=config.sequence_length,
+        )
+        est_params = native_cfg.validate_parameter_budget(config.max_parameters)
+    except Exception as exc:
+        raise PreflightError(f"Invalid native tokenizer {tokenizer_path}: {exc}") from exc
+
+    return {
+        "configured": True,
+        "path": str(tokenizer_path),
+        "schema": getattr(tok, "schema", "zyrquen.tokenizer.v1"),
+        "vocab_size": tok.vocab_size,
+        "supports_atomic_slots": bool(getattr(tok, "supports_atomic_slots", False)),
+        "tokenizer_sha256": tok.fingerprint(),
+        "estimated_model_parameters": est_params,
+    }
 
 
 def validate_resources(
@@ -486,6 +521,8 @@ def inspect_workflow_and_resource_guard(
     workflow_db: Path | None,
     requested_by: str,
     run_id: str | None,
+    tokenizer_path: Path | None = None,
+    registry_root: Path | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Run real WorkflowResourceGuard + CentralWorkflowOrchestrator + HMAC Governance check."""
     guard = WorkflowResourceGuard(
@@ -525,7 +562,7 @@ def inspect_workflow_and_resource_guard(
                 raise PreflightError(f"Workflow run_id not found: {run_id}")
             wf_run = orch.execute_run(run_id)
         else:
-            wf_payload = {
+            wf_payload: dict[str, Any] = {
                 "dataset_dir": str(dataset_dir),
                 "checkpoint_dir": str(checkpoint_dir),
                 "training_config_raw": asdict(config),
@@ -534,6 +571,10 @@ def inspect_workflow_and_resource_guard(
                 "estimated_params": config.max_parameters,
                 "use_paid_gpu": False,
             }
+            if tokenizer_path is not None:
+                wf_payload["tokenizer_path"] = str(tokenizer_path)
+            if registry_root is not None:
+                wf_payload["registry_root"] = str(registry_root)
             wf_run = orch.trigger_workflow(
                 WORKFLOW_KEY,
                 version=WORKFLOW_VERSION,
@@ -612,6 +653,7 @@ def build_readiness_report(
     audit_result: dict[str, Any] | None,
     workflow_result: dict[str, Any] | None,
     registry_result: dict[str, Any] | None,
+    tokenizer_result: dict[str, Any] | None = None,
     blockers: list[str],
 ) -> dict[str, Any]:
     approval_verified = bool(
@@ -623,6 +665,7 @@ def build_readiness_report(
         if workflow_result and workflow_result.get("approval")
         else "tier2_token_not_issued"
     )
+    default_cfg = ZyrquenConfig(max_seq_len=config.sequence_length)
 
     return {
         "schema_version": "1.0",
@@ -642,10 +685,26 @@ def build_readiness_report(
             "gate": "apps.core.workflow.governance.WorkflowGovernance",
         },
         "architecture": MODEL_ARCHITECTURE_STATUS,
+        "architecture_spec": {
+            "model_type": NATIVE_MODEL_TYPE,
+            "d_model": default_cfg.d_model,
+            "n_layers": default_cfg.n_layers,
+            "n_heads": default_cfg.n_heads,
+            "d_ff": default_cfg.d_ff,
+            "max_seq_len": default_cfg.max_seq_len,
+            "tie_embeddings": default_cfg.tie_embeddings,
+            "random_initialization": True,
+        },
         "training_objective": TRAINING_OBJECTIVE_STATUS,
+        "objective_spec": {
+            "mode": "native_sft",
+            "prompt_format": SFT_FORMAT_VERSION,
+            "external_models_allowed": False,
+        },
         "config": asdict(config),
         "resources": asdict(resources),
         "dataset": dataset_result,
+        "tokenizer": tokenizer_result,
         "leakage_audit": audit_result,
         "workflow_integration": workflow_result,
         "model_registry": registry_result,
@@ -693,6 +752,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--auditor", type=Path, default=DEFAULT_AUDITOR)
     parser.add_argument("--report-dir", type=Path, default=DEFAULT_REPORT_DIR)
     parser.add_argument("--checkpoint-dir", type=Path, default=PROJECT_ROOT / "checkpoints" / "nagi_v10")
+    parser.add_argument("--tokenizer-path", type=Path, default=None, help="Optional slot-safe ZyrquenTokenizer JSON path.")
     parser.add_argument("--workflow-db", type=Path, default=None, help="Optional persistent workflow SQLite DB path.")
     parser.add_argument("--workflow-run-id", type=str, default=None, help="Optional existing approved workflow run ID.")
     parser.add_argument("--registry-root", type=Path, default=None, help="Optional ModelRegistry root for read-only check.")
@@ -723,6 +783,7 @@ def main() -> int:
     dataset_dir = args.dataset_dir.expanduser().resolve()
     auditor_path = args.auditor.expanduser().resolve()
     checkpoint_dir = args.checkpoint_dir.expanduser().resolve()
+    tokenizer_path = args.tokenizer_path.expanduser().resolve() if args.tokenizer_path else None
     env_wf_db = os.getenv("ZYRQUEN_WORKFLOW_DB_PATH", "").strip()
     workflow_db = (
         args.workflow_db.expanduser().resolve()
@@ -737,6 +798,7 @@ def main() -> int:
         blockers = validate_resources(resources, dataset_dir, checkpoint_dir)
 
         dataset_result = check_dataset_manifest(dataset_dir)
+        tokenizer_result = inspect_tokenizer(tokenizer_path, config)
         audit_result = run_leakage_audit(auditor_path, dataset_dir)
         workflow_result, wf_blockers = inspect_workflow_and_resource_guard(
             config=config,
@@ -746,6 +808,8 @@ def main() -> int:
             workflow_db=workflow_db,
             requested_by=args.requested_by,
             run_id=args.workflow_run_id,
+            tokenizer_path=tokenizer_path,
+            registry_root=registry_root,
         )
         registry_result = inspect_registry(registry_root)
 
@@ -767,6 +831,7 @@ def main() -> int:
             audit_result=audit_result,
             workflow_result=workflow_result,
             registry_result=registry_result,
+            tokenizer_result=tokenizer_result,
             blockers=blockers,
         )
 

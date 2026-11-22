@@ -272,8 +272,75 @@ def verify_registry_model(registry_root: Path | None, model_version: str | None)
         "model_version": model_version,
         "lifecycle_status": rec.get("lifecycle_status"),
         "checkpoint_sha256": (rec.get("checkpoint") or {}).get("sha256"),
+        "active_baseline_version": reg.active_version(),
         "verified": True,
     }
+
+
+def build_regression_comparison(
+    registry_root: Path | None,
+    model_version: str | None,
+    inference_result: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not registry_root or not model_version or not inference_result:
+        return []
+    reg = ModelRegistry(registry_root)
+    baseline_version = reg.active_version()
+    if not baseline_version or baseline_version == model_version:
+        return []
+
+    base_rec = reg.get(baseline_version)
+    cand_rec = reg.get(model_version)
+    comparison = reg.compare_versions(baseline_version, model_version)
+
+    # Also check newly evaluated inference metrics & capabilities against active baseline
+    base_metrics = dict(base_rec.get("metrics") or {})
+    cand_metrics = dict(cand_rec.get("metrics") or {})
+    if isinstance(inference_result.get("metrics"), dict):
+        for k, v in inference_result["metrics"].items():
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                cand_metrics[str(k)] = float(v)
+
+    base_caps = dict(base_rec.get("capabilities") or {})
+    cand_caps = dict(cand_rec.get("capabilities") or {})
+    raw_cap_eval = inference_result.get("capability_evaluation")
+    if isinstance(raw_cap_eval, dict):
+        for cap, info in raw_cap_eval.items():
+            if isinstance(info, dict):
+                val = info.get("score", info.get("exact_match", info.get("accuracy")))
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    cand_caps[str(cap)] = float(val)
+
+    def _check_regressions(b_map: dict[str, Any], c_map: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+        deltas: dict[str, Any] = {}
+        regressed: list[str] = []
+        for k in sorted(set(b_map) & set(c_map)):
+            bv, cv = b_map[k], c_map[k]
+            if (
+                isinstance(bv, (int, float))
+                and not isinstance(bv, bool)
+                and isinstance(cv, (int, float))
+                and not isinstance(cv, bool)
+            ):
+                d = round(float(cv) - float(bv), 6)
+                deltas[k] = {"base": float(bv), "candidate": float(cv), "delta": d}
+                if k.endswith("loss"):
+                    if d > 0.01:
+                        regressed.append(k)
+                elif d < -0.01:
+                    regressed.append(k)
+        return deltas, regressed
+
+    m_deltas, m_reg = _check_regressions(base_metrics, cand_metrics)
+    c_deltas, c_reg = _check_regressions(base_caps, cand_caps)
+    comparison["metric_deltas"] = {**comparison.get("metric_deltas", {}), **m_deltas}
+    comparison["capability_deltas"] = {**comparison.get("capability_deltas", {}), **c_deltas}
+    comparison["regressed_metrics"] = sorted(set(comparison.get("regressed_metrics", [])) | set(m_reg))
+    comparison["regressed_capabilities"] = sorted(set(comparison.get("regressed_capabilities", [])) | set(c_reg))
+    comparison["zero_regression"] = (
+        len(comparison["regressed_metrics"]) == 0 and len(comparison["regressed_capabilities"]) == 0
+    )
+    return [comparison]
 
 
 def build_evaluation_report(
@@ -286,35 +353,82 @@ def build_evaluation_report(
     checkpoint_info: dict[str, Any] | None,
     inference_result: dict[str, Any] | None = None,
     inference_status: str = "NOT RUN",
+    regression_comparison: list[dict[str, Any]] | None = None,
     error: str | None = None,
 ) -> dict[str, Any]:
     integrity_status = dataset_result["dataset_integrity"] if dataset_result else "FAIL"
     dataset_and_audit_ok = integrity_status == "PASS" and leakage_audit_status in ("PASS", "NOT RUN")
+    reg_cmp = list(regression_comparison) if regression_comparison is not None else []
+    zero_reg = all(isinstance(item, dict) and item.get("zero_regression") is True for item in reg_cmp)
+    stop_criteria_triggered: list[str] = []
 
     if error is not None and inference_status == "BLOCKED":
         overall_status = "BLOCKED"
         capability_eval = {cap: "NOT RUN" for cap in EXPECTED_CAPABILITIES}
         metrics = None
+        stop_criteria_triggered.append(f"blocked:{error}")
     elif error is not None or not dataset_and_audit_ok:
         overall_status = "FAILED"
         capability_eval = {cap: "NOT RUN" for cap in EXPECTED_CAPABILITIES}
         metrics = None
+        stop_criteria_triggered.append(f"failed:{error or 'dataset_or_audit_invalid'}")
     elif inference_result is not None and inference_status == "PASS":
         raw_caps = dict(inference_result.get("capability_evaluation") or {})
-        capability_eval = {
-            cap: raw_caps[cap] if cap in raw_caps else "NOT RUN"
-            for cap in EXPECTED_CAPABILITIES
-        }
+        capability_eval = {}
+        for cap in EXPECTED_CAPABILITIES:
+            if cap in raw_caps:
+                entry = raw_caps[cap]
+                if isinstance(entry, dict):
+                    norm_entry = dict(entry)
+                    if "exact_match" not in norm_entry and "accuracy" in norm_entry:
+                        norm_entry["exact_match"] = norm_entry["accuracy"]
+                    capability_eval[cap] = norm_entry
+                else:
+                    capability_eval[cap] = entry
+            else:
+                capability_eval[cap] = "NOT RUN"
         metrics = inference_result.get("metrics")
         all_caps_passed = all(
             isinstance(capability_eval[cap], dict) and capability_eval[cap].get("status") == "PASS"
             for cap in EXPECTED_CAPABILITIES
         )
-        overall_status = "PASS" if (leakage_audit_status == "PASS" and all_caps_passed) else "FAIL"
+        if leakage_audit_status != "PASS":
+            stop_criteria_triggered.append("leakage_audit_not_passed")
+        if not all_caps_passed:
+            stop_criteria_triggered.append("capability_threshold_failed")
+        if not zero_reg:
+            stop_criteria_triggered.append("regression_detected")
+        overall_status = (
+            "PASS"
+            if (leakage_audit_status == "PASS" and all_caps_passed and zero_reg)
+            else "FAIL"
+        )
     else:
         overall_status = "NOT RUN"
         capability_eval = {cap: "NOT RUN" for cap in EXPECTED_CAPABILITIES}
         metrics = None
+
+    all_caps_criterion_status = (
+        "PASS"
+        if (
+            inference_status == "PASS"
+            and all(
+                isinstance(capability_eval[cap], dict) and capability_eval[cap].get("status") == "PASS"
+                for cap in EXPECTED_CAPABILITIES
+            )
+        )
+        else ("NOT RUN" if inference_status == "NOT RUN" else ("BLOCKED" if inference_status == "BLOCKED" else "FAIL"))
+    )
+    acceptance_assessment = {
+        "criteria": {
+            "dataset_integrity": {"status": integrity_status},
+            "leakage_audit": {"status": leakage_audit_status},
+            "native_inference": {"status": inference_status},
+            "all_capabilities_evaluated": {"status": all_caps_criterion_status},
+            "zero_regression": {"status": "PASS" if zero_reg else "FAIL"},
+        },
+        "stop_criteria_triggered": stop_criteria_triggered,
+    }
 
     limitations = [
         "No model promotion or registry mutation occurred.",
@@ -337,6 +451,7 @@ def build_evaluation_report(
         "dataset_dir": str(dataset_dir),
         "dataset_manifest_sha256": dataset_result.get("manifest_sha256") if dataset_result else None,
         "dataset_content_sha256": dataset_result.get("content_sha256") if dataset_result else None,
+        "tokenizer_sha256": inference_result.get("tokenizer_sha256") if inference_result else None,
         "overall_status": overall_status,
         "dataset_integrity": integrity_status,
         "leakage_audit_status": leakage_audit_status,
@@ -345,6 +460,8 @@ def build_evaluation_report(
         "inference_hook_implemented": INFERENCE_HOOK_IMPLEMENTED,
         "capability_evaluation": capability_eval,
         "metrics": metrics,
+        "regression_comparison": reg_cmp,
+        "acceptance_assessment": acceptance_assessment,
         "checkpoint": checkpoint_info,
         "dataset": dataset_result,
         "error": error,
@@ -413,6 +530,7 @@ def main() -> int:
     checkpoint_info: dict[str, Any] | None = None
     inference_result: dict[str, Any] | None = None
     inference_status = "NOT RUN"
+    regression_comparison: list[dict[str, Any]] = []
     error: str | None = None
 
     try:
@@ -448,6 +566,11 @@ def main() -> int:
                     max_new_tokens=args.max_new_tokens,
                 )
                 inference_status = str(inference_result.get("inference_status") or "PASS")
+                regression_comparison = build_regression_comparison(
+                    registry_root,
+                    args.model_version,
+                    inference_result,
+                )
             except EvaluationNotConfiguredError:
                 inference_status = "BLOCKED"
                 raise
@@ -469,6 +592,7 @@ def main() -> int:
         checkpoint_info=checkpoint_info,
         inference_result=inference_result,
         inference_status=inference_status,
+        regression_comparison=regression_comparison,
         error=error,
     )
 

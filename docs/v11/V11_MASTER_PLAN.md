@@ -19,26 +19,25 @@ V11 **ไม่ใช่** โปรเจกต์ Chatbot ทั่วไป, 
 
 ห้ามเริ่มพัฒนาโค้ด V11 หรือเปิดการฝึก จนกว่าเงื่อนไขต่อไปนี้จะครบ:
 
-1. **V10 Final Closure Gate (`V10-A..D`) = `PASS`:**
-   - Architecture & Integration Contracts 1–5 ผ่านครบและทดสอบจริง
-   - ช่องโหว่ด้าน Governance ใน `apps/api/routers/workflows.py` (การตรวจ `verify_and_consume_by_id` ใน `/stage`, `/promote`, `/rollback`) และ False-PASS ใน Evaluation Gate ถูกปิดและมี Regression Test คุม
-   - V10 Training Hook, Native Inference และ Evaluation Engine เชื่อมสมบูรณ์และมี Baseline Report จริง (เมื่อมี `torch`)
+1. **V10 Runtime Closure Gate = `PASS`:**
+   - Static/Architecture/Governance (`V10-A..D`) ปิดครบแล้ว; ยังต้องรัน **PyTorch CPU Training + Native Evaluation จริงของ V10** (พร้อม Tier-2 HMAC Approval) จนได้ Checkpoint + SHA-256 + Evaluation Baseline Report ที่ตรวจสอบย้อนกลับได้
+   - **ห้ามแก้โค้ด V10 (`sft.py`, `dataset.py`) ระหว่างการปิด V10:** การขยาย `_V10_ENTITY_RE` เพื่อรองรับ `UN`/`OO` จะดำเนินการหลัง V10 Runtime Closure ผ่านและได้รับอนุมัติเปิด V11 เท่านั้น
 2. **Baseline Artifacts Preserved:** V7, V8, V9 และ V10 Artifacts/Checkpoints อยู่ในสถานะ Immutable ไม่ถูกแก้ไขหรือลบทับ
 3. **Roadmap Integrity Intact:** `phases/phase11.py`..`phase20.py` และ `docs/PHASE_11_SPEC.md`..`PHASE_20_SPEC.md` คงเดิม ไม่สร้าง Phase 21
 4. **Explicit Approval:** ผู้ดูแลโครงการอนุมัติเปลี่ยนสถานะชุดเอกสาร V11 จาก `BLUEPRINT ONLY` เป็น `APPROVED FOR IMPLEMENTATION`
 
 ---
 
-## 3. High-Level Roadmap: 6 Stages / 10,000 Steps
+## 3. High-Level Roadmap: 6 Stages / 10,000 Cumulative Global Steps (`>= 20` Experiments)
 
-| Stage | Step Range | Steps | Primary Focus | Required Exit Proof |
-|---|---|---:|---|---|
-| **Stage 1** | `1 – 1,000` | `1,000` | Format & Atomic Slot Alignment (`zyrquen.sft.v1`, `zyrquen.tokenizer.v2`, EOS termination) | Finite loss, `eos_hit_rate >= 0.90`, zero NaN/divergence |
-| **Stage 2** | `1,001 – 3,000` | `2,000` | Abstract Reasoning & Relational Generalization (2–3 hop + distractor suppression) | Validation + Unseen accuracy improves over Stage 1 |
-| **Stage 3** | `3,001 – 5,000` | `2,000` | Multi-Step Planning & Dependency DAG Ordering (`impossible` + unique topological plan) | Planning accuracy target met; Stage 2 retention intact |
-| **Stage 4** | `5,001 – 7,000` | `2,000` | Knowledge Integration, Belief Revision & Grounded Memory (`[source=...]` + `conflict`) | Override vs Conflict accuracy target met; tenant/PII checks pass |
-| **Stage 5** | `7,001 – 8,500` | `1,500` | Self-Verification (`true`/`false`/`unknown`, `valid`/`invalid_*`, `fact` vs `assumption`) | Verification gate pass; TF-FG exposure gap strictly bounded |
-| **Stage 6** | `8,501 – 10,000` | `1,500` | Joint Consolidation, OOD Transfer (4–6+ hops) & Anti-Regression Polish | Full 4-split Eval PASS; Zero Regression vs V10 & prior stages |
+| Stage | Cumulative Step Range | Stage Steps | Min Experiments (`<= 500`/exp) | Primary Focus | Required Exit Proof |
+|---|---|---:|---:|---|---|
+| **Stage 1** | `1 – 1,000` | `1,000` | `2` (`EXP-01..02`) | Format & Atomic Slot Alignment (`zyrquen.sft.v1`, `zyrquen.tokenizer.v2`, EOS termination) | Finite loss, `eos_hit_rate >= 0.90`, zero NaN/divergence |
+| **Stage 2** | `1,001 – 3,000` | `2,000` | `4` (`EXP-03..06`) | Abstract Reasoning & Relational Generalization (2–3 hop + distractor suppression) | Validation + Unseen accuracy improves over Stage 1 |
+| **Stage 3** | `3,001 – 5,000` | `2,000` | `4` (`EXP-07..10`) | Multi-Step Planning & Dependency DAG Ordering (`impossible` + unique topological plan) | Planning accuracy target met; Stage 2 retention intact |
+| **Stage 4** | `5,001 – 7,000` | `2,000` | `4` (`EXP-11..14`) | Knowledge Integration, Belief Revision & Grounded Memory (`[source=...]` + `conflict`) | Override vs Conflict accuracy target met; tenant/PII checks pass |
+| **Stage 5** | `7,001 – 9,000` | `2,000` | `4` (`EXP-15..18`) | Self-Verification (`true`/`false`/`unknown`, `valid`/`invalid_*`, `fact` vs `assumption`) | Verification gate pass; TF-FG exposure gap strictly bounded |
+| **Stage 6** | `9,001 – 10,000` | `1,000` | `2` (`EXP-19..20`) | Joint Consolidation, OOD Transfer (4–6+ hops) & Anti-Regression Polish | Full 4-split Eval PASS; Zero Regression vs V10 & prior stages |
 
 ---
 

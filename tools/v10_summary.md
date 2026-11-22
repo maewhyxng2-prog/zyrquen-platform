@@ -24,8 +24,8 @@ v10 is **not** a chatbot-only project, does **not** use external AI APIs as nati
 | `tools/v10_summary.md` | Central v10 specification, contracts, and integration status | Documentation only |
 | `tools/gen_nagi_v10.py` | Deterministic generator for `data/nagi_v10/` across 6 capabilities and 3 splits | Pure stdlib; never overwrites existing output; verifies unique answers |
 | `tools/audit_leakage_v10.py` | Read-only leakage, SHA-256, schema, and unique-answer solver auditor | Strictly read-only; exit `0` only on full PASS |
-| `tools/train_nagi_v10.py` | CPU-budgeted training controller wired to Workflow Engine, Resource Guard, HMAC Gate, and ModelRegistry | Training hook locked (`False`); never fabricates approval or metrics |
-| `tools/eval_nagi_v10.py` | Evaluation controller validating manifest, SHA-256, leakage audit, and optional read-only Registry state | Inference hook locked (`False`); reports `NOT RUN` honestly |
+| `tools/train_nagi_v10.py` | CPU-budgeted training controller wired to Workflow Engine, Resource Guard, HMAC Gate, and ModelRegistry | SFT hook wired (`True`); gated by Tier-2 HMAC approval & `torch` runtime; never fabricates approval or metrics |
+| `tools/eval_nagi_v10.py` | Evaluation controller validating manifest, SHA-256, leakage audit, optional native inference (`EvaluationEngine`), and Registry state | Inference hook wired (`True`); reports `NOT RUN` by default and `BLOCKED` if `--run-inference` requested without `torch` |
 | `tools/diagnose_nagi_v10.py` | Read-only diagnostic analyzer for evaluation and preflight reports | Never runs inference or modifies artifacts |
 | `tools/compare_nagi_v10.py` | Read-only multi-experiment & frozen-baseline comparison | Never treats `NOT RUN` as `0.0` or `PASS`; checks `dataset_content_sha256` |
 
@@ -96,11 +96,11 @@ Matches `apps/core/workflow/autonomous_training_loop.py` and `apps/core/workflow
 | Workflow Audit Log | `apps/core/workflow/audit.py` (`WorkflowAuditLogger`) | Records trigger, resource, and approval state transitions |
 | Model Registry | `apps/core/native/registry.py` (`ModelRegistry`) | Optional read-only inspection/verification in `train_nagi_v10.py` and `eval_nagi_v10.py` |
 
-### Known Integration Boundaries (Outside the 7 v10 Files — Not Modified)
-1. `apps/core/workflow/handlers/groups.py::handle_data_verify_and_audit` dispatches `audit_leakage_v9` for v9 splits (`val_unseen`/`test_ood`) and only checks `manifest.json` for non-v9 datasets; automatic dispatch to `tools/audit_leakage_v10.py` inside `groups.py` is pending future core wiring.
-2. `apps/core/workflow/handlers/groups.py::handle_training_execute` targets `ZyrquenModel` token-stream LM training rather than a dedicated v10 reasoning architecture/objective (still `pending_review`).
-3. `apps/core/native/evaluation/engine.py::get_status()` reports `native_inference_evaluation_wired: False`; `eval_nagi_v10.py` therefore keeps `INFERENCE_HOOK_IMPLEMENTED = False` and reports `NOT RUN`.
-4. PyTorch (`torch`) is not installed in the current container (`ModuleNotFoundError`), so real training/inference execution remains `BLOCKED` here.
+### Verified Integration Status & Runtime Boundaries
+1. `apps/core/workflow/handlers/groups.py::handle_data_verify_and_audit` dispatches `tools/audit_leakage_v10.py` for v10 datasets (`dataset == "nagi_v10"` / `"train", "validation", "test"`), verifying split isolation, manifest SHA-256, and unique-answer solver gates.
+2. `apps/core/workflow/handlers/groups.py::handle_training_execute` binds `ZyrquenConfig` (`zyrquen-decoder`, `<= 5M`), slot-safe `ZyrquenTokenizer`, and SFT pairs (`zyrquen.sft.v1`) via `train_sft`, enforcing Tier-2 HMAC approval, CPU budget lock, RAM monitor, and ModelRegistry registration.
+3. `apps/core/native/evaluation/engine.py::EvaluationEngine` (`native_inference_evaluation_wired: True`) loads verified checkpoints + slot-safe tokenizers with ephemeral slot binding parity and emits `zyrquen.v10.evaluation_report.v1` evidence for `handle_evaluation_gate`.
+4. PyTorch (`torch`) is not installed in the current container (`ModuleNotFoundError`), so real model weight training and native inference execution remain honestly `BLOCKED` here until executed in a PyTorch CPU runtime with Tier-2 HMAC approval.
 
 ---
 

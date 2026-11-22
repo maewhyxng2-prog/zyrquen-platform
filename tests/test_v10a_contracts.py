@@ -24,7 +24,10 @@ from apps.core.native.dataset import (
     detect_dataset_format,
     load_sft_split,
     load_split,
+    load_split_records,
 )
+from apps.core.native.registry import ModelRegistry, RegistryError
+from apps.core.training_infrastructure.recovery.checkpoint_recovery import CheckpointManager
 from apps.core.native.sft import (
     IGNORE_INDEX,
     SFT_FORMAT_VERSION,
@@ -311,6 +314,102 @@ class TestContract4And5SFTDatasetCheckpointAndStreaming(unittest.TestCase):
 
         dec = _IncrementalTokenDecoder(tok)
         self.assertEqual(dec.decode_token(tok.slot_id(0)), "<slot_0>")
+
+    def test_registry_preserves_prompt_format_and_rejects_symlinks(self):
+        def _json_save(obj, path: str) -> None:
+            Path(path).write_text(json.dumps(obj), encoding="utf-8")
+
+        def _json_load(path: str):
+            return json.loads(Path(path).read_text(encoding="utf-8"))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ds_dir = root / "ds"
+            _write_sft_dataset(ds_dir, version="10.0.0")
+            tok = train_slot_safe_tokenizer(
+                list(load_sft_split(ds_dir, "train")) * 5,
+                vocab_size=320,
+                use_slots=True,
+                schema=TOK_V2,
+                forbidden_entities=["VA_E201", "TE_E301"],
+            )
+            tok_path = root / "tokenizer.json"
+            tok.save(tok_path)
+
+            ckpt_dir = root / "ckpts"
+            mgr = CheckpointManager(ckpt_dir, save_fn=_json_save, load_fn=_json_load)
+            cfg = ZyrquenConfig(vocab_size=tok.vocab_size, d_ff=704).to_dict()
+            mgr.save(
+                5,
+                {
+                    "model": {"w": [1]},
+                    "step": 5,
+                    "config": {"max_steps": 5},
+                    "model_config": cfg,
+                    "tokenizer_sha256": tok.fingerprint(),
+                    "dataset_version": "10.0.0",
+                    "prompt_format": SFT_FORMAT_VERSION,
+                },
+            )
+
+            reg = ModelRegistry(root / "registry", load_fn=_json_load)
+            rec = reg.register("ZYRQUEN-Native-0.1.0", ckpt_dir, tok_path, ds_dir)
+            self.assertEqual(rec["prompt_format"], SFT_FORMAT_VERSION)
+
+            # Dataset symlink tampering rejected by both dataset loader and ModelRegistry
+            with self.assertRaises(ValueError):
+                list(load_split_records(ds_dir, "../escape"))
+
+            evil_ds = root / "evil_ds"
+            evil_ds.mkdir()
+            for name in ("manifest.json", "train.jsonl", "validation.jsonl", "test.jsonl"):
+                if name == "train.jsonl":
+                    (evil_ds / name).symlink_to(ds_dir / name)
+                else:
+                    (evil_ds / name).write_bytes((ds_dir / name).read_bytes())
+            with self.assertRaises(ValueError):
+                list(load_split_records(evil_ds, "train"))
+            with self.assertRaises(RegistryError):
+                reg.register("ZYRQUEN-Native-0.1.1", ckpt_dir, tok_path, evil_ds)
+
+    def test_gen_nagi_v10_manifest_accepted_by_training_orchestrator_prepare(self):
+        tools_dir = ROOT / "tools"
+        if str(tools_dir) not in sys.path:
+            sys.path.insert(0, str(tools_dir))
+        import gen_nagi_v10  # type: ignore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ds_dir = root / "nagi_v10"
+            manifest = gen_nagi_v10.generate_dataset(
+                ds_dir,
+                seed=42,
+                counts={"train": 12, "validation": 6, "test": 6},
+            )
+            self.assertIn("sources", manifest)
+            self.assertEqual(detect_dataset_format(ds_dir), "sft")
+
+            tok = train_slot_safe_tokenizer(
+                list(load_sft_split(ds_dir, "train")),
+                vocab_size=384,
+                use_slots=True,
+                schema=TOK_V2,
+            )
+            tok_path = root / "tok.json"
+            tok.save(tok_path)
+
+            orch = TrainingOrchestrator(
+                dataset_dir=ds_dir,
+                tokenizer_path=tok_path,
+                training_root=root / "runs",
+            )
+            prepared = orch.prepare(
+                dataset_version=manifest["version"],
+                training_values={"block_size": 64, "batch_size": 2, "max_steps": 5, "warmup_steps": 1},
+                model_values={"max_seq_len": 128, "d_ff": 704},
+            )
+            self.assertEqual(prepared.dataset_version, "10.0.0")
+            self.assertEqual(prepared.tokenizer_fingerprint, tok.fingerprint())
 
 
 if __name__ == "__main__":

@@ -56,7 +56,7 @@ V11 เริ่มต้นภายใต้ Budget Lock เดียวกั
 
 ### OPEN DECISIONS
 - **OD-RS-01:** อนุมัติตัวเลข `steps_per_segment` (`500` vs `1,000`) และรอบ `eval_interval` หลังวัด `sec/step` จริงบนเครื่องเป้าหมาย
-- **OD-RS-02:** จะเก็บ Stage Milestone Checkpoints (`step_1000`, `step_3000`, `step_5000`, `step_7000`, `step_8500`, `step_10000`) แยกต่างหากจาก Rolling `keep_last=3` ของ `CheckpointManager` เพื่อประหยัดพื้นที่ `< 1.0 GB` ต่อ Experiment อย่างไร
+- **OD-RS-02:** จะเก็บ Stage Milestone Checkpoints (`step_1000`, `step_3000`, `step_5000`, `step_7000`, `step_9000`, `step_10000`) แยกต่างหากจาก Rolling `keep_last=3` ของ `CheckpointManager` เพื่อประหยัดพื้นที่ `< 1.0 GB` ต่อ Experiment อย่างไร
 
 ### NOT VERIFIED
 - **Peak RAM (RSS) & CPU Step Latency:** ยัง **NOT VERIFIED** 100% เนื่องจากไม่มี `torch` ใน environment ปัจจุบัน

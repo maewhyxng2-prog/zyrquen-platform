@@ -1,5 +1,12 @@
 import asyncio
 
+from apps.core.native.sft import (
+    SFT_FORMAT_VERSION,
+    bind_ephemeral_slots,
+    encode_sft_prompt,
+    restore_ephemeral_slots,
+)
+
 from .context import InferenceContext
 from .exceptions import InferenceError, ResourceLimitExceeded
 from .model_loader import NativeModelLoader
@@ -39,7 +46,15 @@ class NativeInferenceEngine:
             model = self.loader.model
             max_seq_len = _max_seq_len_for(self.loader, model)
             prompt_format = getattr(self.loader, "prompt_format", None)
-            prompt_ids = _encode_prompt(tokenizer, context.prompt, prompt_format=prompt_format)
+            slot_binding = None
+            if (
+                prompt_format == SFT_FORMAT_VERSION
+                and getattr(tokenizer, "supports_atomic_slots", False)
+            ):
+                bound_prompt, _, slot_binding = bind_ephemeral_slots(context.prompt)
+                prompt_ids = [int(tok) for tok in encode_sft_prompt(tokenizer, bound_prompt)]
+            else:
+                prompt_ids = _encode_prompt(tokenizer, context.prompt, prompt_format=prompt_format)
             input_tokens = len(prompt_ids)
             if input_tokens > max_seq_len:
                 raise ResourceLimitExceeded(
@@ -68,6 +83,8 @@ class NativeInferenceEngine:
                 )
 
             result_text = tokenizer.decode(generated_ids, skip_special=True)
+            if slot_binding is not None:
+                result_text = restore_ephemeral_slots(result_text, slot_binding)
             if not result_text.strip():
                 raise InferenceError("Native model returned an empty result.")
 

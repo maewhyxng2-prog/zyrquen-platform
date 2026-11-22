@@ -807,12 +807,12 @@ def handle_evaluation_gate(ctx: dict[str, Any], payload: dict[str, Any]) -> Step
                     st = _norm_status(entry.get("status"))
                     if st in _EVAL_NON_RUN_STATUSES or st in _EVAL_BLOCKED_STATUSES or st in _EVAL_FAIL_STATUSES:
                         failures.append(f"capability_{st or 'invalid'}:{cap}")
-                    elif st and st != "PASS":
-                        failures.append(f"capability_unknown_status:{cap}={st}")
-                    val = entry.get("score", entry.get("exact_match"))
+                    elif st != "PASS":
+                        failures.append(f"capability_unknown_status:{cap}={st or 'MISSING'}")
+                    val = entry.get("score", entry.get("exact_match", entry.get("accuracy")))
                     if _is_finite_float(val):
                         cap_scores[cap] = float(val)
-                    elif st != "PASS":
+                    else:
                         failures.append(f"capability_no_score:{cap}")
                 elif _is_finite_float(entry):
                     cap_scores[cap] = float(entry)
@@ -826,38 +826,44 @@ def handle_evaluation_gate(ctx: dict[str, Any], payload: dict[str, Any]) -> Step
 
         zero_reg = True
         reg_cmp = report.get("regression_comparison")
-        if reg_cmp is not None:
-            if not isinstance(reg_cmp, list):
-                failures.append("regression_comparison_not_list")
-                zero_reg = False
-            elif reg_cmp:
-                zero_reg = all(isinstance(item, dict) and item.get("zero_regression") is True for item in reg_cmp)
-                if not zero_reg:
-                    failures.append("regression_detected")
+        if not isinstance(reg_cmp, list):
+            failures.append("regression_comparison_missing_or_invalid")
+            zero_reg = False
+        elif reg_cmp:
+            zero_reg = all(isinstance(item, dict) and item.get("zero_regression") is True for item in reg_cmp)
+            if not zero_reg:
+                failures.append("regression_detected")
 
         assessment = report.get("acceptance_assessment")
         stops: list[Any] = []
         failed_criteria: list[str] = []
-        if assessment is not None:
-            if not isinstance(assessment, dict):
-                failures.append("acceptance_assessment_invalid")
+        if not isinstance(assessment, dict):
+            failures.append("acceptance_assessment_missing_or_invalid")
+        else:
+            raw_stops = assessment.get("stop_criteria_triggered")
+            if not isinstance(raw_stops, list):
+                failures.append("stop_criteria_triggered_missing_or_invalid")
             else:
-                raw_stops = assessment.get("stop_criteria_triggered")
-                if not isinstance(raw_stops, list):
-                    failures.append("stop_criteria_triggered_missing_or_invalid")
-                else:
-                    stops = raw_stops
-                    if stops:
-                        failures.append("stop_criteria_triggered")
-                raw_criteria = assessment.get("criteria")
-                if isinstance(raw_criteria, dict):
-                    for k, v in raw_criteria.items():
-                        if not isinstance(v, dict) or _norm_status(v.get("status")) in (
-                            _EVAL_FAIL_STATUSES | _EVAL_NON_RUN_STATUSES | _EVAL_BLOCKED_STATUSES
-                        ):
-                            failed_criteria.append(str(k))
-                    if failed_criteria:
-                        failures.append(f"failed_criteria:{failed_criteria}")
+                stops = raw_stops
+                if stops:
+                    failures.append("stop_criteria_triggered")
+            raw_criteria = assessment.get("criteria")
+            if not isinstance(raw_criteria, dict) or not raw_criteria:
+                failures.append("acceptance_criteria_missing_or_empty")
+            else:
+                pass_criteria_count = 0
+                for k, v in raw_criteria.items():
+                    st_c = _norm_status(v.get("status")) if isinstance(v, dict) else ""
+                    if not isinstance(v, dict) or st_c not in _V9_ALLOWED_CRITERION_STATUSES or st_c in (
+                        _EVAL_FAIL_STATUSES | _EVAL_NON_RUN_STATUSES | _EVAL_BLOCKED_STATUSES
+                    ):
+                        failed_criteria.append(str(k))
+                    elif st_c == "PASS":
+                        pass_criteria_count += 1
+                if failed_criteria:
+                    failures.append(f"failed_criteria:{failed_criteria}")
+                elif pass_criteria_count == 0:
+                    failures.append("no_passing_acceptance_criteria")
 
         ckpt_meta = report.get("checkpoint")
         if registry_root and version:
@@ -866,6 +872,10 @@ def handle_evaluation_gate(ctx: dict[str, Any], payload: dict[str, Any]) -> Step
                 if not reg.verify(version):
                     failures.append("registry_artifact_verify_failed")
                 rec = reg.get(version)
+                active_baseline = reg.active_version()
+                if active_baseline and active_baseline != version and isinstance(reg_cmp, list) and not reg_cmp:
+                    failures.append("missing_baseline_regression_comparison")
+                    zero_reg = False
             except RegistryError as exc:
                 failures.append(f"registry_error:{exc}")
                 rec = None
@@ -880,6 +890,7 @@ def handle_evaluation_gate(ctx: dict[str, Any], payload: dict[str, Any]) -> Step
                     failures.append("checkpoint_not_verified")
 
         passed = len(failures) == 0 and zero_reg
+        wf_run_id = str(ctx["run_id"]) if ctx.get("run_id") else None
         if registry_root and version:
             reg = ModelRegistry(registry_root)
             reg.attach_evaluation_evidence(
@@ -890,7 +901,7 @@ def handle_evaluation_gate(ctx: dict[str, Any], payload: dict[str, Any]) -> Step
                 passed=passed,
                 zero_regression=zero_reg,
                 capabilities=cap_scores or None,
-                workflow_run_id=str(ctx.get("run_id")),
+                workflow_run_id=wf_run_id,
                 evaluation_status="PASS" if passed else "FAIL",
                 inference_executed=(inf_status == "PASS" and hook_flag is True),
                 report_schema=_V10_REPORT_SCHEMA,
@@ -1020,6 +1031,10 @@ def handle_evaluation_gate(ctx: dict[str, Any], payload: dict[str, Any]) -> Step
             try:
                 if not reg.verify(version):
                     failures.append("registry_artifact_verify_failed")
+                active_baseline = reg.active_version()
+                if active_baseline and active_baseline != version and isinstance(reg_cmp, list) and not reg_cmp:
+                    failures.append("missing_baseline_regression_comparison")
+                    zero_reg = False
             except RegistryError as exc:
                 failures.append(f"registry_error:{exc}")
 
@@ -1031,6 +1046,7 @@ def handle_evaluation_gate(ctx: dict[str, Any], payload: dict[str, Any]) -> Step
             and zero_reg
         )
 
+        wf_run_id_v9 = str(ctx["run_id"]) if ctx.get("run_id") else None
         if registry_root and version:
             reg = ModelRegistry(registry_root)
             reg.attach_evaluation_evidence(
@@ -1040,7 +1056,7 @@ def handle_evaluation_gate(ctx: dict[str, Any], payload: dict[str, Any]) -> Step
                 metrics=metrics_summary,
                 passed=passed,
                 zero_regression=zero_reg,
-                workflow_run_id=str(ctx.get("run_id")),
+                workflow_run_id=wf_run_id_v9,
                 evaluation_status="PASS" if passed else "FAIL",
                 inference_executed=(len(metrics_summary) > 0),
                 report_schema=_V9_REPORT_SCHEMA,
@@ -1186,6 +1202,8 @@ def handle_security_audit(ctx: dict[str, Any], payload: dict[str, Any]) -> StepE
     critical_files = (
         "apps/api/main.py",
         "apps/api/operations.py",
+        "apps/api/routers/workflows.py",
+        "apps/core/workflow/governance.py",
         "apps/core/native/registry.py",
     )
     checksums = {

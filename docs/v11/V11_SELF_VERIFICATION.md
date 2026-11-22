@@ -41,7 +41,7 @@ V11 ออกแบบการตรวจสอบตนเองเป็น 
 ## 3. Mandatory Truthfulness Sections
 
 ### ASSUMPTIONS
-- Neural classifier (`true`/`false`/`unknown` และ `valid`/`invalid_*`) สามารถเรียนรู้ขอบเขตการขาดข้อมูล (`unknown`) และการสลับลำดับ (`invalid_order`) ได้ใน Stage 5 (`1,500` steps + replay)
+- Neural classifier (`true`/`false`/`unknown` และ `valid`/`invalid_*`) สามารถเรียนรู้ขอบเขตการขาดข้อมูล (`unknown`) และการสลับลำดับ (`invalid_order`) ได้ใน Stage 5 (`2,000` steps + replay)
 - Deterministic Layer ใน `phases/phase16.py` และ `apps/core/intelligence/contract.py` มีเสถียรภาพเพียงพอและไม่จำเป็นต้องแก้ไขไฟล์ `phases/phase16.py`
 
 ### OPEN DECISIONS
