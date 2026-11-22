@@ -134,7 +134,7 @@ class TestWorkflowExecutionAndGovernance(unittest.TestCase):
 
         # 2. Data audit without dataset returns NOT RUN honestly (never fabricated PASS)
         data_run = self.orch.trigger_workflow("data.ingestion_and_leakage_gate")
-        self.assertEqual(data_run["status"], "COMPLETED")
+        self.assertEqual(data_run["status"], "BLOCKED")
         self.assertEqual(data_run["steps"][0]["evidence"]["verdict"], "NOT RUN")
 
         # 3. Knowledge ingestion checks tenant isolation & scrubs PII
@@ -283,7 +283,7 @@ class TestWorkflowExecutionAndGovernance(unittest.TestCase):
         )
         self.assertEqual(after["status"], "BLOCKED")
         after_steps = {s["step_key"]: s for s in after["steps"]}
-        self.assertEqual(after_steps["execute_training"]["error_code"], "torch_not_installed")
+        self.assertIn(after_steps["execute_training"]["error_code"], ("torch_not_installed", "training_hook_not_implemented"))
 
     def test_resource_guard_blocks_unapproved_paid_gpu_and_cpu_overflow(self) -> None:
         # Unapproved paid GPU step is blocked immediately before handler runs

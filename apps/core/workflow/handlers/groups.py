@@ -187,6 +187,7 @@ def handle_training_execute(ctx: dict[str, Any], payload: dict[str, Any]) -> Ste
     approval = ctx.get("consumed_approval") or {}
     return StepExecutionResult(
         verdict="NOT RUN",
+        error_code="training_hook_not_implemented",
         summary=(
             "Training runtime hook reached with valid Tier-2 approval; submit concrete "
             "TrainingOrchestrator or v9 arm job payload to execute weights update."

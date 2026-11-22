@@ -404,8 +404,8 @@ class CentralWorkflowOrchestrator:
 
                 step_final_status = (
                     "COMPLETED"
-                    if result.verdict in ("PASS", "NOT RUN")
-                    else ("BLOCKED" if result.verdict == "BLOCKED" else "FAILED")
+                    if result.verdict == "PASS"
+                    else ("BLOCKED" if result.verdict in ("BLOCKED", "NOT RUN") else "FAILED")
                 )
                 evidence_payload = {
                     "verdict": result.verdict,
