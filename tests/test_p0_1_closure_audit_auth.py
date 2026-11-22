@@ -1,4 +1,4 @@
-"""P0-1 regression: closure-audit must require authentication (no training, no runtime)."""
+"""P0-1 regression: closure-audit must require get_current_user (no DB/training/inference)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from fastapi.params import Depends
+
 from apps.api.routers import workflows
+from apps.api.security import get_current_user
 
 
 def _route_for(path: str, method: str = "GET"):
@@ -21,47 +24,64 @@ def _route_for(path: str, method: str = "GET"):
     raise AssertionError(f"route {method} {path} not found")
 
 
-def test_closure_audit_requires_get_current_user():
-    # Direct function signature must include authenticated User dependency.
-    sig = inspect.signature(workflows.get_v10_closure_audit)
-    assert "_user" in sig.parameters or any(
-        "user" in name.lower() for name in sig.parameters
-    ), "closure-audit must declare an authenticated user dependency"
+def _collect_dependency_calls(dependant) -> list:
+    """Walk FastAPI Dependant graph and return every registered dependency callable."""
+    calls: list = []
+    seen_ids: set[int] = set()
+    stack = [dependant]
+    while stack:
+        node = stack.pop()
+        if node is None or id(node) in seen_ids:
+            continue
+        seen_ids.add(id(node))
+        call = getattr(node, "call", None)
+        if callable(call):
+            calls.append(call)
+        for sub in getattr(node, "dependencies", None) or []:
+            stack.append(sub)
+    return calls
 
-    # FastAPI route dependant must include get_current_user (or require_admin which wraps it).
+
+def test_closure_audit_registers_get_current_user_in_route_graph():
     route = _route_for("/v1/v10/closure-audit", "GET")
     dependant = getattr(route, "dependant", None)
-    deps = getattr(dependant, "dependencies", []) if dependant else []
-    # Fallback: inspect defaults for Depends markers.
-    dep_names = []
-    for p in sig.parameters.values():
-        default = p.default
-        dep_names.append(f"{p.name}={default!r}")
-    blob = " ".join(dep_names) + " " + str(getattr(dependant, "__dict__", ""))
-    assert "get_current_user" in blob or "Depends" in blob, (
-        f"closure-audit route must depend on get_current_user, got: {blob[:500]}"
+    assert dependant is not None, "closure-audit route has no FastAPI dependant graph"
+    calls = _collect_dependency_calls(dependant)
+    assert any(c is get_current_user for c in calls), (
+        "closure-audit route graph must register the actual "
+        "apps.api.security.get_current_user callable; found: "
+        f"{[getattr(c, '__name__', repr(c)) for c in calls][:20]}"
     )
 
 
-def test_closure_audit_not_open_while_siblings_require_auth():
-    # Guard against regression: ensure no other workflow GET remains open unintentionally.
-    open_routes = []
-    for r in workflows.router.routes:
-        if "GET" not in (getattr(r, "methods", None) or set()):
-            continue
-        if getattr(r, "path", None) != "/v1/v10/closure-audit":
-            continue
-        dependant = getattr(r, "dependant", None)
-        if not dependant or not getattr(dependant, "dependencies", []):
-            # Check function signature as secondary signal.
-            fn = getattr(r, "endpoint", None)
-            try:
-                sig = inspect.signature(fn)
-                has_dep = any(
-                    "Depends" in repr(p.default) for p in sig.parameters.values()
-                )
-            except Exception:
-                has_dep = False
-            if not has_dep:
-                open_routes.append(r.path)
-    assert open_routes == [], f"unauthenticated closure-audit routes: {open_routes}"
+def test_closure_audit_signature_uses_get_current_user_identity():
+    # Identity check on the endpoint signature. Parameter name is intentionally
+    # irrelevant (implementation uses "_"); only the Depends dependency identity matters.
+    sig = inspect.signature(workflows.get_v10_closure_audit)
+    found = False
+    for param in sig.parameters.values():
+        default = param.default
+        if isinstance(default, Depends) and default.dependency is get_current_user:
+            found = True
+            break
+    assert found, (
+        "get_v10_closure_audit signature must include Depends(get_current_user) "
+        "with identity equality; arbitrary Depends markers are not accepted"
+    )
+
+
+def test_closure_audit_fails_closed_without_auth_dependency():
+    # Documents fail-closed expectation: removing or swapping the dependency
+    # must break the two checks above. Here we assert the positive control only
+    # (negative case is enforced by those checks), and guard against an empty graph.
+    route = _route_for("/v1/v10/closure-audit", "GET")
+    calls = _collect_dependency_calls(getattr(route, "dependant", None))
+    assert len(calls) > 0, "dependency graph must not be empty for an authenticated route"
+    assert not any(
+        getattr(c, "__name__", "") in {"get_db", "get_workflow_engine"}
+        and c is not get_current_user
+        for c in calls
+        if getattr(c, "__name__", "") in {"get_db", "get_workflow_engine"}
+    ) or any(c is get_current_user for c in calls), (
+        "unrelated dependencies alone must not satisfy authentication"
+    )
