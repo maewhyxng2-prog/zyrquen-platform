@@ -46,20 +46,20 @@ jobs:
 
       - name: Test Native Model
         run: |
-          python -m pytest -v apps/core/native || code=$?; if [ $code -eq 5 ]; then echo 'No tests collected, OK'; else exit $code; fi
+          python -m pytest -v apps/core/native; rc=$?; if [ $rc -eq 0 ] || [ $rc -eq 5 ]; then echo "pytest rc=$rc OK"; else exit $rc; fi
 
       - name: Test Native Evaluation
         run: |
-          python -m pytest -v apps/core/native/evaluation || code=$?; if [ $code -eq 5 ]; then echo 'No tests collected, OK'; else exit $code; fi
+          python -m pytest -v apps/core/native/evaluation; rc=$?; if [ $rc -eq 0 ] || [ $rc -eq 5 ]; then echo "pytest rc=$rc OK"; else exit $rc; fi
 
       - name: Test Autonomous Training Loop
         run: |
-          python -m pytest -v \ || code=$?; if [ $code -eq 5 ]; then echo 'No tests collected, OK'; else exit $code; fi
+          python -m pytest -v \; rc=$?; if [ $rc -eq 0 ] || [ $rc -eq 5 ]; then echo "pytest rc=$rc OK"; else exit $rc; fi
             apps/core/workflow/test_autonomous_training_loop.py
 
       - name: Test Workflow Governance
         run: |
-          python -m pytest -v \ || code=$?; if [ $code -eq 5 ]; then echo 'No tests collected, OK'; else exit $code; fi
+          python -m pytest -v \; rc=$?; if [ $rc -eq 0 ] || [ $rc -eq 5 ]; then echo "pytest rc=$rc OK"; else exit $rc; fi
             apps/core/workflow
 
       - name: Compile capability components
