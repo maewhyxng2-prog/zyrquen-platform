@@ -769,7 +769,7 @@ function rotateStoredApiKey(
   store: InMemoryStore,
   entry: StoredApiKey,
   actorUserId: string,
-  action: "api_key.rotated" | "api_key.auto_rotated",
+  action: "api_key.rotated",
 ): string {
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
@@ -805,24 +805,6 @@ function rotateStoredApiKey(
   return secret;
 }
 
-function applyDueAutoRotations(store: InMemoryStore, userId: string): void {
-  const nowMs = Date.now();
-  for (const entry of store.apiKeys.values()) {
-    if (
-      entry.userId !== userId ||
-      entry.revokedAt !== null ||
-      !entry.autoRotateEnabled ||
-      !entry.autoRotateIntervalDays ||
-      !entry.nextRotationAt
-    ) {
-      continue;
-    }
-    const dueMs = Date.parse(entry.nextRotationAt);
-    if (!Number.isNaN(dueMs) && dueMs <= nowMs) {
-      rotateStoredApiKey(store, entry, userId, "api_key.auto_rotated");
-    }
-  }
-}
 
 function buildUserUsageStats(userId: string) {
   const store = getStore();
@@ -1059,7 +1041,6 @@ export async function handleInMemoryBackendRequest(options: {
 
   if (path === "users/me/api-keys") {
     if (method === "GET") {
-      applyDueAutoRotations(store, currentUser.id);
       const keys = [...store.apiKeys.values()]
         .filter((k) => k.userId === currentUser.id)
         .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
