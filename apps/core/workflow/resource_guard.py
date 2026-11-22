@@ -253,8 +253,10 @@ class TrainingRuntimeGuard:
                 run_id=self.run_id,
                 step_key=self.step_key,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError(
+                "Training runtime guard audit persistence failed."
+            ) from exc
 
     def snapshot(self) -> dict[str, Any]:
         rss_bytes = int(self.rss_reader() or 0)
