@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
@@ -122,12 +123,13 @@ def test_listing_due_key_is_read_only_and_explicit_rotation_delivers_new_secret(
     assert rotated_body["last_rotated_at"] is not None
 
     with session_factory() as db:
-        with pytest.raises(Exception):
+        with pytest.raises(HTTPException) as invalid_old_key:
             get_inference_user(
                 request=Request({"type": "http", "headers": []}),
                 token=original_secret,
                 db=db,
             )
+        assert invalid_old_key.value.status_code == 401
         replacement_user = get_inference_user(
             request=Request({"type": "http", "headers": []}),
             token=replacement_secret,
