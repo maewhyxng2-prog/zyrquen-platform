@@ -1,12 +1,11 @@
-
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
@@ -15,9 +14,7 @@ from apps.api.database import get_db
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-oauth2_scheme = OAuth2PasswordBearer(
-    tokenUrl="/auth/login"
-)
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 pwd_context = CryptContext(
     schemes=["bcrypt_sha256", "bcrypt"],
@@ -46,9 +43,7 @@ def create_access_token(subject: str) -> str:
         )
 
     now = datetime.now(timezone.utc)
-    expires = now + timedelta(
-        minutes=ACCESS_TOKEN_EXPIRE_MINUTES
-    )
+    expires = now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
 
     payload = {
         "sub": subject,
@@ -57,11 +52,7 @@ def create_access_token(subject: str) -> str:
         "exp": expires,
     }
 
-    return jwt.encode(
-        payload,
-        secret_key,
-        algorithm=ALGORITHM,
-    )
+    return jwt.encode(payload, secret_key, algorithm=ALGORITHM)
 
 
 def _decode_and_verify_claims(
@@ -98,7 +89,7 @@ def _decode_and_verify_claims(
 
         user_id = UUID(subject)
 
-    except (JWTError, ValueError, TypeError):
+    except (jwt.InvalidTokenError, ValueError, TypeError):
         raise credentials_error
 
     from apps.api.models import RevokedToken, User
