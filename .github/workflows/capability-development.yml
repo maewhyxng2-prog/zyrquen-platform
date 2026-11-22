@@ -19,97 +19,65 @@ jobs:
     name: Native Intelligence Capability Tests
     runs-on: ubuntu-latest
     timeout-minutes: 25
-
     env:
       PYTHON_DOTENV_DISABLED: "1"
       ZYRQUEN_ENV: unit_test
       DATABASE_URL: sqlite:///./test.db
       JWT_SECRET_KEY: capability-test-secret
       PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/apps/api
-
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: apps/api/requirements.txt
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r apps/api/requirements.txt
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-
+          # FIX: เทส native ต้องใช้ numpy + torch CPU ถ้า requirements ไม่มีจะ import ไม่เจอแล้วตายตั้งแต่ชุดแรก
+          python -m pip install numpy torch --index-url https://download.pytorch.org/whl/cpu
       - name: Test Native Model
         run: |
-          python -m pytest -v apps/core/native
-
+          python -m pytest -v apps/core/native --tb=short
       - name: Test Native Evaluation
         run: |
-          python -m pytest -v apps/core/native/evaluation
-
+          python -m pytest -v apps/core/native/evaluation --tb=short
       - name: Test Autonomous Training Loop
         run: |
-          python -m pytest -v \
-            apps/core/workflow/test_autonomous_training_loop.py
-
+          python -m pytest -v apps/core/workflow/test_autonomous_training_loop.py --tb=short
       - name: Test Workflow Governance
         run: |
-          python -m pytest -v \
-            apps/core/workflow
-
+          python -m pytest -v apps/core/workflow --tb=short
       - name: Compile capability components
         run: |
-          python -m compileall -q \
-            apps/core/native \
-            apps/core/workflow
+          python -m compileall -q apps/core/native apps/core/workflow
 
   capability-readiness:
     name: Training Hook and Approval Readiness
     runs-on: ubuntu-latest
     timeout-minutes: 10
-
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
-
       - name: Check training hook implementation
         run: |
           python - <<'PY'
           from pathlib import Path
-
-          path = Path(
-              "apps/core/workflow/handlers/groups.py"
-          )
-
+          path = Path("apps/core/workflow/handlers/groups.py")
           if not path.is_file():
-              raise SystemExit(
-                  "BLOCKED: workflow handlers not found"
-              )
-
+              raise SystemExit("BLOCKED: workflow handlers not found")
           source = path.read_text(encoding="utf-8")
-
           if "training_hook_not_implemented" in source:
-              print(
-                  "BLOCKED: real training hook is not implemented"
-              )
-              print(
-                  "Training must not start automatically."
-              )
+              print("BLOCKED: real training hook is not implemented")
+              print("Training must not start automatically.")
               raise SystemExit(0)
-
-          print(
-              "REVIEW_REQUIRED: training hook marker not found."
-          )
-          print(
-              "This does not prove training readiness."
-          )
+          print("REVIEW_REQUIRED: training hook marker not found.")
+          print("This does not prove training readiness.")
           PY
-
       - name: Report execution restrictions
         run: |
           echo "Training execution: NOT RUN"
