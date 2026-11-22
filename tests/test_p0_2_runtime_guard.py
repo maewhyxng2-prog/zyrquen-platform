@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import sys
 from pathlib import Path
+from uuid import UUID
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -90,3 +91,25 @@ def test_guard_soft_warning_and_audit(tmp_path):
     assert ok is True
     assert snap.get("soft_warning_triggered") is True
     assert any(e.get("event_type") == "training.ram_soft_warning" for e in events)
+
+
+def test_orchestrator_guard_persists_audit_events(tmp_path, monkeypatch):
+    db_path = tmp_path / "workflow.db"
+    monkeypatch.setenv("ZYRQUEN_WORKFLOW_DB_PATH", str(db_path))
+    run_id = UUID("00000000-0000-0000-0000-000000000123")
+    guard = orch_mod._create_training_runtime_guard(tmp_path / "run", run_id)
+    guard.rss_reader = lambda: int(3.2 * 1024**3)
+
+    ok, reason, snapshot = guard.check_runtime("before_step", step=1)
+
+    assert ok is True
+    assert reason is None
+    assert snapshot["soft_warning_triggered"] is True
+    events = guard.audit_logger.store.list_audit_logs(
+        run_id=str(run_id),
+        limit=10,
+    )
+    assert any(
+        event["event_type"] == "training.ram_soft_warning"
+        for event in events
+    )
