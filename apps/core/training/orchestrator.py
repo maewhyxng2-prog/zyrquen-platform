@@ -9,13 +9,25 @@ from uuid import UUID
 
 from apps.core.native.config import ZyrquenConfig
 from apps.core.native.dataset import SCHEMA as DATASET_SCHEMA
-from apps.core.native.dataset import load_split
+from apps.core.native.dataset import (
+    detect_dataset_format,
+    load_sft_split,
+    load_split,
+    load_split_records,
+)
+from apps.core.native.sft import (
+    SFT_FORMAT_VERSION,
+    bind_ephemeral_slots,
+    build_sft_pairs,
+    encode_sft_prompt,
+)
 from apps.core.native.tokenizer import ZyrquenTokenizer
 from apps.core.native.train import (
     TokenStreamLimitExceeded,
     TrainConfig,
     build_token_stream,
     train,
+    train_sft,
 )
 
 
@@ -135,10 +147,11 @@ class TrainingOrchestrator:
                     raise TrainingUnavailable(
                         f"Dataset has no documents in the {split} split."
                     )
-                if next(load_split(self.dataset_dir, split), None) is None:
+                if next(load_split_records(self.dataset_dir, split), None) is None:
                     raise TrainingUnavailable(
                         f"Dataset has no documents in the {split} split."
                     )
+            detect_dataset_format(self.dataset_dir)
         except TrainingUnavailable:
             raise
         except (
@@ -152,12 +165,22 @@ class TrainingOrchestrator:
                 "Configured dataset or tokenizer failed integrity validation."
             ) from exc
 
+        cleaned_model_values = dict(model_values or {})
+        if "vocab_size" in cleaned_model_values:
+            if cleaned_model_values["vocab_size"] != tokenizer.vocab_size:
+                raise TrainingUnavailable(
+                    f"Model vocab_size ({cleaned_model_values['vocab_size']}) does not match "
+                    f"tokenizer vocab_size ({tokenizer.vocab_size})."
+                )
+            cleaned_model_values.pop("vocab_size")
+
         try:
             training_config = TrainConfig(**training_values)
             model_config = ZyrquenConfig(
                 vocab_size=tokenizer.vocab_size,
-                **model_values,
+                **cleaned_model_values,
             )
+            model_config.validate_parameter_budget(MAX_CPU_MODEL_PARAMETERS)
         except (TypeError, ValueError) as exc:
             raise TrainingUnavailable(
                 f"Training configuration is invalid: {exc}"
@@ -210,42 +233,77 @@ class TrainingOrchestrator:
         from apps.core.native.model import ZyrquenModel
 
         tokenizer = ZyrquenTokenizer.load(prepared.tokenizer_path)
-        try:
-            train_ids = build_token_stream(
-                load_split(prepared.dataset_dir, "train"),
-                tokenizer,
-                max_tokens=MAX_CPU_SPLIT_TOKENS,
-            )
-            validation_ids = build_token_stream(
-                load_split(prepared.dataset_dir, "validation"),
-                tokenizer,
-                max_tokens=MAX_CPU_SPLIT_TOKENS,
-            )
-        except TokenStreamLimitExceeded as exc:
-            raise TrainingUnavailable(
-                "Tokenized dataset exceeds the CPU training token limit."
-            ) from exc
+        dataset_format = detect_dataset_format(prepared.dataset_dir)
         block_size = prepared.training_config.block_size
-        if len(train_ids) < block_size + 1 or len(validation_ids) < block_size + 1:
-            raise TrainingUnavailable(
-                "Tokenized dataset splits must contain block_size + 1 tokens."
-            )
 
         run_dir = prepared.training_root / str(run_id)
-        run_dir.mkdir(parents=True, exist_ok=False)
-        model = ZyrquenModel(prepared.model_config)
-        result = train(
-            model,
-            train_ids,
-            validation_ids,
-            prepared.training_config,
-            run_dir / "checkpoints",
-            run_dir / "metrics.jsonl",
-            tokenizer_fingerprint=prepared.tokenizer_fingerprint,
-            dataset_version=prepared.dataset_version,
-            cost_controller=_cost_controller_from_env(),
-            device="cpu",
-        )
+        if dataset_format == "sft":
+            train_records = list(load_sft_split(prepared.dataset_dir, "train"))
+            val_records = list(load_sft_split(prepared.dataset_dir, "validation"))
+            use_slots = tokenizer.supports_atomic_slots
+            train_pairs = build_sft_pairs(
+                train_records,
+                tokenizer,
+                max_seq_len=prepared.model_config.max_seq_len,
+                use_slots=use_slots,
+            )
+            val_pairs = build_sft_pairs(
+                val_records,
+                tokenizer,
+                max_seq_len=prepared.model_config.max_seq_len,
+                use_slots=use_slots,
+            )
+            run_dir.mkdir(parents=True, exist_ok=False)
+            model = ZyrquenModel(prepared.model_config)
+            result = train_sft(
+                model,
+                train_pairs,
+                val_pairs,
+                prepared.training_config,
+                run_dir / "checkpoints",
+                run_dir / "metrics.jsonl",
+                tokenizer_fingerprint=prepared.tokenizer_fingerprint,
+                dataset_version=prepared.dataset_version,
+                prompt_format=SFT_FORMAT_VERSION,
+                cost_controller=_cost_controller_from_env(),
+                device="cpu",
+                pad_id=tokenizer.pad_id,
+            )
+        else:
+            try:
+                train_ids = build_token_stream(
+                    load_split(prepared.dataset_dir, "train"),
+                    tokenizer,
+                    max_tokens=MAX_CPU_SPLIT_TOKENS,
+                )
+                validation_ids = build_token_stream(
+                    load_split(prepared.dataset_dir, "validation"),
+                    tokenizer,
+                    max_tokens=MAX_CPU_SPLIT_TOKENS,
+                )
+            except TokenStreamLimitExceeded as exc:
+                raise TrainingUnavailable(
+                    "Tokenized dataset exceeds the CPU training token limit."
+                ) from exc
+            if len(train_ids) < block_size + 1 or len(validation_ids) < block_size + 1:
+                raise TrainingUnavailable(
+                    "Tokenized dataset splits must contain block_size + 1 tokens."
+                )
+
+            run_dir.mkdir(parents=True, exist_ok=False)
+            model = ZyrquenModel(prepared.model_config)
+            result = train(
+                model,
+                train_ids,
+                validation_ids,
+                prepared.training_config,
+                run_dir / "checkpoints",
+                run_dir / "metrics.jsonl",
+                tokenizer_fingerprint=prepared.tokenizer_fingerprint,
+                dataset_version=prepared.dataset_version,
+                cost_controller=_cost_controller_from_env(),
+                device="cpu",
+            )
         if not result["parameter_changed"]:
             raise TrainingUnavailable(
                 "Training completed without changing model parameters."
@@ -291,8 +349,15 @@ class TrainingOrchestrator:
                 "Reloaded checkpoint does not contain the final trained parameters."
             )
         trained_model.eval()
-        validation_prompt = next(load_split(prepared.dataset_dir, "validation"))
-        prompt_ids = tokenizer.encode(validation_prompt)[:block_size]
+        if dataset_format == "sft":
+            val_row = next(load_sft_split(prepared.dataset_dir, "validation"))
+            prompt_text = str(val_row["input"])
+            if tokenizer.supports_atomic_slots:
+                prompt_text, _, _ = bind_ephemeral_slots(prompt_text)
+            prompt_ids = encode_sft_prompt(tokenizer, prompt_text)[:prepared.model_config.max_seq_len]
+        else:
+            validation_prompt = next(load_split(prepared.dataset_dir, "validation"))
+            prompt_ids = tokenizer.encode(validation_prompt)[:block_size]
         if not prompt_ids:
             raise TrainingUnavailable(
                 "Validation text produced no tokens for CPU native inference."

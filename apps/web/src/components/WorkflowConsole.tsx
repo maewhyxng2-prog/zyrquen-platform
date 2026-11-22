@@ -3,6 +3,14 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { apiRequest, readSession } from "@/lib/api";
+import {
+  computeRunProgress,
+  formatDuration,
+  formatLoss,
+  isWorkflowRunActive,
+  selectLatestCompletedKpi,
+  type WorkflowRunItem,
+} from "@/lib/workflow-metrics";
 import { Icon } from "./Icon";
 import { Panel } from "./Panel";
 import { StatusBadge } from "./StatusBadge";
@@ -16,25 +24,6 @@ type WorkflowDefinitionItem = {
   default_tier: string;
   schedule_interval_sec: number | null;
   event_triggers: string[];
-};
-
-type WorkflowStepItem = {
-  step_key: string;
-  status: string;
-  lane: string;
-  evidence?: { verdict?: string; summary?: string } | null;
-  error_code?: string | null;
-};
-
-type WorkflowRunItem = {
-  id: string;
-  workflow_key: string;
-  workflow_version: string;
-  trigger_type: string;
-  status: string;
-  error_message?: string | null;
-  created_at: string;
-  steps: WorkflowStepItem[];
 };
 
 type WorkflowApprovalItem = {
@@ -227,6 +216,25 @@ export function WorkflowConsole() {
     await fetchAndApply();
   }, [fetchAndApply]);
 
+  const refreshSilently = useCallback(async () => {
+    try {
+      const res = await Promise.allSettled([
+        apiRequest<{ items: WorkflowRunItem[] }>("v1/workflows/runs?limit=20"),
+        apiRequest<{ items: WorkflowApprovalItem[] }>("v1/workflows/approvals?limit=25"),
+      ]);
+      if (res[0].status === "fulfilled") {
+        setRuns(res[0].value.items ?? []);
+      }
+      if (res[1].status === "fulfilled") {
+        setApprovals(res[1].value.items ?? []);
+      }
+    } catch {
+      // Keep existing state on transient background poll failure
+    }
+  }, []);
+
+  const hasActiveRuns = runs.some((r) => isWorkflowRunActive(r.status));
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -239,6 +247,14 @@ export function WorkflowConsole() {
       cancelled = true;
     };
   }, [fetchAndApply]);
+
+  useEffect(() => {
+    if (!authenticated || !hasActiveRuns) return;
+    const timer = window.setInterval(() => {
+      void refreshSilently();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [authenticated, hasActiveRuns, refreshSilently]);
 
   async function triggerWorkflow(workflowKey: string) {
     setBusyKey(workflowKey);
@@ -364,9 +380,135 @@ export function WorkflowConsole() {
 
   const pendingApprovals = approvals.filter((a) => a.status === "pending");
   const versions = registry?.versions ?? [];
+  const activeRuns = runs.filter((r) => isWorkflowRunActive(r.status));
+  const latestKpi = selectLatestCompletedKpi(runs);
 
   return (
     <div className="workflow-stack">
+      <Panel className="workflow-panel" aria-label="สรุปผลลัพธ์งานล่าสุดที่เสร็จสิ้น">
+        <div className="panel-heading">
+          <div>
+            <div className="eyebrow">
+              <Icon name="activity" size={14} />
+              <span>LATEST COMPLETED RUN · KPI SUMMARY</span>
+            </div>
+            <h2>สรุปผลลัพธ์งานล่าสุดที่เสร็จสิ้น</h2>
+          </div>
+          {latestKpi ? (
+            <StatusBadge tone="good">
+              {latestKpi.latestRun.workflow_key} · COMPLETED
+            </StatusBadge>
+          ) : (
+            <StatusBadge tone="neutral">
+              {loading ? "กำลังโหลดข้อมูล" : "ยังไม่มีงานที่เสร็จสิ้น"}
+            </StatusBadge>
+          )}
+        </div>
+
+        {loading && runs.length === 0 ? (
+          <div className="unavailable-block">
+            <strong>กำลังโหลดสรุปผลลัพธ์ล่าสุดจาก Backend...</strong>
+          </div>
+        ) : !latestKpi ? (
+          <div className="unavailable-block">
+            <strong>ยังไม่มีงาน Workflow หรือการฝึกอบรมที่เสร็จสิ้น</strong>
+            <p>
+              เมื่อมีงานสถานะ <code>COMPLETED</code> ระบบจะแสดง Epoch/Steps, เวลาที่ใช้ และค่า Loss ล่าสุดที่นี่โดยอัตโนมัติ
+            </p>
+          </div>
+        ) : (
+          <div className="workflow-summary-grid">
+            <div className="workflow-summary-cell">
+              <span className="metric-label">EPOCH / STEPS ที่ใช้</span>
+              <strong className="workflow-summary-value tabular-nums">
+                {latestKpi.latestMetrics.epochs !== null
+                  ? `${latestKpi.latestMetrics.epochs} Epochs`
+                  : latestKpi.latestMetrics.steps !== null
+                    ? `${latestKpi.latestMetrics.steps} Steps`
+                    : "—"}
+              </strong>
+              <span className="workflow-summary-note">
+                {latestKpi.latestMetrics.epochs !== null
+                  ? latestKpi.latestMetrics.steps !== null
+                    ? `รวม ${latestKpi.latestMetrics.steps} steps`
+                    : "รายงานจากงานล่าสุด"
+                  : latestKpi.latestMetrics.steps !== null
+                    ? "Epoch: — (Native trainer รายงานเป็น steps)"
+                    : "ไม่มีรายงาน Epoch / Steps ในงานล่าสุด"}
+              </span>
+            </div>
+
+            <div className="workflow-summary-cell">
+              <span className="metric-label">เวลาที่ใช้ (DURATION)</span>
+              <strong className="workflow-summary-value tabular-nums">
+                {formatDuration(latestKpi.durationMs)}
+              </strong>
+              <span className="workflow-summary-note tabular-nums">
+                {latestKpi.durationDeltaMs !== null
+                  ? `เทียบกับรอบก่อน: ${latestKpi.durationDeltaMs <= 0 ? "-" : "+"}${formatDuration(Math.abs(latestKpi.durationDeltaMs))}`
+                  : latestKpi.latestRun.finished_at
+                    ? `เสร็จสิ้น ${new Date(latestKpi.latestRun.finished_at).toLocaleTimeString("th-TH")}`
+                    : "ไม่มีข้อมูลเวลาเริ่ม/สิ้นสุด"}
+              </span>
+            </div>
+
+            <div className="workflow-summary-cell">
+              <span className="metric-label">ค่า LOSS ล่าสุด</span>
+              <strong className="workflow-summary-value tabular-nums">
+                {formatLoss(latestKpi.latestMetrics.latestLoss)}
+              </strong>
+              <span
+                className={`workflow-summary-note tabular-nums${
+                  latestKpi.lossDelta !== null
+                    ? latestKpi.lossDelta <= 0
+                      ? " workflow-delta-good"
+                      : " workflow-delta-warn"
+                    : ""
+                }`}
+              >
+                {latestKpi.latestMetrics.latestLoss !== null
+                  ? [
+                      latestKpi.latestMetrics.latestLossKind === "val_loss"
+                        ? "Val Loss"
+                        : latestKpi.latestMetrics.latestLossKind === "train_loss"
+                          ? "Train Loss"
+                          : "Loss",
+                      latestKpi.latestMetrics.perplexity !== null
+                        ? `PPL ${latestKpi.latestMetrics.perplexity.toFixed(2)}`
+                        : null,
+                      latestKpi.lossDelta !== null
+                        ? `${latestKpi.lossDelta <= 0 ? "" : "+"}${latestKpi.lossDelta.toFixed(4)} vs รอบก่อน`
+                        : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")
+                  : "งานล่าสุดไม่ได้รายงานค่า Loss"}
+              </span>
+            </div>
+
+            <div className="workflow-summary-cell">
+              <span className="metric-label">ขอบเขตและการเปรียบเทียบ</span>
+              <strong className="workflow-summary-value tabular-nums">
+                {latestKpi.completedSteps}/{latestKpi.totalSteps} Steps ผ่าน
+              </strong>
+              <span className="workflow-summary-note tabular-nums">
+                {[
+                  `v${latestKpi.latestRun.workflow_version}`,
+                  latestKpi.latestMetrics.ramPeakGb !== null
+                    ? `RAM Peak ${latestKpi.latestMetrics.ramPeakGb} GB`
+                    : null,
+                  latestKpi.previousRun
+                    ? "มีรอบก่อนหน้าเทียบผล"
+                    : "ยังไม่มีรอบก่อนหน้า",
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            </div>
+          </div>
+        )}
+      </Panel>
+
       <Panel className="workflow-panel">
         <div className="panel-heading">
           <div>
@@ -401,6 +543,81 @@ export function WorkflowConsole() {
             {notice}
           </p>
         ) : null}
+
+        <div className="workflow-progress-section" aria-label="แถบความคืบหน้างานที่กำลังประมวลผล">
+          <div className="workflow-progress-section-head">
+            <span className="metric-label">ความคืบหน้าของงานที่กำลังประมวลผล (ACTIVE PROGRESS)</span>
+            <span className="workflow-progress-count tabular-nums">
+              {activeRuns.length > 0
+                ? `${activeRuns.length} งานกำลังดำเนินการ`
+                : "0 งานที่กำลังประมวลผล"}
+            </span>
+          </div>
+
+          {activeRuns.length === 0 ? (
+            <div className="workflow-progress-card">
+              <div className="workflow-progress-row-head">
+                <span className="workflow-progress-title">ไม่มีงานที่กำลังประมวลผลในขณะนี้</span>
+                <span className="workflow-progress-pct tabular-nums">0%</span>
+              </div>
+              <div
+                aria-label="ความคืบหน้างาน Workflow (ไม่มีงานกำลังประมวลผล)"
+                aria-valuemax={100}
+                aria-valuemin={0}
+                aria-valuenow={0}
+                className="progress-track"
+                role="progressbar"
+              >
+                <div className="progress-fill" style={{ width: "0%" }} />
+              </div>
+              <span className="workflow-progress-meta">
+                ระบบพร้อมรับคำสั่ง Workflow หรือตรวจสอบสถานะจากแผงด้านล่าง
+              </span>
+            </div>
+          ) : (
+            <div className="workflow-progress-list">
+              {activeRuns.map((run) => {
+                const progress = computeRunProgress(run);
+                const fillClass =
+                  progress.tone === "warn"
+                    ? "progress-fill progress-fill-warn"
+                    : progress.tone === "neutral"
+                      ? "progress-fill progress-fill-muted"
+                      : "progress-fill";
+                return (
+                  <div className="workflow-progress-card" key={`active-${run.id}`}>
+                    <div className="workflow-progress-row-head">
+                      <div className="workflow-progress-identity">
+                        <strong>{run.workflow_key}</strong>
+                        <span className="workflow-progress-meta tabular-nums">
+                          {progress.completedSteps}/{progress.totalSteps} steps
+                          {progress.activeStepKey ? ` · ${progress.activeStepKey}` : ""}
+                        </span>
+                      </div>
+                      <div className="workflow-progress-status">
+                        <span className="workflow-progress-pct tabular-nums">{progress.percent}%</span>
+                        <StatusBadge tone={statusToneFor(run.status)}>{run.status}</StatusBadge>
+                      </div>
+                    </div>
+                    <div
+                      aria-label={`ความคืบหน้า ${run.workflow_key}`}
+                      aria-valuemax={100}
+                      aria-valuemin={0}
+                      aria-valuenow={progress.percent}
+                      className="progress-track"
+                      role="progressbar"
+                    >
+                      <div className={fillClass} style={{ width: `${progress.percent}%` }} />
+                    </div>
+                    {run.error_message ? (
+                      <span className="workflow-progress-meta workflow-err-note">{run.error_message}</span>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
 
         {loading && definitions.length === 0 ? (
           <div className="unavailable-block">
@@ -722,18 +939,46 @@ export function WorkflowConsole() {
             </div>
           ) : (
             <div className="workflow-run-list">
-              {runs.slice(0, 8).map((run) => (
-                <div className="workflow-run-row" key={run.id}>
-                  <div className="workflow-run-main">
-                    <strong>{run.workflow_key}</strong>
-                    <small>
-                      {run.trigger_type} · {run.steps.map((s) => `${s.step_key}:${s.evidence?.verdict ?? s.status}`).join(" → ")}
-                    </small>
-                    {run.error_message ? <small className="workflow-err-note">{run.error_message}</small> : null}
+              {runs.slice(0, 8).map((run) => {
+                const active = isWorkflowRunActive(run.status);
+                const progress = active ? computeRunProgress(run) : null;
+                return (
+                  <div className="workflow-run-row" key={run.id}>
+                    <div className="workflow-run-main">
+                      <strong>{run.workflow_key}</strong>
+                      <small>
+                        {run.trigger_type} · {run.steps.map((s) => `${s.step_key}:${s.evidence?.verdict ?? s.status}`).join(" → ")}
+                      </small>
+                      {progress ? (
+                        <div className="workflow-run-progress-inline">
+                          <div
+                            aria-label={`ความคืบหน้า ${run.workflow_key}`}
+                            aria-valuemax={100}
+                            aria-valuemin={0}
+                            aria-valuenow={progress.percent}
+                            className="progress-track"
+                            role="progressbar"
+                          >
+                            <div
+                              className={
+                                progress.tone === "warn"
+                                  ? "progress-fill progress-fill-warn"
+                                  : progress.tone === "neutral"
+                                    ? "progress-fill progress-fill-muted"
+                                    : "progress-fill"
+                              }
+                              style={{ width: `${progress.percent}%` }}
+                            />
+                          </div>
+                          <span className="tabular-nums">{progress.percent}%</span>
+                        </div>
+                      ) : null}
+                      {run.error_message ? <small className="workflow-err-note">{run.error_message}</small> : null}
+                    </div>
+                    <StatusBadge tone={statusToneFor(run.status)}>{run.status}</StatusBadge>
                   </div>
-                  <StatusBadge tone={statusToneFor(run.status)}>{run.status}</StatusBadge>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </Panel>

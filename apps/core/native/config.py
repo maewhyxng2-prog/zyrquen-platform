@@ -1,6 +1,10 @@
 from dataclasses import asdict, dataclass
 
 
+MAX_V10_PARAMETERS = 5_000_000
+NATIVE_MODEL_TYPE = "zyrquen-decoder"
+
+
 @dataclass(frozen=True)
 class ZyrquenConfig:
     """Hyper-parameters of the ZYRQUEN decoder-only Transformer.
@@ -28,6 +32,10 @@ class ZyrquenConfig:
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
 
+    @property
+    def model_type(self) -> str:
+        return NATIVE_MODEL_TYPE
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -43,6 +51,15 @@ class ZyrquenConfig:
         )
         return embedding_count + block_count + self.d_model
 
+    def validate_parameter_budget(self, max_parameters: int = MAX_V10_PARAMETERS) -> int:
+        params = self.estimated_num_parameters
+        if params > max_parameters:
+            raise ValueError(
+                f"estimated parameter count {params} exceeds limit {max_parameters}"
+            )
+        return params
+
     @classmethod
     def from_dict(cls, data: dict) -> "ZyrquenConfig":
-        return cls(**data)
+        filtered = {k: v for k, v in data.items() if k != "model_type"}
+        return cls(**filtered)

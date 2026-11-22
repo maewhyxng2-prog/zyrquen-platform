@@ -236,8 +236,7 @@ def prepare_dataset(sources: Iterable[Source], out_dir: str | Path,
     return PrepReport(manifest, dropped)
 
 
-def load_split(dataset_dir: str | Path, split: str) -> Iterator[str]:
-    """Reads one split and verifies its SHA-256 against the manifest first."""
+def _verify_and_open_split(dataset_dir: str | Path, split: str) -> Path:
     d = Path(dataset_dir)
     manifest = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
     name = f"{split}.jsonl"
@@ -245,7 +244,44 @@ def load_split(dataset_dir: str | Path, split: str) -> Iterator[str]:
         raise ValueError(f"unknown split: {split}")
     if _sha256_file(d / name) != manifest["files"][name]["sha256"]:
         raise ValueError(f"dataset integrity check failed: {name}")
-    with (d / name).open(encoding="utf-8") as split_file:
+    return d / name
+
+
+def load_split(dataset_dir: str | Path, split: str) -> Iterator[str]:
+    """Reads one split and verifies its SHA-256 against the manifest first."""
+    split_path = _verify_and_open_split(dataset_dir, split)
+    with split_path.open(encoding="utf-8") as split_file:
         for line in split_file:
             if line.strip():
                 yield json.loads(line)["text"]
+
+
+def load_split_records(dataset_dir: str | Path, split: str) -> Iterator[dict]:
+    """Reads structured JSONL records from a SHA-256 verified split."""
+    split_path = _verify_and_open_split(dataset_dir, split)
+    with split_path.open(encoding="utf-8") as split_file:
+        for line in split_file:
+            if line.strip():
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise ValueError(f"invalid record type in {split}.jsonl")
+                yield row
+
+
+def load_sft_split(dataset_dir: str | Path, split: str) -> Iterator[dict]:
+    """Reads verified SFT `(input, target)` records from `train`, `validation`, or `test`."""
+    for row in load_split_records(dataset_dir, split):
+        if "input" not in row or "target" not in row:
+            raise ValueError(f"SFT record in {split}.jsonl missing 'input' or 'target'")
+        yield row
+
+
+def detect_dataset_format(dataset_dir: str | Path) -> str:
+    """Inspect verified `train.jsonl` first record to distinguish 'sft' vs 'text' datasets."""
+    for row in load_split_records(dataset_dir, "train"):
+        if "input" in row and "target" in row:
+            return "sft"
+        if "text" in row:
+            return "text"
+        raise ValueError("unrecognized record schema in train.jsonl")
+    raise ValueError("train.jsonl contains no records")

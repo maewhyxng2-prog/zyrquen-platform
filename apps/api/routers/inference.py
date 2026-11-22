@@ -21,6 +21,7 @@ from apps.api.usage import (
 from apps.api.usage_models import InferenceUsage
 from apps.core.context import InferenceContext
 from apps.core.exceptions import InferenceError, ResourceLimitExceeded
+from apps.core.native.sft import SFT_FORMAT_VERSION, encode_sft_prompt
 from apps.core.runtime import runtime
 from apps.core.streaming import StreamingInferenceEngine
 from apps.api.routers.conversations import (
@@ -51,6 +52,8 @@ def _token_count(text: str) -> int:
     tokenizer = runtime.loader.tokenizer
     if tokenizer is None or not hasattr(tokenizer, "encode"):
         raise TypeError("Native tokenizer does not expose encode()")
+    if getattr(runtime.loader, "prompt_format", None) == SFT_FORMAT_VERSION:
+        return len(encode_sft_prompt(tokenizer, text))
     return len(tokenizer.encode(text, add_bos=False, add_eos=False))
 
 

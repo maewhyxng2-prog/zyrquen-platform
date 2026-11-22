@@ -162,6 +162,11 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
             loss = model(to_tensor(x), to_tensor(y))[1] / cfg.grad_accum_steps
             loss.backward()
             total_loss += loss.item()
+        if not math.isfinite(total_loss):
+            optimizer.zero_grad(set_to_none=True)
+            monitor.log(step + 1, total_loss, lr, tokens=0)
+            stopped_reason = "loss_diverged"
+            break
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         optimizer.step()
         last_train_loss = total_loss
@@ -193,3 +198,172 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
     return {"steps": step, "resumed_from": start_step, "stopped_reason": stopped_reason,
             "train_loss": last_train_loss, "parameter_changed": parameter_changed,
             "val_loss": last_val, "perplexity": perplexity(last_val) if last_val is not None else None}
+
+
+def train_sft(
+    model,
+    train_pairs: list[tuple[list[int], list[int]]],
+    val_pairs: list[tuple[list[int], list[int]]],
+    cfg: TrainConfig,
+    checkpoint_dir: str | Path,
+    log_path: str | Path,
+    device: str = "cpu",
+    cost_controller=None,
+    tokenizer_fingerprint: str | None = None,
+    dataset_version: str | None = None,
+    prompt_format: str | None = None,
+    sep: str | None = None,
+    pad_id: int = 0,
+) -> dict:
+    """Supervised fine-tuning / native SFT training over `(x, y)` pairs with `-100` label masking."""
+    import torch
+
+    from apps.core.native.sft import SFT_FORMAT_VERSION, SFT_SEP, collate_sft_batch
+    from apps.core.training_infrastructure.monitoring.training_monitor import TrainingMonitor
+    from apps.core.training_infrastructure.recovery.checkpoint_recovery import (
+        CheckpointManager,
+        capture_rng_state,
+        restore_rng_state,
+    )
+
+    if not train_pairs or not val_pairs:
+        raise ValueError("train_pairs and val_pairs must both be non-empty")
+
+    resolved_format = prompt_format or SFT_FORMAT_VERSION
+    resolved_sep = SFT_SEP if sep is None else sep
+
+    rng = random.Random(cfg.seed)
+    torch.manual_seed(cfg.seed)
+    model.to(device)
+
+    decay = [p for p in model.parameters() if p.requires_grad and p.dim() >= 2]
+    no_decay = [p for p in model.parameters() if p.requires_grad and p.dim() < 2]
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": decay, "weight_decay": cfg.weight_decay},
+            {"params": no_decay, "weight_decay": 0.0},
+        ],
+        lr=cfg.lr,
+        betas=(0.9, 0.95),
+    )
+
+    ckpts = CheckpointManager(checkpoint_dir)
+    monitor = TrainingMonitor(log_path)
+    start_step = 0
+    resumed = ckpts.load_latest()
+    if resumed is not None:
+        start_step, state = resumed
+        model.load_state_dict(state["model"])
+        optimizer.load_state_dict(state["optimizer"])
+        rng.setstate(state["batch_rng"])
+        restore_rng_state(state["rng"])
+
+    initial_parameters = {
+        name: parameter.detach().clone()
+        for name, parameter in model.named_parameters()
+    }
+
+    def to_tensor(rows):
+        return torch.tensor(rows, dtype=torch.long, device=device)
+
+    def sample_sft_batch(pairs: list[tuple[list[int], list[int]]]):
+        chosen = [pairs[rng.randrange(0, len(pairs))] for _ in range(cfg.batch_size)]
+        return collate_sft_batch(chosen, pad_id=pad_id, max_seq_len=model.cfg.max_seq_len)
+
+    @torch.no_grad()
+    def evaluate() -> float:
+        model.eval()
+        losses = []
+        max_eval = max(1, cfg.eval_batches)
+        for idx in range(0, len(val_pairs), cfg.batch_size):
+            if len(losses) >= max_eval:
+                break
+            chunk = val_pairs[idx : idx + cfg.batch_size]
+            x, y = collate_sft_batch(chunk, pad_id=pad_id, max_seq_len=model.cfg.max_seq_len)
+            losses.append(model(to_tensor(x), to_tensor(y))[1].item())
+        model.train()
+        return sum(losses) / len(losses)
+
+    def save(step: int) -> None:
+        ckpts.save(
+            step,
+            {
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "step": step,
+                "batch_rng": rng.getstate(),
+                "rng": capture_rng_state(),
+                "config": cfg.__dict__,
+                "model_config": model.cfg.to_dict(),
+                "tokenizer_sha256": tokenizer_fingerprint,
+                "dataset_version": dataset_version,
+                "prompt_format": resolved_format,
+                "sep": resolved_sep,
+            },
+        )
+
+    model.train()
+    last_val = None
+    last_train_loss = None
+    stopped_reason = None
+    if cost_controller is not None:
+        cost_controller.start()
+    step = start_step
+    while step < cfg.max_steps:
+        if cost_controller is not None and cost_controller.should_stop():
+            stopped_reason = cost_controller.exceeded()
+            break
+        lr = lr_at(step, cfg)
+        for group in optimizer.param_groups:
+            group["lr"] = lr
+        optimizer.zero_grad(set_to_none=True)
+        total_loss = 0.0
+        step_tokens = 0
+        for _ in range(cfg.grad_accum_steps):
+            x, y = sample_sft_batch(train_pairs)
+            step_tokens += sum(len(row) for row in x)
+            loss = model(to_tensor(x), to_tensor(y))[1] / cfg.grad_accum_steps
+            loss.backward()
+            total_loss += loss.item()
+        if not math.isfinite(total_loss):
+            optimizer.zero_grad(set_to_none=True)
+            monitor.log(step + 1, total_loss, lr, tokens=0)
+            stopped_reason = "loss_diverged"
+            break
+        torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
+        optimizer.step()
+        last_train_loss = total_loss
+        step += 1
+
+        if step % cfg.log_interval == 0 or step == cfg.max_steps:
+            rec = monitor.log(step, total_loss, lr, tokens=step_tokens)
+            if rec["diverged"]:
+                stopped_reason = "loss_diverged"
+                break
+        if step % cfg.eval_interval == 0 or step == cfg.max_steps:
+            last_val = evaluate()
+        if step % cfg.checkpoint_interval == 0 or step == cfg.max_steps:
+            save(step)
+
+    if stopped_reason in ("loss_diverged",):
+        pass
+    elif stopped_reason is not None and step > start_step:
+        save(step)
+    if cost_controller is not None:
+        cost_controller.pause()
+    if last_val is None and stopped_reason is None:
+        last_val = evaluate()
+    parameter_changed = any(
+        not torch.equal(initial_parameters[name], parameter.detach())
+        for name, parameter in model.named_parameters()
+    )
+    return {
+        "steps": step,
+        "resumed_from": start_step,
+        "stopped_reason": stopped_reason,
+        "train_loss": last_train_loss,
+        "parameter_changed": parameter_changed,
+        "val_loss": last_val,
+        "perplexity": perplexity(last_val) if last_val is not None else None,
+        "prompt_format": resolved_format,
+    }

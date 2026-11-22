@@ -38,6 +38,11 @@ TOOLS_DIR = PROJECT_ROOT / "tools"
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
+from apps.core.native.evaluation import (  # noqa: E402
+    EvaluationEngine,
+    EvaluationError as NativeEvaluationError,
+    EvaluationNotConfiguredError,
+)
 from apps.core.native.registry import ModelRegistry, RegistryError  # noqa: E402
 from audit_leakage_v10 import (  # noqa: E402
     EXPECTED_CAPABILITIES,
@@ -54,7 +59,7 @@ EVAL_REPORT_SCHEMA = "zyrquen.v10.evaluation_report.v1"
 MANIFEST_CANDIDATES = ("manifest.json",)
 REQUIRED_SPLITS = CANONICAL_SPLITS  # ("train", "validation", "test")
 
-INFERENCE_HOOK_IMPLEMENTED = False
+INFERENCE_HOOK_IMPLEMENTED = True
 
 
 class EvaluationError(RuntimeError):
@@ -279,10 +284,48 @@ def build_evaluation_report(
     leakage_audit_status: str,
     leakage_audit_detail: dict[str, Any] | None,
     checkpoint_info: dict[str, Any] | None,
+    inference_result: dict[str, Any] | None = None,
+    inference_status: str = "NOT RUN",
     error: str | None = None,
 ) -> dict[str, Any]:
     integrity_status = dataset_result["dataset_integrity"] if dataset_result else "FAIL"
     dataset_and_audit_ok = integrity_status == "PASS" and leakage_audit_status in ("PASS", "NOT RUN")
+
+    if error is not None and inference_status == "BLOCKED":
+        overall_status = "BLOCKED"
+        capability_eval = {cap: "NOT RUN" for cap in EXPECTED_CAPABILITIES}
+        metrics = None
+    elif error is not None or not dataset_and_audit_ok:
+        overall_status = "FAILED"
+        capability_eval = {cap: "NOT RUN" for cap in EXPECTED_CAPABILITIES}
+        metrics = None
+    elif inference_result is not None and inference_status == "PASS":
+        raw_caps = dict(inference_result.get("capability_evaluation") or {})
+        capability_eval = {
+            cap: raw_caps[cap] if cap in raw_caps else "NOT RUN"
+            for cap in EXPECTED_CAPABILITIES
+        }
+        metrics = inference_result.get("metrics")
+        all_caps_passed = all(
+            isinstance(capability_eval[cap], dict) and capability_eval[cap].get("status") == "PASS"
+            for cap in EXPECTED_CAPABILITIES
+        )
+        overall_status = "PASS" if (leakage_audit_status == "PASS" and all_caps_passed) else "FAIL"
+    else:
+        overall_status = "NOT RUN"
+        capability_eval = {cap: "NOT RUN" for cap in EXPECTED_CAPABILITIES}
+        metrics = None
+
+    limitations = [
+        "No model promotion or registry mutation occurred.",
+        "Dataset integrity PASS does not prove model generalization.",
+    ]
+    if inference_status != "PASS":
+        limitations.insert(
+            0,
+            "Native v10 inference hook is wired via EvaluationEngine.evaluate_native_model, but inference was not executed in this run.",
+        )
+        limitations.insert(1, "No capability scores were fabricated.")
 
     return {
         "schema_version": "1.0",
@@ -294,24 +337,18 @@ def build_evaluation_report(
         "dataset_dir": str(dataset_dir),
         "dataset_manifest_sha256": dataset_result.get("manifest_sha256") if dataset_result else None,
         "dataset_content_sha256": dataset_result.get("content_sha256") if dataset_result else None,
-        "overall_status": "NOT RUN" if (dataset_and_audit_ok and error is None) else "FAILED",
+        "overall_status": overall_status,
         "dataset_integrity": integrity_status,
         "leakage_audit_status": leakage_audit_status,
         "leakage_audit": leakage_audit_detail,
-        "inference_status": "NOT RUN",
+        "inference_status": inference_status,
         "inference_hook_implemented": INFERENCE_HOOK_IMPLEMENTED,
-        "capability_evaluation": {cap: "NOT RUN" for cap in EXPECTED_CAPABILITIES},
-        "metrics": None,
+        "capability_evaluation": capability_eval,
+        "metrics": metrics,
         "checkpoint": checkpoint_info,
         "dataset": dataset_result,
         "error": error,
-        "limitations": [
-            "Native v10 inference hook is not implemented.",
-            "No model predictions were generated.",
-            "No capability scores were fabricated.",
-            "No model promotion or registry mutation occurred.",
-            "Dataset integrity PASS does not prove model generalization.",
-        ],
+        "limitations": limitations,
     }
 
 
@@ -345,13 +382,18 @@ def write_report(report: dict[str, Any], output_dir: Path) -> Path:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate ZYRQUEN v10 dataset/audit integrity and produce an honest evaluation report."
+        description="Validate ZYRQUEN v10 dataset/audit integrity and optionally run native inference evaluation."
     )
     parser.add_argument("--dataset-dir", type=Path, default=DEFAULT_DATASET_DIR)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--experiment-id", type=str, default="v10-baseline-prep")
     parser.add_argument("--registry-root", type=Path, default=None)
+    parser.add_argument("--checkpoint-dir", type=Path, default=None)
+    parser.add_argument("--tokenizer-path", type=Path, default=None)
     parser.add_argument("--model-version", type=str, default=None)
+    parser.add_argument("--run-inference", action="store_true")
+    parser.add_argument("--max-examples", type=int, default=None)
+    parser.add_argument("--max-new-tokens", type=int, default=32)
     parser.add_argument("--skip-leakage-audit", action="store_true")
     parser.add_argument("--no-write-report", action="store_true")
     return parser.parse_args()
@@ -362,11 +404,15 @@ def main() -> int:
     dataset_dir = args.dataset_dir.expanduser().resolve()
     output_dir = args.output_dir.expanduser().resolve()
     registry_root = args.registry_root.expanduser().resolve() if args.registry_root else None
+    checkpoint_dir = args.checkpoint_dir.expanduser().resolve() if args.checkpoint_dir else None
+    tokenizer_path = args.tokenizer_path.expanduser().resolve() if args.tokenizer_path else None
 
     dataset_result: dict[str, Any] | None = None
     leakage_audit_status = "NOT RUN"
     leakage_audit_detail: dict[str, Any] | None = None
     checkpoint_info: dict[str, Any] | None = None
+    inference_result: dict[str, Any] | None = None
+    inference_status = "NOT RUN"
     error: str | None = None
 
     try:
@@ -385,6 +431,32 @@ def main() -> int:
             if leakage_audit_status != "PASS":
                 raise EvaluationError("Leakage and unique-answer audit failed.")
         checkpoint_info = verify_registry_model(registry_root, args.model_version)
+
+        if args.run_inference:
+            if not checkpoint_dir or not args.model_version:
+                inference_status = "BLOCKED"
+                raise EvaluationNotConfiguredError(
+                    "--run-inference requires --checkpoint-dir and --model-version"
+                )
+            engine = EvaluationEngine(checkpoint_dir=checkpoint_dir)
+            try:
+                inference_result = engine.evaluate_native_model(
+                    args.model_version,
+                    dataset_dir=dataset_dir,
+                    tokenizer_path=tokenizer_path,
+                    max_examples=args.max_examples,
+                    max_new_tokens=args.max_new_tokens,
+                )
+                inference_status = str(inference_result.get("inference_status") or "PASS")
+            except EvaluationNotConfiguredError:
+                inference_status = "BLOCKED"
+                raise
+            except NativeEvaluationError as exc:
+                inference_status = "FAIL"
+                raise EvaluationError(str(exc)) from exc
+    except EvaluationNotConfiguredError as exc:
+        inference_status = "BLOCKED"
+        error = str(exc)
     except (EvaluationError, OSError, ValueError) as exc:
         error = str(exc)
 
@@ -395,6 +467,8 @@ def main() -> int:
         leakage_audit_status=leakage_audit_status,
         leakage_audit_detail=leakage_audit_detail,
         checkpoint_info=checkpoint_info,
+        inference_result=inference_result,
+        inference_status=inference_status,
         error=error,
     )
 
@@ -413,7 +487,9 @@ def main() -> int:
     if error:
         print(f"Reason: {error}")
 
-    return 1 if report["overall_status"] == "FAILED" else 0
+    if report["overall_status"] == "BLOCKED":
+        return 3
+    return 1 if report["overall_status"] in ("FAILED", "FAIL") else 0
 
 
 if __name__ == "__main__":

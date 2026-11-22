@@ -130,6 +130,7 @@ class NativeModelLoader:
         self.dataset_version: str | None = None
         self.dataset_content_sha256: str | None = None
         self.artifact_origin: str | None = None
+        self.prompt_format: str | None = None
         self.artifact_metrics: dict[str, Any] = {}
         self.is_trained: bool = False
         self.evidence: dict[str, Any] = {}
@@ -159,6 +160,7 @@ class NativeModelLoader:
         self.dataset_version = None
         self.dataset_content_sha256 = None
         self.artifact_origin = None
+        self.prompt_format = None
         self.artifact_metrics = {}
         self.is_trained = False
         self.evidence = {}
@@ -259,10 +261,12 @@ class NativeModelLoader:
             "tokenizer_path": tok_path,
             "tokenizer_fingerprint": tok_meta.get("sha256"),
             "tokenizer_file_sha256": tok_meta.get("file_sha256"),
+            "tokenizer_schema": tok_meta.get("schema"),
             "dataset_manifest_path": ds_manifest_path,
             "dataset_version": ds_meta.get("version"),
             "dataset_content_sha256": ds_meta.get("content_sha256"),
             "model_config": record.get("model_config"),
+            "prompt_format": record.get("prompt_format"),
             "metrics": record.get("metrics") or {},
         }
 
@@ -337,10 +341,12 @@ class NativeModelLoader:
             "tokenizer_path": tok_path,
             "tokenizer_fingerprint": expected_tok_fp,
             "tokenizer_file_sha256": expected_tok_file_sha,
+            "tokenizer_schema": tok_meta.get("schema"),
             "dataset_manifest_path": ds_manifest_path,
             "dataset_version": ds_meta.get("version") or ds_manifest.get("version"),
             "dataset_content_sha256": expected_ds_content_sha or ds_manifest.get("content_sha256"),
             "model_config": manifest.get("model_config"),
+            "prompt_format": manifest.get("prompt_format"),
             "metrics": manifest.get("metrics") or {},
         }
 
@@ -446,6 +452,20 @@ class NativeModelLoader:
                         f"Failed to construct ZyrquenModel or load weights: {exc}"
                     ) from exc
 
+                expected_tok_schema = spec.get("tokenizer_schema")
+                if expected_tok_schema and tokenizer.schema != expected_tok_schema:
+                    raise ModelLoadError(
+                        f"Tokenizer schema mismatch: expected {expected_tok_schema}, got {tokenizer.schema}."
+                    )
+
+                prompt_format = state.get("prompt_format") or spec.get("prompt_format")
+                if (
+                    spec.get("prompt_format")
+                    and state.get("prompt_format")
+                    and spec.get("prompt_format") != state.get("prompt_format")
+                ):
+                    raise ModelLoadError("Checkpoint prompt_format does not match artifact metadata.")
+
                 step = int(state.get("step") or spec.get("checkpoint_step") or 0)
                 metrics = spec.get("metrics") or {}
                 has_training_evidence = bool(
@@ -467,11 +487,13 @@ class NativeModelLoader:
                 self.dataset_version = expected_ds_version
                 self.dataset_content_sha256 = spec.get("dataset_content_sha256")
                 self.artifact_origin = spec["origin"]
+                self.prompt_format = prompt_format if isinstance(prompt_format, str) else None
                 self.artifact_metrics = dict(metrics) if isinstance(metrics, dict) else {}
                 self.is_trained = has_training_evidence
                 self.evidence = {
                     "model_version": spec["version"],
                     "checkpoint_step": step,
+                    "prompt_format": self.prompt_format,
                     "has_training_evidence": has_training_evidence,
                     "has_evaluation_evidence": has_eval_evidence,
                     "capability_status": (
@@ -484,6 +506,8 @@ class NativeModelLoader:
                         )
                     ),
                 }
+                if self.artifact_metrics:
+                    self.evidence["metrics"] = dict(self.artifact_metrics)
 
                 logger.info(
                     "ZYRQUEN native model loaded version=%s origin=%s device=%s",

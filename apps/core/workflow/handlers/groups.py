@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -104,11 +105,11 @@ def handle_data_verify_and_audit(ctx: dict[str, Any], payload: dict[str, Any]) -
 
     data_dir = Path(data_dir_raw).resolve()
     manifest_path = data_dir / "manifest.json"
-    if not data_dir.is_dir() or not manifest_path.is_file():
+    if not data_dir.is_dir() or data_dir.is_symlink() or not manifest_path.is_file() or manifest_path.is_symlink():
         return StepExecutionResult(
             verdict="BLOCKED",
-            summary=f"Dataset directory or manifest.json missing at {data_dir}",
-            output={"dataset_dir": str(data_dir), "manifest_exists": False},
+            summary=f"Dataset directory or manifest.json missing/symlinked at {data_dir}",
+            output={"dataset_dir": str(data_dir), "manifest_exists": manifest_path.is_file()},
             evidence={"verdict": "BLOCKED", "reason": "manifest_missing"},
             error_code="manifest_missing",
         )
@@ -136,7 +137,68 @@ def handle_data_verify_and_audit(ctx: dict[str, Any], payload: dict[str, Any]) -
             emitted_events=[("data.ready", {"dataset_dir": str(data_dir)})],
         )
 
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return StepExecutionResult(
+            verdict="FAIL",
+            summary=f"Failed to parse dataset manifest: {exc}",
+            output={"dataset_dir": str(data_dir)},
+            evidence={"verdict": "FAIL", "reason": "manifest_invalid"},
+            error_code="manifest_invalid",
+        )
+
+    # Check if v10 dataset schema (dataset == 'nagi_v10' or canonical v10 SFT splits with example_id)
+    is_v10_dataset = isinstance(manifest, dict) and manifest.get("dataset") == "nagi_v10"
+    if (
+        not is_v10_dataset
+        and (data_dir / "train.jsonl").is_file()
+        and (data_dir / "validation.jsonl").is_file()
+        and (data_dir / "test.jsonl").is_file()
+    ):
+        try:
+            with (data_dir / "train.jsonl").open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    if line.strip():
+                        first_row = json.loads(line)
+                        is_v10_dataset = isinstance(first_row, dict) and (
+                            "example_id" in first_row and "unique_answer_verified" in first_row
+                        )
+                        break
+        except (OSError, json.JSONDecodeError):
+            is_v10_dataset = False
+
+    if is_v10_dataset:
+        import sys
+
+        tools_dir = str(_repo_root() / "tools")
+        if tools_dir not in sys.path:
+            sys.path.insert(0, tools_dir)
+        from audit_leakage_v10 import run_audit as run_audit_v10  # type: ignore
+
+        try:
+            audit = run_audit_v10(data_dir)
+        except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
+            raise LeakageGateFailedError(f"v10 Data Leakage Gate failed for {data_dir}: {exc}") from exc
+
+        if audit.get("overall_status") != "PASS":
+            raise LeakageGateFailedError(
+                f"v10 Data Leakage Gate failed for {data_dir}: "
+                f"{[k for k, v in audit.get('gates', {}).items() if not v.get('passed')]}"
+            )
+        return StepExecutionResult(
+            verdict="PASS",
+            summary="v10 Data Leakage & Unique-Answer Gate (EL-01..06, TL-01, SL-01, DL-01, SEQ_BUDGET) PASSED.",
+            output={
+                "dataset_dir": str(data_dir),
+                "version": manifest.get("version") if isinstance(manifest, dict) else None,
+                "manifest_sha256": _sha256_file(manifest_path),
+                "audit": audit,
+            },
+            evidence={"verdict": "PASS", "audit_status": "PASS", "manifest_sha256": _sha256_file(manifest_path)},
+            emitted_events=[("data.ready", {"dataset_dir": str(data_dir), "dataset": "nagi_v10"})],
+        )
+
     return StepExecutionResult(
         verdict="PASS",
         summary=f"Dataset manifest verified (schema={manifest.get('schema')}, version={manifest.get('version')}).",
@@ -172,25 +234,16 @@ def handle_training_preflight(ctx: dict[str, Any], payload: dict[str, Any]) -> S
 
 
 def handle_training_execute(ctx: dict[str, Any], payload: dict[str, Any]) -> StepExecutionResult:
-    """Real Training Hook — connects handler to native/train.py:train().
+    """Real Training Hook — connects handler to native/train.py (train / train_sft).
 
-    Order: torch -> approval -> budget -> disk -> dataset/tokenizer -> RAM monitor -> train() -> interpret.
+    Order: approval -> torch (unless _train_fn injected) -> budget -> disk ->
+    dataset/tokenizer/SFT pairs -> model/vocab binding -> RAM monitor -> train -> register.
     Never claims COMPLETED from NOT RUN. Uses injected _train_fn / _model in ctx for tests.
     """
     import os as _os
     from pathlib import Path as _Path
 
-    # 1. torch — honest check, same as before
-    try:
-        import torch  # noqa: F401
-    except ModuleNotFoundError:
-        return StepExecutionResult(
-            verdict="BLOCKED",
-            summary="Native training blocked: PyTorch runtime is not installed in this host.",
-            error_code="torch_not_installed",
-        )
-
-    # 2. Tier-2 approval must already be consumed — Hook never invents it
+    # 1. Tier-2 approval must already be consumed — Hook never invents it
     approval = ctx.get("consumed_approval") or {}
     if not approval:
         return StepExecutionResult(
@@ -198,6 +251,17 @@ def handle_training_execute(ctx: dict[str, Any], payload: dict[str, Any]) -> Ste
             error_code="approval_required",
             summary="Tier-2 approval required: no consumed_approval in ctx. Call governance.verify_and_consume() first.",
         )
+
+    # 2. torch — honest check unless a test injects _train_fn
+    if ctx.get("_train_fn") is None:
+        try:
+            import torch  # noqa: F401
+        except ModuleNotFoundError:
+            return StepExecutionResult(
+                verdict="BLOCKED",
+                summary="Native training blocked: PyTorch runtime is not installed in this host.",
+                error_code="torch_not_installed",
+            )
 
     # 3. Budget Gate — stricter than resource_guard on steps
     try:
@@ -226,75 +290,189 @@ def handle_training_execute(ctx: dict[str, Any], payload: dict[str, Any]) -> Ste
             summary=f"Disk reserve violated: free {disk_info['free_gb']} GB < {disk_info['reserve_gb']} GB",
         )
 
-    # 5. Resolve train_ids / val_ids — direct (tests) or dataset+tokenizer (real)
+    # 5. Resolve tokenizer, dataset manifest, and training inputs (SFT pairs or token stream)
     train_ids = payload.get("train_ids")
     val_ids = payload.get("val_ids")
-    tokenizer_fingerprint = payload.get("tokenizer_fingerprint")
-    dataset_version = payload.get("dataset_version")
-    if train_ids is None or val_ids is None:
-        dataset_dir = str(payload.get("dataset_dir") or _os.getenv("ZYRQUEN_DATASET_DIR", "")).strip()
-        if not dataset_dir or not _Path(dataset_dir).is_dir():
-            return StepExecutionResult(verdict="BLOCKED", error_code="dataset_missing", summary=f"Dataset directory missing: {dataset_dir or '(empty)'}")
-        tokenizer = ctx.get("tokenizer") or payload.get("tokenizer")
-        if tokenizer is None:
+    train_pairs = payload.get("train_pairs")
+    val_pairs = payload.get("val_pairs")
+
+    tokenizer = ctx.get("tokenizer") or payload.get("tokenizer")
+    tokenizer_path_raw = str(
+        payload.get("tokenizer_path") or _os.getenv("ZYRQUEN_TOKENIZER_PATH", "")
+    ).strip()
+    if tokenizer is None and tokenizer_path_raw:
+        tok_file = _Path(tokenizer_path_raw)
+        if not tok_file.is_file() or tok_file.is_symlink():
             return StepExecutionResult(
-                verdict="BLOCKED", error_code="tokenizer_missing",
-                summary="Tokenizer required for dataset path: pass ctx['tokenizer'] or payload train_ids/val_ids directly.",
+                verdict="BLOCKED",
+                error_code="tokenizer_invalid",
+                summary=f"Tokenizer file missing or symlinked: {tokenizer_path_raw}",
             )
         try:
-            from apps.core.native.dataset import load_split as _load_split
-            from apps.core.native.train import build_token_stream as _build_stream
-            max_tokens = int(payload.get("max_tokens", 100000))
-            train_ids = _build_stream(list(_load_split(dataset_dir, "train")), tokenizer, max_tokens)
-            val_ids = _build_stream(list(_load_split(dataset_dir, "val")), tokenizer, max_tokens)
-        except Exception as e:
-            return StepExecutionResult(verdict="BLOCKED", error_code="dataset_tokenize_failed", summary=f"Dataset tokenize failed: {e}")
+            from apps.core.native.tokenizer import ZyrquenTokenizer as _ZTok
 
-    # 6. RAM Monitor around train()
+            tokenizer = _ZTok.load(tok_file)
+        except Exception as e:
+            return StepExecutionResult(
+                verdict="BLOCKED",
+                error_code="tokenizer_invalid",
+                summary=f"Failed to load tokenizer {tokenizer_path_raw}: {e}",
+            )
+
+    tokenizer_fingerprint = payload.get("tokenizer_fingerprint")
+    if not tokenizer_fingerprint and tokenizer is not None and hasattr(tokenizer, "fingerprint"):
+        tokenizer_fingerprint = tokenizer.fingerprint()
+
+    dataset_dir = str(payload.get("dataset_dir") or _os.getenv("ZYRQUEN_DATASET_DIR", "")).strip()
+    dataset_version = payload.get("dataset_version")
+    dataset_format = str(payload.get("dataset_format") or "").strip().lower() or None
+    dataset_manifest: dict[str, Any] = {}
+    if dataset_dir and _Path(dataset_dir).is_dir():
+        manifest_file = _Path(dataset_dir) / "manifest.json"
+        if manifest_file.is_file() and not manifest_file.is_symlink():
+            try:
+                dataset_manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+                if not dataset_version:
+                    dataset_version = dataset_manifest.get("version")
+            except (OSError, json.JSONDecodeError) as e:
+                return StepExecutionResult(
+                    verdict="BLOCKED",
+                    error_code="manifest_invalid",
+                    summary=f"Failed to read dataset manifest.json: {e}",
+                )
+
+    is_sft_run = train_pairs is not None and val_pairs is not None
+    if not is_sft_run and (train_ids is None or val_ids is None):
+        if not dataset_dir or not _Path(dataset_dir).is_dir():
+            return StepExecutionResult(
+                verdict="BLOCKED",
+                error_code="dataset_missing",
+                summary=f"Dataset directory missing: {dataset_dir or '(empty)'}",
+            )
+        if tokenizer is None:
+            return StepExecutionResult(
+                verdict="BLOCKED",
+                error_code="tokenizer_missing",
+                summary="Tokenizer required for dataset path: pass ctx['tokenizer'], payload['tokenizer_path'], or train_ids/val_ids directly.",
+            )
+        try:
+            from apps.core.native.dataset import (
+                detect_dataset_format as _detect_fmt,
+                load_sft_split as _load_sft_split,
+                load_split as _load_split,
+            )
+
+            resolved_fmt = dataset_format or _detect_fmt(dataset_dir)
+            if resolved_fmt == "sft":
+                from apps.core.native.sft import build_sft_pairs as _build_sft_pairs
+
+                use_slots = bool(
+                    payload.get(
+                        "use_slots",
+                        dataset_manifest.get("dataset") == "nagi_v10",
+                    )
+                )
+                permute_slots = bool(payload.get("permute_slots", False))
+                train_records = list(_load_sft_split(dataset_dir, "train"))
+                val_records = list(_load_sft_split(dataset_dir, "validation"))
+                train_pairs = _build_sft_pairs(
+                    train_records,
+                    tokenizer,
+                    max_seq_len=block_size,
+                    use_slots=use_slots,
+                    permute_slots=permute_slots,
+                )
+                val_pairs = _build_sft_pairs(
+                    val_records,
+                    tokenizer,
+                    max_seq_len=block_size,
+                    use_slots=use_slots,
+                    permute_slots=False,
+                )
+                is_sft_run = True
+            else:
+                from apps.core.native.train import build_token_stream as _build_stream
+
+                max_tokens = int(payload.get("max_tokens", 100000))
+                train_ids = _build_stream(list(_load_split(dataset_dir, "train")), tokenizer, max_tokens)
+                val_ids = _build_stream(list(_load_split(dataset_dir, "validation")), tokenizer, max_tokens)
+        except Exception as e:
+            return StepExecutionResult(
+                verdict="BLOCKED",
+                error_code="dataset_tokenize_failed",
+                summary=f"Dataset preparation/tokenization failed: {e}",
+            )
+
+    # 6. Build model & train inside RAM Monitor
     monitor = _RamMonitor()
     monitor.start()
     try:
-        # Build model — injected _model / _model_factory for tests, else real ZyrquenModel
         if ctx.get("_model") is not None:
             model = ctx["_model"]
         elif ctx.get("_model_factory") is not None:
             model = ctx["_model_factory"](payload)
         else:
             try:
-                from apps.core.native.config import ZyrquenConfig as _ZCfg
+                from apps.core.native.config import MAX_V10_PARAMETERS as _MAX_V10_PARAMS, ZyrquenConfig as _ZCfg
                 from apps.core.native.model import ZyrquenModel as _ZModel
+
                 model_cfg_in = dict(payload.get("model_config") or {})
-                # Defaults that fit Budget Lock (small model). Caller can override via model_config.
-                vocab_size = int(model_cfg_in.pop("vocab_size", payload.get("vocab_size", 4096)) or 4096)
-                defaults = {"vocab_size": vocab_size, "d_model": 256, "n_layers": 4, "n_heads": 4, "d_ff": 1024, "max_seq_len": 256, "dropout": 0.0, "tie_embeddings": True}
+                tok_vocab = int(getattr(tokenizer, "vocab_size", 0) or 0)
+                if "vocab_size" in model_cfg_in:
+                    vocab_size = int(model_cfg_in.pop("vocab_size"))
+                    if tok_vocab and vocab_size != tok_vocab:
+                        return StepExecutionResult(
+                            verdict="BLOCKED",
+                            error_code="vocab_size_mismatch",
+                            summary=f"model_config.vocab_size ({vocab_size}) != tokenizer.vocab_size ({tok_vocab})",
+                        )
+                elif payload.get("vocab_size") is not None:
+                    vocab_size = int(payload["vocab_size"])
+                    if tok_vocab and vocab_size != tok_vocab:
+                        return StepExecutionResult(
+                            verdict="BLOCKED",
+                            error_code="vocab_size_mismatch",
+                            summary=f"payload.vocab_size ({vocab_size}) != tokenizer.vocab_size ({tok_vocab})",
+                        )
+                elif tok_vocab:
+                    vocab_size = tok_vocab
+                else:
+                    vocab_size = 2048
+
+                defaults = {
+                    "vocab_size": vocab_size,
+                    "d_model": 256,
+                    "n_layers": 4,
+                    "n_heads": 4,
+                    "d_ff": 704,
+                    "max_seq_len": 256,
+                    "dropout": 0.0,
+                    "tie_embeddings": True,
+                }
                 defaults.update(model_cfg_in)
-                # max_seq_len must cover block_size
                 if int(defaults.get("max_seq_len", 256)) < block_size:
                     defaults["max_seq_len"] = block_size
                 model_cfg = _ZCfg(**defaults)
-                try:
-                    est = int(model_cfg.estimated_num_parameters)
-                except Exception:
-                    est = 0
-                if est and est > 5_000_000:
-                    return StepExecutionResult(verdict="BLOCKED", error_code="budget_violated", summary=f"Model params {est} > 5000000")
+                model_cfg.validate_parameter_budget(_MAX_V10_PARAMS)
                 model = _ZModel(model_cfg)
-                try:
-                    real_params = int(model.num_parameters())
-                except Exception:
-                    real_params = est
-                if real_params and real_params > 5_000_000:
-                    return StepExecutionResult(verdict="BLOCKED", error_code="budget_violated", summary=f"Model params {real_params} > 5000000")
+                real_params = int(model.num_parameters())
+                if real_params > _MAX_V10_PARAMS:
+                    return StepExecutionResult(
+                        verdict="BLOCKED",
+                        error_code="budget_violated",
+                        summary=f"Model params {real_params} > {_MAX_V10_PARAMS}",
+                    )
+            except ValueError as e:
+                return StepExecutionResult(verdict="BLOCKED", error_code="budget_violated", summary=str(e))
             except Exception as e:
                 return StepExecutionResult(verdict="BLOCKED", error_code="model_build_failed", summary=f"Model build failed: {e}")
 
-        # Build TrainConfig with Budget Lock — never use TrainConfig() defaults (batch=16, steps=1000)
+        # Build TrainConfig with Budget Lock — never use TrainConfig() defaults
         try:
             from apps.core.native.train import TrainConfig as _TCfg
+
             tc_kwargs = dict(train_cfg_in)
             tc_kwargs.update({"block_size": block_size, "batch_size": batch_size, "max_steps": max_steps})
-            # Remove keys TrainConfig does not accept if caller passed extra
-            # TrainConfig.__post_init__ requires warmup_steps < max_steps — clamp for short runs (e.g. max_steps=10 in tests)
             _warmup = int(tc_kwargs.get("warmup_steps", 100) or 0)
             if _warmup >= max_steps:
                 _warmup = max(0, max_steps - 1)
@@ -303,11 +481,41 @@ def handle_training_execute(ctx: dict[str, Any], payload: dict[str, Any]) -> Ste
         except Exception as e:
             return StepExecutionResult(verdict="BLOCKED", error_code="train_config_failed", summary=f"TrainConfig build failed: {e}")
 
-        # Call train() — injected or real
-        train_fn = ctx.get("_train_fn")
-        if train_fn is None:
-            from apps.core.native.train import train as train_fn  # type: ignore
-        result = train_fn(model, list(train_ids), list(val_ids), train_cfg, checkpoint_dir, log_path, device="cpu", tokenizer_fingerprint=tokenizer_fingerprint, dataset_version=dataset_version)
+        # Call injected _train_fn or real train_sft / train
+        injected_train_fn = ctx.get("_train_fn")
+        if is_sft_run:
+            if injected_train_fn is not None:
+                train_fn = injected_train_fn
+            else:
+                from apps.core.native.train import train_sft as train_fn  # type: ignore
+            result = train_fn(
+                model,
+                list(train_pairs),
+                list(val_pairs),
+                train_cfg,
+                checkpoint_dir,
+                log_path,
+                device="cpu",
+                pad_id=int(getattr(tokenizer, "pad_id", 0) if tokenizer is not None else 0),
+                tokenizer_fingerprint=tokenizer_fingerprint,
+                dataset_version=dataset_version,
+            )
+        else:
+            if injected_train_fn is not None:
+                train_fn = injected_train_fn
+            else:
+                from apps.core.native.train import train as train_fn  # type: ignore
+            result = train_fn(
+                model,
+                list(train_ids),
+                list(val_ids),
+                train_cfg,
+                checkpoint_dir,
+                log_path,
+                device="cpu",
+                tokenizer_fingerprint=tokenizer_fingerprint,
+                dataset_version=dataset_version,
+            )
     except Exception as e:
         return StepExecutionResult(verdict="FAIL", error_code="training_failed", summary=f"Training failed: {e}")
     finally:
@@ -318,22 +526,72 @@ def handle_training_execute(ctx: dict[str, Any], payload: dict[str, Any]) -> Ste
             verdict="BLOCKED", error_code="ram_hard_stop",
             summary=f"RAM hard stop exceeded: peak {ram_info['peak_gb']} GB >= 3.5 GB — no checkpoint claimed.",
         )
-    # Interpret train() return dict honestly
     if not isinstance(result, dict):
         return StepExecutionResult(verdict="FAIL", error_code="training_bad_result", summary=f"train() returned non-dict: {type(result).__name__}")
     stopped = result.get("stopped_reason")
     if stopped == "loss_diverged":
         return StepExecutionResult(verdict="FAIL", error_code="loss_diverged", summary=f"Training diverged: val_loss={result.get('val_loss')} steps={result.get('steps')}")
     if stopped not in (None, "", "budget_exceeded", "cost_exceeded"):
-        # Unknown stop reason is not PASS
         return StepExecutionResult(verdict="FAIL", error_code="training_stopped", summary=f"Training stopped: {stopped} steps={result.get('steps')} val_loss={result.get('val_loss')}")
     if result.get("val_loss") is None:
         return StepExecutionResult(verdict="FAIL", error_code="training_no_val", summary="Training finished without val_loss — cannot PASS without evidence.")
     if result.get("parameter_changed") is False:
         return StepExecutionResult(verdict="FAIL", error_code="training_no_change", summary="Training finished but parameters did not change — cannot PASS.")
+
+    metrics_payload = {
+        "steps": result.get("steps"),
+        "epochs": result.get("epochs"),
+        "train_loss": result.get("train_loss"),
+        "val_loss": result.get("val_loss"),
+        "perplexity": result.get("perplexity"),
+        "ram_peak_gb": ram_info.get("peak_gb"),
+        "prompt_format": result.get("prompt_format") or ("zyrquen.sft.v1" if is_sft_run else "token_stream.v1"),
+    }
+
+    registered_version: str | None = None
+    registry_root = str(payload.get("registry_root") or "").strip()
+    if registry_root and dataset_dir and tokenizer_path_raw and (ctx.get("_train_fn") is None or payload.get("register_in_registry")):
+        try:
+            reg = ModelRegistry(registry_root)
+            rec = reg.register_next_native_version(
+                checkpoint_dir,
+                tokenizer_path_raw,
+                dataset_dir,
+                metrics={k: v for k, v in metrics_payload.items() if isinstance(v, (int, float)) and not isinstance(v, bool)},
+                notes=str(payload.get("notes") or f"Registered by handle_training_execute (steps={result.get('steps')})"),
+                training_run_id=str(ctx.get("run_id") or "") or None,
+            )
+            registered_version = rec["version"]
+            metrics_payload["model_version"] = registered_version
+        except Exception as e:
+            return StepExecutionResult(
+                verdict="FAIL",
+                error_code="registry_registration_failed",
+                summary=f"Training finished but ModelRegistry registration failed: {e}",
+                output=metrics_payload,
+            )
+
+    emitted: list[tuple[str, dict[str, Any]]] = []
+    if registered_version is not None:
+        emitted.append((
+            "training.completed",
+            {
+                "model_version": registered_version,
+                "steps": result.get("steps"),
+                "val_loss": result.get("val_loss"),
+            },
+        ))
+
     return StepExecutionResult(
         verdict="PASS",
-        summary=f"Training completed: steps={result.get('steps')} val_loss={result.get('val_loss')} perplexity={result.get('perplexity')} ram_peak_gb={ram_info.get('peak_gb')}",
+        summary=(
+            f"Training completed: steps={result.get('steps')} val_loss={result.get('val_loss')} "
+            f"perplexity={result.get('perplexity')} ram_peak_gb={ram_info.get('peak_gb')}"
+            + (f" registered={registered_version}" if registered_version else "")
+        ),
+        output=metrics_payload,
+        evidence={"verdict": "PASS", **metrics_payload},
+        emitted_events=emitted,
     )
 
 def handle_evaluation_verify(ctx: dict[str, Any], payload: dict[str, Any]) -> StepExecutionResult:
@@ -370,6 +628,48 @@ def handle_evaluation_verify(ctx: dict[str, Any], payload: dict[str, Any]) -> St
     )
 
 
+_V10_REPORT_SCHEMA = "zyrquen.v10.evaluation_report.v1"
+_V9_REPORT_SCHEMA = "zyrquen.eval-v9.report.v1"
+_V10_EXPECTED_CAPABILITIES = (
+    "abstract_reasoning",
+    "relational_generalization",
+    "ood_transfer",
+    "multi_step_planning",
+    "self_verification",
+    "knowledge_integration",
+)
+_EVAL_NON_RUN_STATUSES = frozenset({"NOT RUN", "NOT_RUN", "PENDING"})
+_EVAL_BLOCKED_STATUSES = frozenset({"BLOCKED"})
+_EVAL_FAIL_STATUSES = frozenset({"FAIL", "FAILED", "ERROR", "UNKNOWN"})
+_V9_ALLOWED_CRITERION_STATUSES = frozenset({"PASS", "NOT_APPLICABLE", "PENDING_COMPARISON"})
+
+
+def _is_finite_float(val: Any) -> bool:
+    return isinstance(val, (int, float)) and not isinstance(val, bool) and math.isfinite(float(val))
+
+
+def _norm_status(val: Any) -> str:
+    return str(val or "").strip().upper()
+
+
+def _extract_finite_metrics_dict(raw: Any) -> tuple[dict[str, float], list[str]]:
+    if not isinstance(raw, dict) or not raw:
+        return {}, ["metrics_missing_or_empty"]
+    clean: dict[str, float] = {}
+    bad: list[str] = []
+    for k, v in raw.items():
+        if v is None:
+            continue
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            if math.isfinite(float(v)):
+                clean[str(k)] = float(v)
+            else:
+                bad.append(f"non_finite_metric:{k}")
+    if not clean:
+        bad.append("no_finite_numeric_metrics")
+    return clean, bad
+
+
 def handle_evaluation_gate(ctx: dict[str, Any], payload: dict[str, Any]) -> StepExecutionResult:
     report_path_raw = str(payload.get("report_path") or "").strip()
     registry_root = str(
@@ -377,78 +677,418 @@ def handle_evaluation_gate(ctx: dict[str, Any], payload: dict[str, Any]) -> Step
     ).strip()
     version = str(payload.get("model_version") or "").strip()
 
-    if not report_path_raw or not Path(report_path_raw).is_file():
+    if not report_path_raw:
         return StepExecutionResult(
             verdict="NOT RUN",
-            summary="No verified evaluation report file supplied; cannot self-certify PASS without evidence.",
-            output={"report_path": report_path_raw or None},
+            summary="No evaluation report path supplied; cannot certify PASS without evidence.",
+            output={"report_path": None},
             evidence={"verdict": "NOT RUN", "reason": "no_eval_report_evidence"},
+            error_code="missing_eval_report",
         )
 
     report_path = Path(report_path_raw)
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    report_sha = _sha256_file(report_path)
-
-    assessment = report.get("acceptance_assessment", {})
-    stops = assessment.get("stop_criteria_triggered", [])
-    criteria = assessment.get("criteria", {})
-    failed_criteria = [
-        k for k, v in criteria.items() if isinstance(v, dict) and v.get("status") == "FAIL"
-    ]
-    reg_cmp = report.get("regression_comparison", [])
-    zero_reg = all(bool(item.get("zero_regression", False)) for item in reg_cmp) if reg_cmp else True
-    passed = (len(stops) == 0) and (len(failed_criteria) == 0) and zero_reg
-
-    if registry_root and version:
-        reg = ModelRegistry(registry_root)
-        tu_fg = (
-            report.get("splits", {})
-            .get("test_unseen", {})
-            .get("overall", {})
-            .get("free_generation", {})
+    if report_path.is_symlink():
+        return StepExecutionResult(
+            verdict="BLOCKED",
+            summary=f"Refusing symlinked evaluation report: {report_path}",
+            output={"report_path": str(report_path)},
+            evidence={"verdict": "BLOCKED", "reason": "symlink_eval_report"},
+            error_code="symlink_eval_report",
         )
-        to_fg = (
-            report.get("splits", {})
-            .get("test_ood", {})
-            .get("overall", {})
-            .get("free_generation", {})
+    if not report_path.exists():
+        return StepExecutionResult(
+            verdict="NOT RUN",
+            summary="Evaluation report file does not exist; cannot certify PASS without evidence.",
+            output={"report_path": str(report_path)},
+            evidence={"verdict": "NOT RUN", "reason": "no_eval_report_evidence"},
+            error_code="missing_eval_report",
         )
+    if not report_path.is_file():
+        return StepExecutionResult(
+            verdict="FAIL",
+            summary=f"Evaluation report path is not a regular file: {report_path}",
+            output={"report_path": str(report_path)},
+            evidence={"verdict": "FAIL", "reason": "invalid_eval_report"},
+            error_code="invalid_eval_report",
+        )
+
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        report_sha = _sha256_file(report_path)
+    except (OSError, json.JSONDecodeError) as exc:
+        return StepExecutionResult(
+            verdict="FAIL",
+            summary=f"Malformed or unreadable evaluation report: {exc}",
+            output={"report_path": str(report_path)},
+            evidence={"verdict": "FAIL", "reason": "malformed_eval_report"},
+            error_code="malformed_eval_report",
+        )
+
+    if not isinstance(report, dict):
+        return StepExecutionResult(
+            verdict="FAIL",
+            summary="Evaluation report JSON root must be an object.",
+            output={"report_path": str(report_path)},
+            evidence={"verdict": "FAIL", "reason": "malformed_eval_report"},
+            error_code="malformed_eval_report",
+        )
+
+    v10_tag = report.get("report_schema")
+    v9_tag = report.get("schema_version")
+    if v10_tag == _V10_REPORT_SCHEMA and v9_tag == _V9_REPORT_SCHEMA:
+        return StepExecutionResult(
+            verdict="FAIL",
+            summary="Conflicting v9 and v10 evaluation schema tags rejected.",
+            output={"report_path": str(report_path), "report_sha256": report_sha},
+            evidence={"verdict": "FAIL", "report_sha256": report_sha},
+            error_code="conflicting_eval_schema",
+        )
+
+    # ------------------------------------------------------------------
+    # Schema Branch A: V10 Evaluation Report (zyrquen.v10.evaluation_report.v1)
+    # ------------------------------------------------------------------
+    if v10_tag == _V10_REPORT_SCHEMA:
+        overall = _norm_status(report.get("overall_status"))
+        top_status = _norm_status(report.get("status"))
+        inf_status = _norm_status(report.get("inference_status"))
+        hook_flag = report.get("inference_hook_implemented")
+
+        all_top = [s for s in (overall, top_status, inf_status) if s]
+        if any(s in _EVAL_BLOCKED_STATUSES for s in all_top):
+            return StepExecutionResult(
+                verdict="BLOCKED",
+                summary=f"v10 evaluation report is BLOCKED (overall={overall}, inference={inf_status}); certification refused.",
+                output={"overall_status": overall, "inference_status": inf_status, "report_sha256": report_sha},
+                evidence={"verdict": "BLOCKED", "report_sha256": report_sha},
+                error_code="evaluation_blocked",
+            )
+        if any(s in _EVAL_NON_RUN_STATUSES for s in all_top):
+            return StepExecutionResult(
+                verdict="NOT RUN",
+                summary=f"v10 evaluation report was NOT RUN (overall={overall}, inference={inf_status}); cannot certify PASS.",
+                output={"overall_status": overall, "inference_status": inf_status, "report_sha256": report_sha},
+                evidence={"verdict": "NOT RUN", "report_sha256": report_sha},
+                error_code="evaluation_not_run",
+            )
+        if hook_flag is False and overall not in _EVAL_FAIL_STATUSES and inf_status not in _EVAL_FAIL_STATUSES:
+            return StepExecutionResult(
+                verdict="NOT RUN",
+                summary="v10 inference_hook_implemented=False; evaluation cannot pass without real inference.",
+                output={"overall_status": overall, "inference_hook_implemented": False, "report_sha256": report_sha},
+                evidence={"verdict": "NOT RUN", "report_sha256": report_sha},
+                error_code="inference_hook_not_implemented",
+            )
+
+        failures: list[str] = []
+        if overall != "PASS":
+            failures.append(f"overall_status={overall or 'MISSING'}")
+        if inf_status != "PASS":
+            failures.append(f"inference_status={inf_status or 'MISSING'}")
+        if hook_flag is not True:
+            failures.append(f"inference_hook_implemented={hook_flag!r}")
+        if _norm_status(report.get("dataset_integrity")) != "PASS":
+            failures.append(f"dataset_integrity={report.get('dataset_integrity')!r}")
+        if _norm_status(report.get("leakage_audit_status")) != "PASS":
+            failures.append(f"leakage_audit_status={report.get('leakage_audit_status')!r}")
+        if report.get("error") is not None:
+            failures.append(f"report_error={report.get('error')!r}")
+
+        cap_eval = report.get("capability_evaluation")
+        cap_scores: dict[str, float] = {}
+        if not isinstance(cap_eval, dict):
+            failures.append("capability_evaluation_missing")
+        else:
+            for cap in _V10_EXPECTED_CAPABILITIES:
+                if cap not in cap_eval:
+                    failures.append(f"missing_capability:{cap}")
+                    continue
+                entry = cap_eval[cap]
+                if isinstance(entry, dict):
+                    st = _norm_status(entry.get("status"))
+                    if st in _EVAL_NON_RUN_STATUSES or st in _EVAL_BLOCKED_STATUSES or st in _EVAL_FAIL_STATUSES:
+                        failures.append(f"capability_{st or 'invalid'}:{cap}")
+                    elif st and st != "PASS":
+                        failures.append(f"capability_unknown_status:{cap}={st}")
+                    val = entry.get("score", entry.get("exact_match"))
+                    if _is_finite_float(val):
+                        cap_scores[cap] = float(val)
+                    elif st != "PASS":
+                        failures.append(f"capability_no_score:{cap}")
+                elif _is_finite_float(entry):
+                    cap_scores[cap] = float(entry)
+                else:
+                    st = _norm_status(entry)
+                    if st != "PASS":
+                        failures.append(f"capability_invalid:{cap}={entry!r}")
+
+        metrics_summary, metric_errs = _extract_finite_metrics_dict(report.get("metrics"))
+        failures.extend(metric_errs)
+
+        zero_reg = True
+        reg_cmp = report.get("regression_comparison")
+        if reg_cmp is not None:
+            if not isinstance(reg_cmp, list):
+                failures.append("regression_comparison_not_list")
+                zero_reg = False
+            elif reg_cmp:
+                zero_reg = all(isinstance(item, dict) and item.get("zero_regression") is True for item in reg_cmp)
+                if not zero_reg:
+                    failures.append("regression_detected")
+
+        assessment = report.get("acceptance_assessment")
+        stops: list[Any] = []
+        failed_criteria: list[str] = []
+        if assessment is not None:
+            if not isinstance(assessment, dict):
+                failures.append("acceptance_assessment_invalid")
+            else:
+                raw_stops = assessment.get("stop_criteria_triggered")
+                if not isinstance(raw_stops, list):
+                    failures.append("stop_criteria_triggered_missing_or_invalid")
+                else:
+                    stops = raw_stops
+                    if stops:
+                        failures.append("stop_criteria_triggered")
+                raw_criteria = assessment.get("criteria")
+                if isinstance(raw_criteria, dict):
+                    for k, v in raw_criteria.items():
+                        if not isinstance(v, dict) or _norm_status(v.get("status")) in (
+                            _EVAL_FAIL_STATUSES | _EVAL_NON_RUN_STATUSES | _EVAL_BLOCKED_STATUSES
+                        ):
+                            failed_criteria.append(str(k))
+                    if failed_criteria:
+                        failures.append(f"failed_criteria:{failed_criteria}")
+
+        ckpt_meta = report.get("checkpoint")
+        if registry_root and version:
+            reg = ModelRegistry(registry_root)
+            try:
+                if not reg.verify(version):
+                    failures.append("registry_artifact_verify_failed")
+                rec = reg.get(version)
+            except RegistryError as exc:
+                failures.append(f"registry_error:{exc}")
+                rec = None
+            if rec is not None and isinstance(ckpt_meta, dict):
+                rep_ver = ckpt_meta.get("model_version")
+                if rep_ver is not None and rep_ver != version:
+                    failures.append(f"checkpoint_version_mismatch:{rep_ver}!={version}")
+                rep_sha = ckpt_meta.get("checkpoint_sha256")
+                if rep_sha is not None and rep_sha != (rec.get("checkpoint") or {}).get("sha256"):
+                    failures.append("checkpoint_sha256_mismatch")
+                if "verified" in ckpt_meta and ckpt_meta.get("verified") is not True:
+                    failures.append("checkpoint_not_verified")
+
+        passed = len(failures) == 0 and zero_reg
+        if registry_root and version:
+            reg = ModelRegistry(registry_root)
+            reg.attach_evaluation_evidence(
+                version,
+                eval_run_id=str(ctx.get("run_id") or report.get("experiment_id") or "eval-v10"),
+                report_sha256=report_sha,
+                metrics=metrics_summary,
+                passed=passed,
+                zero_regression=zero_reg,
+                capabilities=cap_scores or None,
+                workflow_run_id=str(ctx.get("run_id")),
+                evaluation_status="PASS" if passed else "FAIL",
+                inference_executed=(inf_status == "PASS" and hook_flag is True),
+                report_schema=_V10_REPORT_SCHEMA,
+                reason=f"failures={failures}, stops={stops}",
+            )
+
+        return StepExecutionResult(
+            verdict="PASS" if passed else "FAIL",
+            summary=(
+                f"Evaluation Gate (v10) {'PASS' if passed else 'FAIL'} "
+                f"(failures={failures}, stops={stops}, zero_regression={zero_reg})"
+            ),
+            output={
+                "report_schema": _V10_REPORT_SCHEMA,
+                "passed": passed,
+                "zero_regression": zero_reg,
+                "failures": failures,
+                "failed_criteria": failed_criteria,
+                "stop_criteria_triggered": stops,
+                "report_sha256": report_sha,
+            },
+            evidence={"verdict": "PASS" if passed else "FAIL", "report_sha256": report_sha},
+            error_code=None if passed else "evaluation_gate_failed",
+            emitted_events=[
+                (
+                    "evaluation.completed",
+                    {"model_version": version, "passed": passed, "report_path": str(report_path)},
+                )
+            ],
+        )
+
+    # ------------------------------------------------------------------
+    # Schema Branch B: V9 Evaluation Report (zyrquen.eval-v9.report.v1)
+    # ------------------------------------------------------------------
+    if v9_tag == _V9_REPORT_SCHEMA:
+        failures = []
+        assessment = report.get("acceptance_assessment")
+        if not isinstance(assessment, dict):
+            return StepExecutionResult(
+                verdict="FAIL",
+                summary="v9 evaluation report missing acceptance_assessment.",
+                output={"report_schema": _V9_REPORT_SCHEMA, "passed": False, "report_sha256": report_sha},
+                evidence={"verdict": "FAIL", "report_sha256": report_sha},
+                error_code="malformed_eval_report",
+            )
+
+        raw_stops = assessment.get("stop_criteria_triggered")
+        if not isinstance(raw_stops, list):
+            failures.append("stop_criteria_triggered_missing_or_invalid")
+            stops: list[Any] = []
+        else:
+            stops = raw_stops
+
+        criteria = assessment.get("criteria")
+        failed_criteria: list[str] = []
+        non_run_criteria: list[str] = []
+        pass_criteria_count = 0
+        if not isinstance(criteria, dict) or not criteria:
+            failures.append("criteria_missing_or_empty")
+        else:
+            for k, v in criteria.items():
+                if not isinstance(v, dict):
+                    failed_criteria.append(str(k))
+                    continue
+                st = _norm_status(v.get("status"))
+                if st in _EVAL_NON_RUN_STATUSES or st in _EVAL_BLOCKED_STATUSES:
+                    non_run_criteria.append(str(k))
+                elif st not in _V9_ALLOWED_CRITERION_STATUSES:
+                    failed_criteria.append(str(k))
+                elif st == "PASS":
+                    pass_criteria_count += 1
+            if pass_criteria_count == 0 and not failed_criteria and not non_run_criteria:
+                failures.append("no_passing_criteria")
+
+        if non_run_criteria and not failed_criteria and not stops:
+            return StepExecutionResult(
+                verdict="NOT RUN",
+                summary=f"v9 evaluation report has unexecuted criteria: {non_run_criteria}",
+                output={"report_schema": _V9_REPORT_SCHEMA, "non_run_criteria": non_run_criteria, "report_sha256": report_sha},
+                evidence={"verdict": "NOT RUN", "report_sha256": report_sha},
+                error_code="evaluation_not_run",
+            )
+
+        data_integrity = report.get("data_integrity")
+        if isinstance(data_integrity, dict):
+            if _norm_status(data_integrity.get("leakage_audit_status")) != "PASS":
+                failures.append("leakage_audit_not_pass")
+
+        splits = report.get("splits")
+        tu_fg: dict[str, Any] = {}
+        to_fg: dict[str, Any] = {}
+        if not isinstance(splits, dict):
+            failures.append("splits_missing")
+        else:
+            tu_fg = (splits.get("test_unseen") or {}).get("overall", {}).get("free_generation", {})
+            to_fg = (splits.get("test_ood") or {}).get("overall", {}).get("free_generation", {})
+            if not isinstance(tu_fg, dict) or not _is_finite_float(tu_fg.get("exact_match")):
+                failures.append("invalid_test_unseen_fg_exact")
+            if not isinstance(to_fg, dict) or not _is_finite_float(to_fg.get("exact_match")):
+                failures.append("invalid_test_ood_fg_exact")
+
+        reg_cmp = report.get("regression_comparison")
+        if not isinstance(reg_cmp, list):
+            failures.append("regression_comparison_missing_or_invalid")
+            zero_reg = False
+        else:
+            zero_reg = (
+                all(isinstance(item, dict) and item.get("zero_regression") is True for item in reg_cmp)
+                if reg_cmp
+                else True
+            )
+
         metrics_summary = {
-            "test_unseen_fg_exact": tu_fg.get("exact_match"),
-            "test_ood_fg_exact": to_fg.get("exact_match"),
-            "unseen_entity_copy_acc": tu_fg.get("unseen_entity_copy_acc"),
+            k: float(v)
+            for k, v in (
+                ("test_unseen_fg_exact", tu_fg.get("exact_match")),
+                ("test_ood_fg_exact", to_fg.get("exact_match")),
+                ("unseen_entity_copy_acc", tu_fg.get("unseen_entity_copy_acc")),
+            )
+            if _is_finite_float(v)
         }
-        reg.attach_evaluation_evidence(
-            version,
-            eval_run_id=str(ctx.get("run_id")),
-            report_sha256=report_sha,
-            metrics=metrics_summary,
-            passed=passed,
-            zero_regression=zero_reg,
-            workflow_run_id=str(ctx.get("run_id")),
-            reason=f"failed_criteria={failed_criteria}, stop_triggers={stops}",
+        if not metrics_summary:
+            failures.append("no_finite_numeric_metrics")
+
+        if registry_root and version:
+            reg = ModelRegistry(registry_root)
+            try:
+                if not reg.verify(version):
+                    failures.append("registry_artifact_verify_failed")
+            except RegistryError as exc:
+                failures.append(f"registry_error:{exc}")
+
+        passed = (
+            len(failures) == 0
+            and len(stops) == 0
+            and len(failed_criteria) == 0
+            and len(non_run_criteria) == 0
+            and zero_reg
         )
 
+        if registry_root and version:
+            reg = ModelRegistry(registry_root)
+            reg.attach_evaluation_evidence(
+                version,
+                eval_run_id=str(ctx.get("run_id") or "eval-v9"),
+                report_sha256=report_sha,
+                metrics=metrics_summary,
+                passed=passed,
+                zero_regression=zero_reg,
+                workflow_run_id=str(ctx.get("run_id")),
+                evaluation_status="PASS" if passed else "FAIL",
+                inference_executed=(len(metrics_summary) > 0),
+                report_schema=_V9_REPORT_SCHEMA,
+                reason=f"failed_criteria={failed_criteria}, stop_triggers={stops}, failures={failures}",
+            )
+
+        return StepExecutionResult(
+            verdict="PASS" if passed else "FAIL",
+            summary=(
+                f"Evaluation Gate (v9) {'PASS' if passed else 'FAIL'} "
+                f"(failed_criteria={failed_criteria}, stops={stops}, zero_regression={zero_reg}, failures={failures})"
+            ),
+            output={
+                "report_schema": _V9_REPORT_SCHEMA,
+                "passed": passed,
+                "zero_regression": zero_reg,
+                "failed_criteria": failed_criteria,
+                "failures": failures,
+                "stop_criteria_triggered": stops,
+                "report_sha256": report_sha,
+            },
+            evidence={"verdict": "PASS" if passed else "FAIL", "report_sha256": report_sha},
+            error_code=None if passed else "evaluation_gate_failed",
+            emitted_events=[
+                (
+                    "evaluation.completed",
+                    {"model_version": version, "passed": passed, "report_path": str(report_path)},
+                )
+            ],
+        )
+
+    # ------------------------------------------------------------------
+    # Unsupported / Untagged / Missing Schema -> Always FAIL-CLOSED
+    # ------------------------------------------------------------------
     return StepExecutionResult(
-        verdict="PASS" if passed else "FAIL",
+        verdict="FAIL",
         summary=(
-            f"Evaluation Gate {'PASS' if passed else 'FAIL'} "
-            f"(failed_criteria={failed_criteria}, stops={stops}, zero_regression={zero_reg})"
+            f"Unsupported or missing evaluation report schema "
+            f"(report_schema={v10_tag!r}, schema_version={v9_tag!r})."
         ),
         output={
-            "passed": passed,
-            "zero_regression": zero_reg,
-            "failed_criteria": failed_criteria,
-            "stop_criteria_triggered": stops,
+            "passed": False,
+            "report_schema": v10_tag,
+            "schema_version": v9_tag,
             "report_sha256": report_sha,
         },
-        evidence={"verdict": "PASS" if passed else "FAIL", "report_sha256": report_sha},
-        emitted_events=[
-            (
-                "evaluation.completed",
-                {"model_version": version, "passed": passed, "report_path": str(report_path)},
-            )
-        ],
+        evidence={"verdict": "FAIL", "report_sha256": report_sha},
+        error_code="unsupported_eval_schema",
     )
 
 

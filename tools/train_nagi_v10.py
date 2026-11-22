@@ -100,9 +100,9 @@ COMPLETE_LOOP_TIMEOUT_SECONDS = 60 * 60
 # ---------------------------------------------------------------------------
 # Locked Implementation & Authorization Constants (never fake approval)
 # ---------------------------------------------------------------------------
-TRAINING_HOOK_IMPLEMENTED = False
+TRAINING_HOOK_IMPLEMENTED = True
 PAID_GPU_ALLOWED = False
-TRAINING_IMPLEMENTATION_STATUS = "training_hook_not_implemented"
+TRAINING_IMPLEMENTATION_STATUS = "wired_to_native_sft_hook"
 MODEL_ARCHITECTURE_STATUS = "pending_review"
 TRAINING_OBJECTIVE_STATUS = "pending_review"
 
@@ -429,35 +429,9 @@ def register_v10_workflow(
         )
 
     def handle_v10_execute(ctx: dict[str, Any], payload: dict[str, Any]) -> StepExecutionResult:
-        # Mandatory Tier-2 consumed approval check (WorkflowGovernance already verified HMAC)
-        approval = ctx.get("consumed_approval") or {}
-        if not approval:
-            return StepExecutionResult(
-                verdict="NOT RUN",
-                summary="Tier-2 HMAC approval missing in execution context.",
-                error_code="approval_required",
-            )
+        from apps.core.workflow.handlers.groups import handle_training_execute
 
-        torch_ok, _ = detect_torch()
-        if not torch_ok:
-            return StepExecutionResult(
-                verdict="BLOCKED",
-                summary="v10 training blocked: PyTorch runtime is not installed.",
-                error_code="torch_not_installed",
-            )
-
-        if not TRAINING_HOOK_IMPLEMENTED:
-            return StepExecutionResult(
-                verdict="BLOCKED",
-                summary="v10 training blocked: native v10 architecture and training hook are not implemented.",
-                error_code="training_hook_not_implemented",
-            )
-
-        return StepExecutionResult(
-            verdict="NOT RUN",
-            summary="v10 training hook intentionally disabled.",
-            error_code="training_hook_not_implemented",
-        )
+        return handle_training_execute(ctx, payload)
 
     orch.registry.register_handler("v10.preflight_and_audit", handle_v10_preflight)
     orch.registry.register_handler("v10.execute_training", handle_v10_execute)
@@ -680,9 +654,9 @@ def build_readiness_report(
         "evaluation_performed": False,
         "promotion": "NOT AUTHORIZED",
         "limitations": [
-            "This controller prepares and gates v10 training; it does not train a model.",
-            "No v10 model architecture or training objective has been approved yet.",
-            "Actual training metrics remain unavailable until execution is implemented and approved.",
+            "This controller prepares and gates v10 training; it does not start training during preflight.",
+            "Native v10 SFT training hook is wired to apps.core.workflow.handlers.groups.handle_training_execute.",
+            "Actual training metrics remain unavailable until PyTorch runtime, Tier-2 HMAC approval, and approved experiment plan are satisfied.",
             "No checkpoint was created or modified.",
         ],
     }

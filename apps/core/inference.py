@@ -23,7 +23,8 @@ class NativeInferenceEngine:
     def count_tokens(self, text: str) -> int:
         if not self.loader.is_ready() or self.loader.tokenizer is None:
             raise InferenceError("Native tokenizer is not ready.")
-        return len(self.loader.tokenizer.encode(text, add_bos=False, add_eos=False))
+        prompt_format = getattr(self.loader, "prompt_format", None)
+        return len(_encode_prompt(self.loader.tokenizer, text, prompt_format=prompt_format))
 
     def _generate_with_usage_sync(
         self,
@@ -37,7 +38,8 @@ class NativeInferenceEngine:
             tokenizer = self.loader.tokenizer
             model = self.loader.model
             max_seq_len = _max_seq_len_for(self.loader, model)
-            prompt_ids = _encode_prompt(tokenizer, context.prompt)
+            prompt_format = getattr(self.loader, "prompt_format", None)
+            prompt_ids = _encode_prompt(tokenizer, context.prompt, prompt_format=prompt_format)
             input_tokens = len(prompt_ids)
             if input_tokens > max_seq_len:
                 raise ResourceLimitExceeded(

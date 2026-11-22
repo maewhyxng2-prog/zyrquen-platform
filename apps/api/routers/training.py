@@ -16,8 +16,10 @@ from apps.core.training_infrastructure.recovery.checkpoint_recovery import (
     CheckpointManager,
 )
 from apps.core.training.orchestrator import TrainingUnavailable
+from apps.core.workflow import ApprovalViolationError
 from apps.api.database import SessionLocal, get_db
 from apps.api.models import User
+from apps.api.routers.workflows import get_workflow_engine
 from apps.api.security import get_current_user
 from apps.api.training_jobs import (
     TrainingJobBusy,
@@ -94,6 +96,30 @@ def start_training(
     db: Session = Depends(get_db),
 ):
     try:
+        # Preserve HTTP 503 when dataset/tokenizer paths are not yet configured;
+        # once configured, enforce Tier-2 HMAC workflow approval before execution.
+        if (
+            jobs._orchestrator.dataset_dir is not None
+            and jobs._orchestrator.tokenizer_path is not None
+        ):
+            approval_id = (request.approval_id or "").strip()
+            if not approval_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Tier-2 workflow approval_id is required to execute native training.",
+                )
+            engine = get_workflow_engine()
+            try:
+                engine.governance.verify_and_consume_by_id(
+                    approval_id,
+                    expected_action_type="training.execute",
+                )
+            except ApprovalViolationError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Tier-2 training approval rejected: {exc}",
+                ) from exc
+
         return jobs.submit(
             db,
             owner_id=current_user.id,

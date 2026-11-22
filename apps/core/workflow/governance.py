@@ -171,3 +171,44 @@ class WorkflowGovernance:
             raise ApprovalViolationError(f"Approval {approval['id']} was already consumed.")
 
         return self.store.get_approval(approval["id"])
+
+    def verify_and_consume_by_id(
+        self,
+        approval_id: str,
+        *,
+        expected_action_type: str = "training.execute",
+    ) -> dict[str, Any]:
+        """Verify HMAC signature, expiry, action_type, and consume an explicit approval_id."""
+        approval = self.store.get_approval(approval_id)
+        if approval is None:
+            raise ApprovalViolationError(f"Approval request not found: {approval_id}")
+        if approval.get("action_type") != expected_action_type:
+            raise ApprovalViolationError(
+                f"Approval {approval_id} action_type={approval.get('action_type')!r} "
+                f"does not match required {expected_action_type!r}."
+            )
+        if approval.get("status") != "approved":
+            raise ApprovalViolationError(
+                f"Approval {approval_id} is not in 'approved' state (status={approval.get('status')!r})."
+            )
+        if datetime.fromisoformat(approval["expires_at"]) <= datetime.now(timezone.utc):
+            raise ApprovalViolationError(f"Approval {approval_id} has expired.")
+
+        expected_sig = self._compute_signature(
+            approval_id=approval["id"],
+            run_id=approval["run_id"],
+            step_key=approval["step_key"],
+            action_type=approval["action_type"],
+            scope=approval["scope"],
+            expires_at=approval["expires_at"],
+        )
+        provided_sig = str(approval.get("signature_hmac") or "")
+        if not provided_sig or not hmac.compare_digest(expected_sig, provided_sig):
+            raise ApprovalViolationError(f"Approval HMAC signature invalid for {approval_id}.")
+
+        if not self.store.mark_approval_consumed(approval_id):
+            raise ApprovalViolationError(f"Approval {approval_id} was already consumed.")
+
+        consumed = self.store.get_approval(approval_id)
+        assert consumed is not None
+        return consumed

@@ -32,6 +32,7 @@ class ModelVersion:
     dataset_version: str
     dataset_content_hash: str
     config_hash: str
+    tokenizer_sha256: str | None = None
     val_loss: float | None = None
     perplexity: float | None = None
     created_at: str = ""
@@ -44,10 +45,22 @@ class VersionedCheckpointManager:
     Checkpoint files remain written and verified by CheckpointManager.
     """
 
-    def __init__(self, checkpoint_dir: str | Path, keep_last: int = 3):
+    def __init__(
+        self,
+        checkpoint_dir: str | Path,
+        keep_last: int = 3,
+        *,
+        save_fn=None,
+        load_fn=None,
+    ):
         self.dir = Path(checkpoint_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
-        self._inner = CheckpointManager(self.dir, keep_last=keep_last)
+        kwargs = {}
+        if save_fn is not None:
+            kwargs["save_fn"] = save_fn
+        if load_fn is not None:
+            kwargs["load_fn"] = load_fn
+        self._inner = CheckpointManager(self.dir, keep_last=keep_last, **kwargs)
         self.version_manifest_path = self.dir / "version_manifest.json"
 
     def _read_versions(self) -> list[dict]:
@@ -84,6 +97,7 @@ class VersionedCheckpointManager:
         dataset_content_hash: str,
         config: dict,
         parent_version: str | None = None,
+        tokenizer_sha256: str | None = None,
         val_loss: float | None = None,
         perplexity: float | None = None,
         metrics: dict | None = None,
@@ -96,6 +110,12 @@ class VersionedCheckpointManager:
             raise ValueError(
                 f"model_version duplicate: {model_version} already exists"
             )
+
+        resolved_tok_sha = tokenizer_sha256
+        if resolved_tok_sha is None and isinstance(state, dict):
+            raw_tok = state.get("tokenizer_sha256")
+            if isinstance(raw_tok, str) and raw_tok:
+                resolved_tok_sha = raw_tok
 
         ckpt_path = self._inner.save(step, state)
         ckpt_sha = (
@@ -113,6 +133,7 @@ class VersionedCheckpointManager:
             dataset_version=dataset_version,
             dataset_content_hash=dataset_content_hash,
             config_hash=_hash_dict(config),
+            tokenizer_sha256=resolved_tok_sha,
             val_loss=val_loss,
             perplexity=perplexity,
             created_at=datetime.now(timezone.utc).isoformat(),
@@ -136,10 +157,19 @@ class VersionedCheckpointManager:
         versions = self._read_versions()
         return versions[-1] if versions else None
 
-    def verify_version(self, model_version: str) -> bool:
+    def verify_version(
+        self,
+        model_version: str,
+        *,
+        expected_tokenizer_sha256: str | None = None,
+    ) -> bool:
         entry = self.get_version(model_version)
         if not entry:
             return False
+
+        if expected_tokenizer_sha256 is not None:
+            if entry.get("tokenizer_sha256") != expected_tokenizer_sha256:
+                return False
 
         ckpt_path = self.dir / entry["checkpoint_file"]
         if not ckpt_path.exists():

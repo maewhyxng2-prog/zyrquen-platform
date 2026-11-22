@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel, Field
 
+from apps.core.native.sft import SFT_FORMAT_VERSION, encode_sft_prompt
 from apps.core.native.tokenizer import N_SPECIAL
 
 from .context import InferenceContext
@@ -36,10 +37,21 @@ def _max_seq_len_for(loader: NativeModelLoader, model) -> int:
     return max_seq_len
 
 
-def _encode_prompt(tokenizer, prompt: str) -> list[int]:
+def _encode_prompt(
+    tokenizer,
+    prompt: str,
+    *,
+    prompt_format: str | None = None,
+) -> list[int]:
     if not hasattr(tokenizer, "encode"):
         raise InferenceError("Native tokenizer does not expose encode().")
-    token_ids = tokenizer.encode(prompt, add_bos=False, add_eos=False)
+    if prompt_format == SFT_FORMAT_VERSION:
+        try:
+            token_ids = encode_sft_prompt(tokenizer, prompt)
+        except Exception as exc:
+            raise InferenceError(f"Failed to encode SFT prompt: {exc}") from exc
+    else:
+        token_ids = tokenizer.encode(prompt, add_bos=False, add_eos=False)
     if not isinstance(token_ids, list) or not token_ids:
         raise InferenceError("Prompt produced zero native tokens.")
     return [int(tok) for tok in token_ids]
@@ -49,12 +61,19 @@ class _IncrementalTokenDecoder:
     def __init__(self, tokenizer):
         self._tokenizer = tokenizer
         self._has_byte_table = isinstance(getattr(tokenizer, "_bytes", None), dict)
+        self._byte_offset = int(getattr(tokenizer, "byte_offset", N_SPECIAL))
         self._utf8 = codecs.getincrementaldecoder("utf-8")("replace")
 
     def decode_token(self, token_id: int) -> str:
         if self._has_byte_table:
             if token_id < N_SPECIAL:
                 return ""
+            if token_id < self._byte_offset:
+                special_tokens = getattr(self._tokenizer, "special_tokens", ())
+                if 0 <= token_id < len(special_tokens):
+                    flushed = self._utf8.decode(b"", final=True)
+                    return f"{flushed}{special_tokens[token_id]}"
+                raise InferenceError(f"Unknown special token id produced by model: {token_id}")
             raw = self._tokenizer._bytes.get(token_id)
             if raw is None:
                 raise InferenceError(f"Unknown token id produced by model: {token_id}")
@@ -157,7 +176,8 @@ class StreamingInferenceEngine:
             tokenizer = self.loader.tokenizer
             model = self.loader.model
             max_seq_len = _max_seq_len_for(self.loader, model)
-            prompt_ids = _encode_prompt(tokenizer, context.prompt)
+            prompt_format = getattr(self.loader, "prompt_format", None)
+            prompt_ids = _encode_prompt(tokenizer, context.prompt, prompt_format=prompt_format)
             input_tokens = len(prompt_ids)
             if input_tokens > max_seq_len:
                 raise ResourceLimitExceeded(

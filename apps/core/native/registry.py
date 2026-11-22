@@ -19,6 +19,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -56,7 +57,74 @@ LIFECYCLE_STATES = (
     "archived",
 )
 PROMOTABLE_LIFECYCLE_STATES = ("verified", "staging", "production")
-FROZEN_BASELINE_NAMES = frozenset({"v7", "v8", "ZYRQUEN-v7", "ZYRQUEN-v8"})
+FROZEN_BASELINE_NAMES = frozenset(
+    {"v7", "v8", "v9", "ZYRQUEN-v7", "ZYRQUEN-v8", "ZYRQUEN-v9"}
+)
+_DISALLOWED_EVAL_STATUSES = frozenset(
+    {"NOT RUN", "NOT_RUN", "BLOCKED", "FAIL", "FAILED", "ERROR", "UNKNOWN", "PENDING"}
+)
+_ZYRQUEN_CONFIG_CORE_KEYS = (
+    "vocab_size",
+    "max_seq_len",
+    "n_layers",
+    "n_heads",
+    "d_model",
+    "d_ff",
+)
+
+
+def _is_valid_sha256_hex(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(ch in "0123456789abcdefABCDEF" for ch in value)
+    )
+
+
+def _is_finite_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
+def _validate_evaluation_metrics_dict(metrics: Any) -> None:
+    if not isinstance(metrics, dict) or not metrics:
+        raise RegistryError("evaluation verification requires non-empty numeric metrics")
+    finite_count = 0
+    for key, val in metrics.items():
+        if val is None:
+            continue
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            if not math.isfinite(float(val)):
+                raise RegistryError(f"evaluation metric {key!r} is non-finite: {val!r}")
+            finite_count += 1
+    if finite_count == 0:
+        raise RegistryError("evaluation verification requires at least one finite numeric metric")
+
+
+def _validate_evaluation_evidence_record(ev: Any, version: str) -> None:
+    if not isinstance(ev, dict):
+        raise RegistryError(f"version {version} lacks evaluation_evidence")
+    if ev.get("passed") is not True or ev.get("zero_regression") is not True:
+        raise RegistryError(f"version {version} evaluation_evidence is not passing/zero-regression")
+    if not _is_valid_sha256_hex(ev.get("report_sha256")):
+        raise RegistryError(f"version {version} evaluation_evidence lacks valid report_sha256")
+    eval_run_id = ev.get("eval_run_id")
+    if not isinstance(eval_run_id, str) or not eval_run_id.strip():
+        raise RegistryError(f"version {version} evaluation_evidence lacks eval_run_id")
+    eval_status = ev.get("evaluation_status")
+    if eval_status is not None:
+        if str(eval_status).strip().upper() in _DISALLOWED_EVAL_STATUSES:
+            raise RegistryError(
+                f"version {version} cannot be certified from evaluation_status={eval_status!r}"
+            )
+    if ev.get("inference_executed") is False:
+        raise RegistryError(
+            f"version {version} cannot be certified when inference_executed is False"
+        )
+    _validate_evaluation_metrics_dict(ev.get("summary"))
 
 @dataclass
 class _InProcessLockState:
@@ -490,8 +558,24 @@ class ModelRegistry:
         capabilities: dict[str, Any] | None = None,
         workflow_run_id: str | None = None,
         reason: str = "",
+        evaluation_status: str | None = None,
+        inference_executed: bool | None = None,
+        report_schema: str | None = None,
     ) -> dict:
         """Attach verified evaluation evidence and transition version to verified or quarantined."""
+        if passed and zero_regression:
+            if not isinstance(eval_run_id, str) or not eval_run_id.strip():
+                raise RegistryError("evaluation verification requires a non-empty eval_run_id")
+            if not _is_valid_sha256_hex(report_sha256):
+                raise RegistryError("evaluation verification requires a valid 64-char SHA-256 report digest")
+            if evaluation_status is not None and str(evaluation_status).strip().upper() in _DISALLOWED_EVAL_STATUSES:
+                raise RegistryError(
+                    f"cannot certify verified status from evaluation_status={evaluation_status!r}"
+                )
+            if inference_executed is False:
+                raise RegistryError("cannot certify verified status when inference_executed is False")
+            _validate_evaluation_metrics_dict(metrics)
+
         with self._registry_lock():
             data = self._read()
             if version not in data["versions"]:
@@ -501,15 +585,22 @@ class ModelRegistry:
                 raise RegistryError(f"version {version} is frozen/closed and cannot be mutated")
             next_status = "verified" if (passed and zero_regression) else "quarantined"
             rec["lifecycle_status"] = next_status
-            rec["evaluation_evidence"] = {
+            ev_record: dict[str, Any] = {
                 "eval_run_id": eval_run_id,
                 "report_sha256": report_sha256,
                 "passed": bool(passed),
                 "zero_regression": bool(zero_regression),
                 "evaluated_at": datetime.now(timezone.utc).isoformat(),
                 "reason": reason,
-                "summary": metrics,
+                "summary": dict(metrics or {}),
             }
+            if evaluation_status is not None:
+                ev_record["evaluation_status"] = evaluation_status
+            if inference_executed is not None:
+                ev_record["inference_executed"] = bool(inference_executed)
+            if report_schema is not None:
+                ev_record["report_schema"] = report_schema
+            rec["evaluation_evidence"] = ev_record
             if metrics:
                 merged = dict(rec.get("metrics") or {})
                 merged.update(metrics)
@@ -536,6 +627,14 @@ class ModelRegistry:
     ) -> dict:
         if lifecycle_status not in LIFECYCLE_STATES:
             raise RegistryError(f"unsupported lifecycle status: {lifecycle_status}")
+        if lifecycle_status == "verified":
+            raise RegistryError(
+                "cannot transition to 'verified' directly; call attach_evaluation_evidence() with real passing evidence"
+            )
+        if lifecycle_status == "production":
+            raise RegistryError(
+                "cannot transition to 'production' via set_lifecycle_status(); use promote(enforce_evaluation_gate=True)"
+            )
         with self._registry_lock():
             data = self._read()
             if version not in data["versions"]:
@@ -543,8 +642,10 @@ class ModelRegistry:
             rec = data["versions"][version]
             if rec.get("frozen") or version in FROZEN_BASELINE_NAMES:
                 raise RegistryError(f"version {version} is frozen/closed and cannot be mutated")
-            if lifecycle_status == "staging" and rec.get("lifecycle_status") != "verified":
-                raise RegistryError(f"version {version} must be verified before staging")
+            if lifecycle_status == "staging":
+                if rec.get("lifecycle_status") != "verified":
+                    raise RegistryError(f"version {version} must be verified before staging")
+                _validate_evaluation_evidence_record(rec.get("evaluation_evidence"), version)
             rec["lifecycle_status"] = lifecycle_status
             lineage = dict(rec.get("workflow_lineage") or {})
             if approval_id:
@@ -579,9 +680,25 @@ class ModelRegistry:
             reasons.append("Tokenizer SHA-256 missing or incompatible.")
 
         arch_info = rec.get("architecture") or rec.get("model_config")
-        arch_ok = isinstance(arch_info, dict) and (
-            expected_model_type is None or arch_info.get("model_type") == expected_model_type
-        )
+        if not isinstance(arch_info, dict):
+            arch_ok = False
+        elif expected_model_type is None:
+            arch_ok = True
+        elif arch_info.get("model_type") == expected_model_type:
+            arch_ok = True
+        elif (
+            expected_model_type == "zyrquen-decoder"
+            and "model_type" not in arch_info
+            and all(
+                isinstance(arch_info.get(k), int)
+                and not isinstance(arch_info.get(k), bool)
+                and arch_info[k] > 0
+                for k in _ZYRQUEN_CONFIG_CORE_KEYS
+            )
+        ):
+            arch_ok = True
+        else:
+            arch_ok = False
         if not arch_ok:
             reasons.append("Architecture / model_config metadata missing or mismatched.")
 
@@ -704,6 +821,7 @@ class ModelRegistry:
                     raise RegistryError(
                         f"promotion blocked: version {version} lacks passing evaluation evidence"
                     )
+                _validate_evaluation_evidence_record(ev, version)
                 if not approval_id:
                     raise RegistryError(
                         f"promotion blocked: Tier-2 approval_id is required to promote {version}"

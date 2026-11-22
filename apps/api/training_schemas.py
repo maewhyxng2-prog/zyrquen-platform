@@ -56,6 +56,7 @@ class TrainingRunRequest(BaseModel):
         max_length=64,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
     )
+    approval_id: str | None = Field(default=None, max_length=128)
     training: TrainingConfigRequest = Field(
         default_factory=TrainingConfigRequest
     )

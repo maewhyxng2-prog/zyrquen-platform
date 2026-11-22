@@ -96,10 +96,10 @@ class RamMonitor(threading.Thread):
         self.peak_bytes = 0
         self.exceeded_soft = False
         self.exceeded_hard = False
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
 
     def run(self) -> None:
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             rss = read_rss_bytes()
             if rss > self.peak_bytes:
                 self.peak_bytes = rss
@@ -108,10 +108,10 @@ class RamMonitor(threading.Thread):
             if rss >= RAM_HARD_GB * GB:
                 self.exceeded_hard = True
                 break
-            self._stop.wait(self.interval_s)
+            self._stop_event.wait(self.interval_s)
 
     def stop(self) -> dict[str, Any]:
-        self._stop.set()
+        self._stop_event.set()
         self.join(timeout=2.0)
         return {
             "peak_gb": round(self.peak_bytes / GB, 3),
