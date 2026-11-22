@@ -51,8 +51,10 @@ def _get_model_registry() -> tuple[ModelRegistry | None, str]:
 
 
 @router.get("/v1/v10/closure-audit")
-def get_v10_closure_audit():
-    """Return real-time V10 integration contract & closure gate verification status."""
+def get_v10_closure_audit(
+    _: User = Depends(get_current_user),
+):
+    """Return real-time V10 integration contract & closure gate verification status. Requires authentication."""
     return build_v10_closure_audit(runtime_health=runtime.get_health_status())
 
 
