@@ -28,8 +28,8 @@ def test_migration_chain_is_linear_and_heads_at_08():
     for current in range(2, 8):
         revision = f"20261120_{current:02d}"
         assert revisions[revision] == f"20261120_{current - 1:02d}"
-    assert revisions["20261121_08",
-  "20261122_09"] == "20261120_07"
+    assert revisions["20261121_08"] == "20261120_07"
+    assert revisions["20261122_09"] == "20261121_08"
 
 
 def test_revision_01_bootstraps_users_for_empty_database():
