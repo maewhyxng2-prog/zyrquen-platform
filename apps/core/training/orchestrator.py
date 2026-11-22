@@ -39,7 +39,9 @@ MAX_CPU_MODEL_PARAMETERS = 5_000_000
 MAX_CPU_SEQUENCE_LENGTH = 256
 MAX_CPU_BATCH_SIZE = 4
 MAX_CPU_GRAD_ACCUM_STEPS = 8
-MAX_CPU_TRAINING_STEPS = 1_000
+# Single CPU bound aligned with apps/core/workflow/resource_guard.py (500).
+# Do not raise without updating WorkflowResourceGuard + handle_training_execute.
+MAX_CPU_TRAINING_STEPS = 500
 MAX_CPU_EVAL_BATCHES = 20
 MAX_CPU_SPLIT_TOKENS = 1_000_000
 
@@ -255,6 +257,15 @@ class TrainingOrchestrator:
             )
             run_dir.mkdir(parents=True, exist_ok=False)
             model = ZyrquenModel(prepared.model_config)
+            try:
+                from apps.core.workflow.resource_guard import TrainingRuntimeGuard
+                runtime_guard = TrainingRuntimeGuard(
+                    run_dir / "checkpoints",
+                    run_id=str(run_id),
+                    step_key="orchestrator",
+                )
+            except ValueError as exc:
+                raise TrainingUnavailable(f"Training guard is misconfigured: {exc}") from exc
             result = train_sft(
                 model,
                 train_pairs,
@@ -268,7 +279,13 @@ class TrainingOrchestrator:
                 cost_controller=_cost_controller_from_env(),
                 device="cpu",
                 pad_id=tokenizer.pad_id,
+                runtime_guard=runtime_guard,
             )
+            if result.get("stopped_reason") is not None:
+                raise TrainingUnavailable(
+                    "Training stopped before successful completion: "
+                    f"{result['stopped_reason']}."
+                )
         else:
             try:
                 train_ids = build_token_stream(
@@ -292,6 +309,15 @@ class TrainingOrchestrator:
 
             run_dir.mkdir(parents=True, exist_ok=False)
             model = ZyrquenModel(prepared.model_config)
+            try:
+                from apps.core.workflow.resource_guard import TrainingRuntimeGuard
+                runtime_guard = TrainingRuntimeGuard(
+                    run_dir / "checkpoints",
+                    run_id=str(run_id),
+                    step_key="orchestrator",
+                )
+            except ValueError as exc:
+                raise TrainingUnavailable(f"Training guard is misconfigured: {exc}") from exc
             result = train(
                 model,
                 train_ids,
@@ -303,7 +329,13 @@ class TrainingOrchestrator:
                 dataset_version=prepared.dataset_version,
                 cost_controller=_cost_controller_from_env(),
                 device="cpu",
+                runtime_guard=runtime_guard,
             )
+            if result.get("stopped_reason") is not None:
+                raise TrainingUnavailable(
+                    "Training stopped before successful completion: "
+                    f"{result['stopped_reason']}."
+                )
         if not result["parameter_changed"]:
             raise TrainingUnavailable(
                 "Training completed without changing model parameters."
