@@ -32,6 +32,7 @@ class ApiKey(Base):
         ),
         UniqueConstraint("key_hash", name="uq_api_keys_key_hash"),
         Index("ix_api_keys_user_created", "user_id", "created_at"),
+        Index("ix_api_keys_next_rotation_at", "next_rotation_at"),
     )
 
     id = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
