@@ -48,9 +48,11 @@ jobs:
         run: |
           python -m pytest -v apps/core/native
 
-      - name: Test Native Evaluation
+      - name: Test Native Evaluation and Capability Contract
         run: |
-          python -m pytest -v apps/core/native/evaluation
+          python -m pytest -v \\
+            apps/core/native/evaluation \\
+            tests/test_capability_evaluation.py
 
       - name: Test Autonomous Training Loop
         run: |
