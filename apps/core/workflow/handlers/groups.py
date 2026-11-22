@@ -172,34 +172,170 @@ def handle_training_preflight(ctx: dict[str, Any], payload: dict[str, Any]) -> S
 
 
 def handle_training_execute(ctx: dict[str, Any], payload: dict[str, Any]) -> StepExecutionResult:
-    # Check PyTorch presence honestly before pretending to run training
+    """Real Training Hook — connects handler to native/train.py:train().
+
+    Order: torch -> approval -> budget -> disk -> dataset/tokenizer -> RAM monitor -> train() -> interpret.
+    Never claims COMPLETED from NOT RUN. Uses injected _train_fn / _model in ctx for tests.
+    """
+    import os as _os
+    from pathlib import Path as _Path
+
+    # 1. torch — honest check, same as before
     try:
         import torch  # noqa: F401
     except ModuleNotFoundError:
         return StepExecutionResult(
             verdict="BLOCKED",
             summary="Native training blocked: PyTorch runtime is not installed in this host.",
-            output={"torch_available": False},
-            evidence={"verdict": "BLOCKED", "reason": "torch_not_installed"},
             error_code="torch_not_installed",
         )
 
+    # 2. Tier-2 approval must already be consumed — Hook never invents it
     approval = ctx.get("consumed_approval") or {}
+    if not approval:
+        return StepExecutionResult(
+            verdict="NOT RUN",
+            error_code="approval_required",
+            summary="Tier-2 approval required: no consumed_approval in ctx. Call governance.verify_and_consume() first.",
+        )
+
+    # 3. Budget Gate — stricter than resource_guard on steps
+    try:
+        from apps.core.workflow.autonomous_training_loop import validate_budget as _validate_budget
+        from apps.core.workflow.autonomous_training_loop import check_disk_reserve as _check_disk
+        from apps.core.workflow.autonomous_training_loop import RamMonitor as _RamMonitor
+    except Exception as e:
+        return StepExecutionResult(verdict="BLOCKED", error_code="hook_import_failed", summary=f"Hook imports failed: {e}")
+
+    train_cfg_in = dict(payload.get("train_config") or {})
+    batch_size = int(payload.get("batch_size", train_cfg_in.get("batch_size", 4)) or 4)
+    max_steps = int(payload.get("max_steps", payload.get("steps", train_cfg_in.get("max_steps", 500))) or 500)
+    block_size = int(payload.get("block_size", payload.get("seq_len", train_cfg_in.get("block_size", 128))) or 128)
+    params_declared = int(payload.get("params", 0) or 0)
+    ok, reason = _validate_budget(params=params_declared, seq_len=block_size, batch_size=batch_size, steps=max_steps)
+    if not ok:
+        return StepExecutionResult(verdict="BLOCKED", error_code="budget_violated", summary=f"Budget Lock violated: {reason}")
+
+    # 4. Disk Guard before any training / checkpoint
+    checkpoint_dir = str(payload.get("checkpoint_dir") or ctx.get("checkpoint_dir") or "checkpoints/training_hook")
+    log_path = str(payload.get("log_path") or str(_Path(checkpoint_dir) / "train.log"))
+    disk_ok, disk_info = _check_disk(checkpoint_dir)
+    if not disk_ok:
+        return StepExecutionResult(
+            verdict="BLOCKED", error_code="disk_reserve_violated",
+            summary=f"Disk reserve violated: free {disk_info['free_gb']} GB < {disk_info['reserve_gb']} GB",
+        )
+
+    # 5. Resolve train_ids / val_ids — direct (tests) or dataset+tokenizer (real)
+    train_ids = payload.get("train_ids")
+    val_ids = payload.get("val_ids")
+    tokenizer_fingerprint = payload.get("tokenizer_fingerprint")
+    dataset_version = payload.get("dataset_version")
+    if train_ids is None or val_ids is None:
+        dataset_dir = str(payload.get("dataset_dir") or _os.getenv("ZYRQUEN_DATASET_DIR", "")).strip()
+        if not dataset_dir or not _Path(dataset_dir).is_dir():
+            return StepExecutionResult(verdict="BLOCKED", error_code="dataset_missing", summary=f"Dataset directory missing: {dataset_dir or '(empty)'}")
+        tokenizer = ctx.get("tokenizer") or payload.get("tokenizer")
+        if tokenizer is None:
+            return StepExecutionResult(
+                verdict="BLOCKED", error_code="tokenizer_missing",
+                summary="Tokenizer required for dataset path: pass ctx['tokenizer'] or payload train_ids/val_ids directly.",
+            )
+        try:
+            from apps.core.native.dataset import load_split as _load_split
+            from apps.core.native.train import build_token_stream as _build_stream
+            max_tokens = int(payload.get("max_tokens", 100000))
+            train_ids = _build_stream(list(_load_split(dataset_dir, "train")), tokenizer, max_tokens)
+            val_ids = _build_stream(list(_load_split(dataset_dir, "val")), tokenizer, max_tokens)
+        except Exception as e:
+            return StepExecutionResult(verdict="BLOCKED", error_code="dataset_tokenize_failed", summary=f"Dataset tokenize failed: {e}")
+
+    # 6. RAM Monitor around train()
+    monitor = _RamMonitor()
+    monitor.start()
+    try:
+        # Build model — injected _model / _model_factory for tests, else real ZyrquenModel
+        if ctx.get("_model") is not None:
+            model = ctx["_model"]
+        elif ctx.get("_model_factory") is not None:
+            model = ctx["_model_factory"](payload)
+        else:
+            try:
+                from apps.core.native.config import ZyrquenConfig as _ZCfg
+                from apps.core.native.model import ZyrquenModel as _ZModel
+                model_cfg_in = dict(payload.get("model_config") or {})
+                # Defaults that fit Budget Lock (small model). Caller can override via model_config.
+                vocab_size = int(model_cfg_in.pop("vocab_size", payload.get("vocab_size", 4096)) or 4096)
+                defaults = {"vocab_size": vocab_size, "d_model": 256, "n_layers": 4, "n_heads": 4, "d_ff": 1024, "max_seq_len": 256, "dropout": 0.0, "tie_embeddings": True}
+                defaults.update(model_cfg_in)
+                # max_seq_len must cover block_size
+                if int(defaults.get("max_seq_len", 256)) < block_size:
+                    defaults["max_seq_len"] = block_size
+                model_cfg = _ZCfg(**defaults)
+                try:
+                    est = int(model_cfg.estimated_num_parameters)
+                except Exception:
+                    est = 0
+                if est and est > 5_000_000:
+                    return StepExecutionResult(verdict="BLOCKED", error_code="budget_violated", summary=f"Model params {est} > 5000000")
+                model = _ZModel(model_cfg)
+                try:
+                    real_params = int(model.num_parameters())
+                except Exception:
+                    real_params = est
+                if real_params and real_params > 5_000_000:
+                    return StepExecutionResult(verdict="BLOCKED", error_code="budget_violated", summary=f"Model params {real_params} > 5000000")
+            except Exception as e:
+                return StepExecutionResult(verdict="BLOCKED", error_code="model_build_failed", summary=f"Model build failed: {e}")
+
+        # Build TrainConfig with Budget Lock — never use TrainConfig() defaults (batch=16, steps=1000)
+        try:
+            from apps.core.native.train import TrainConfig as _TCfg
+            tc_kwargs = dict(train_cfg_in)
+            tc_kwargs.update({"block_size": block_size, "batch_size": batch_size, "max_steps": max_steps})
+            # Remove keys TrainConfig does not accept if caller passed extra
+            # TrainConfig.__post_init__ requires warmup_steps < max_steps — clamp for short runs (e.g. max_steps=10 in tests)
+            _warmup = int(tc_kwargs.get("warmup_steps", 100) or 0)
+            if _warmup >= max_steps:
+                _warmup = max(0, max_steps - 1)
+            tc_kwargs["warmup_steps"] = _warmup
+            train_cfg = _TCfg(**{k: v for k, v in tc_kwargs.items() if k in _TCfg.__dataclass_fields__})
+        except Exception as e:
+            return StepExecutionResult(verdict="BLOCKED", error_code="train_config_failed", summary=f"TrainConfig build failed: {e}")
+
+        # Call train() — injected or real
+        train_fn = ctx.get("_train_fn")
+        if train_fn is None:
+            from apps.core.native.train import train as train_fn  # type: ignore
+        result = train_fn(model, list(train_ids), list(val_ids), train_cfg, checkpoint_dir, log_path, device="cpu", tokenizer_fingerprint=tokenizer_fingerprint, dataset_version=dataset_version)
+    except Exception as e:
+        return StepExecutionResult(verdict="FAIL", error_code="training_failed", summary=f"Training failed: {e}")
+    finally:
+        ram_info = monitor.stop()
+
+    if ram_info.get("exceeded_hard"):
+        return StepExecutionResult(
+            verdict="BLOCKED", error_code="ram_hard_stop",
+            summary=f"RAM hard stop exceeded: peak {ram_info['peak_gb']} GB >= 3.5 GB — no checkpoint claimed.",
+        )
+    # Interpret train() return dict honestly
+    if not isinstance(result, dict):
+        return StepExecutionResult(verdict="FAIL", error_code="training_bad_result", summary=f"train() returned non-dict: {type(result).__name__}")
+    stopped = result.get("stopped_reason")
+    if stopped == "loss_diverged":
+        return StepExecutionResult(verdict="FAIL", error_code="loss_diverged", summary=f"Training diverged: val_loss={result.get('val_loss')} steps={result.get('steps')}")
+    if stopped not in (None, "", "budget_exceeded", "cost_exceeded"):
+        # Unknown stop reason is not PASS
+        return StepExecutionResult(verdict="FAIL", error_code="training_stopped", summary=f"Training stopped: {stopped} steps={result.get('steps')} val_loss={result.get('val_loss')}")
+    if result.get("val_loss") is None:
+        return StepExecutionResult(verdict="FAIL", error_code="training_no_val", summary="Training finished without val_loss — cannot PASS without evidence.")
+    if result.get("parameter_changed") is False:
+        return StepExecutionResult(verdict="FAIL", error_code="training_no_change", summary="Training finished but parameters did not change — cannot PASS.")
     return StepExecutionResult(
-        verdict="NOT RUN",
-        error_code="training_hook_not_implemented",
-        summary=(
-            "Training runtime hook reached with valid Tier-2 approval; submit concrete "
-            "TrainingOrchestrator or v9 arm job payload to execute weights update."
-        ),
-        output={"approval_id": approval.get("id"), "payload": payload},
-        evidence={"verdict": "NOT RUN", "approval_id": approval.get("id")},
+        verdict="PASS",
+        summary=f"Training completed: steps={result.get('steps')} val_loss={result.get('val_loss')} perplexity={result.get('perplexity')} ram_peak_gb={ram_info.get('peak_gb')}",
     )
 
-
-# ----------------------------------------------------------------------
-# 4. Evaluation Workflow
-# ----------------------------------------------------------------------
 def handle_evaluation_verify(ctx: dict[str, Any], payload: dict[str, Any]) -> StepExecutionResult:
     registry_root = str(
         payload.get("registry_root") or os.getenv("ZYRQUEN_MODEL_REGISTRY_ROOT", "")

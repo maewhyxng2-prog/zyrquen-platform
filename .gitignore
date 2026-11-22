@@ -42,3 +42,12 @@ artifacts/
 *.npz
 node_modules/
 package-lock.json
+
+# --- Pilot1 / local-only training artifacts - never in Git ---
+eval/
+eval_reports/
+out_packages/
+pilot1_result.json
+run_config.final.json
+run_pilot1.py
+zyrquen_RUN_*.zip
