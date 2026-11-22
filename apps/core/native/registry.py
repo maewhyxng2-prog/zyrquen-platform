@@ -27,7 +27,7 @@ import shutil
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 try:
     import fcntl
@@ -43,6 +43,11 @@ _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 NATIVE_MODEL_VERSION_RE = re.compile(
     r"^ZYRQUEN-Native-(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$"
 )
+V10_MODEL_VERSION_PREFIX = "ZYRQUEN-Native-10."
+V10_MODEL_VERSION_RE = re.compile(
+    r"^ZYRQUEN-Native-10\.(0|[1-9]\d*)\.(0|[1-9]\d*)$"
+)
+V10_VERSIONING_CONTRACT_SCHEMA = "zyrquen.v10.versioning_contract.v1"
 SPLITS = ("train", "validation", "test")
 LIFECYCLE_STATES = (
     "development",
@@ -151,10 +156,122 @@ class NativeVersionReservation:
     version: str
     parent: str | None
     token: str
+    source: str = "canonical_auto"
+
+
+@dataclass(frozen=True)
+class CanonicalVersionContract:
+    schema: str
+    target_major: int
+    default_minor: int
+    prefix: str
+    pattern: str
+    initial_version: str
+    resolution_policy: str
+    audit_ignores_legacy_versions: bool
+    protected_baselines: tuple[str, ...]
+
+    def matches(self, version: Any) -> bool:
+        return is_v10_model_version(version)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": self.schema,
+            "target_major": self.target_major,
+            "default_minor": self.default_minor,
+            "prefix": self.prefix,
+            "pattern": self.pattern,
+            "initial_version": self.initial_version,
+            "resolution_policy": self.resolution_policy,
+            "audit_ignores_legacy_versions": self.audit_ignores_legacy_versions,
+            "protected_baselines": list(self.protected_baselines),
+        }
 
 
 class RegistryError(RuntimeError):
     pass
+
+
+def is_v10_model_version(version: Any) -> bool:
+    """Return True strictly when version matches ZYRQUEN-Native-10.<minor>.<patch>."""
+    return isinstance(version, str) and bool(V10_MODEL_VERSION_RE.match(version))
+
+
+V10_VERSIONING_CONTRACT = CanonicalVersionContract(
+    schema=V10_VERSIONING_CONTRACT_SCHEMA,
+    target_major=10,
+    default_minor=0,
+    prefix=V10_MODEL_VERSION_PREFIX,
+    pattern=V10_MODEL_VERSION_RE.pattern,
+    initial_version="ZYRQUEN-Native-10.0.0",
+    resolution_policy="once_per_run",
+    audit_ignores_legacy_versions=True,
+    protected_baselines=tuple(sorted(FROZEN_BASELINE_NAMES)),
+)
+
+
+def validate_native_model_version_name(
+    version: Any,
+    *,
+    require_v10: bool = False,
+) -> str:
+    """Validate an explicit native model version identifier against the naming contract."""
+    if not isinstance(version, str) or not version.strip():
+        raise RegistryError("model_version must be a non-empty string")
+    if version != version.strip() or not _VERSION.match(version):
+        raise RegistryError(
+            "invalid model_version format (use letters, digits, . _ - ; max 64 chars)"
+        )
+    if version in FROZEN_BASELINE_NAMES:
+        raise RegistryError(f"cannot overwrite protected baseline identifier: {version}")
+    if not NATIVE_MODEL_VERSION_RE.match(version):
+        raise RegistryError(
+            "invalid native model_version; expected ZYRQUEN-Native-MAJOR.MINOR.PATCH"
+        )
+    if require_v10 and not V10_MODEL_VERSION_RE.match(version):
+        raise RegistryError(
+            "invalid V10 model_version; expected ZYRQUEN-Native-10.MINOR.PATCH"
+        )
+    return version
+
+
+def compute_next_native_version(
+    existing_versions: Iterable[str],
+    *,
+    major: int | None = None,
+    default_minor: int | None = None,
+) -> tuple[str, str | None]:
+    """Central deterministic allocator for the next ZYRQUEN-Native-MAJOR.MINOR.PATCH ID."""
+    taken = {v for v in existing_versions if isinstance(v, str) and v}
+    parsed_all: list[tuple[int, int, int, str]] = []
+    for name in taken:
+        match = NATIVE_MODEL_VERSION_RE.match(name)
+        if not match:
+            continue
+        m_val, minor, patch = (int(part) for part in match.groups())
+        if major is not None and m_val != int(major):
+            continue
+        parsed_all.append((m_val, minor, patch, name))
+
+    parent = max(parsed_all)[3] if parsed_all else None
+    if not parsed_all:
+        if major is not None:
+            m_val = int(major)
+            minor = 0 if default_minor is None else int(default_minor)
+            patch = 0
+        else:
+            m_val = 0
+            minor = 1 if default_minor is None else int(default_minor)
+            patch = 0
+    else:
+        m_val, minor, patch, _ = max(parsed_all)
+        patch += 1
+
+    while True:
+        candidate = f"ZYRQUEN-Native-{m_val}.{minor}.{patch}"
+        if candidate not in taken:
+            return candidate, parent
+        patch += 1
 
 
 def _sha256(path: Path) -> str:
@@ -265,16 +382,33 @@ class ModelRegistry:
             except (OSError, json.JSONDecodeError):
                 out[item.stem] = {"version": item.stem}
                 continue
-            ver = payload.get("version") if isinstance(payload, dict) else None
+            if not isinstance(payload, dict):
+                out[item.stem] = {"version": item.stem}
+                continue
+            ver = payload.get("version")
             out[ver if isinstance(ver, str) and ver else item.stem] = payload
         return out
 
     def _read(self) -> dict:
         if not self._path.is_file():
             return {"schema": SCHEMA, "versions": {}, "active": None, "history": []}
-        data = json.loads(self._path.read_text(encoding="utf-8"))
-        if data.get("schema") != SCHEMA:
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RegistryError(f"unreadable registry.json: {exc}") from exc
+        if not isinstance(data, dict) or data.get("schema") != SCHEMA:
             raise RegistryError("unsupported registry schema")
+        versions = data.get("versions")
+        if versions is None:
+            data["versions"] = {}
+        elif not isinstance(versions, dict):
+            raise RegistryError("invalid registry versions mapping")
+        history = data.get("history")
+        if history is None:
+            data["history"] = []
+        elif not isinstance(history, list):
+            raise RegistryError("invalid registry history list")
+        data.setdefault("active", None)
         return data
 
     def _write(self, data: dict) -> None:
@@ -282,18 +416,29 @@ class ModelRegistry:
         tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, self._path)
 
-    def _highest_registered_native_version(self, data: dict) -> str | None:
+    def _highest_registered_native_version(
+        self, data: dict, *, major: int | None = None
+    ) -> str | None:
         parsed: list[tuple[int, int, int, str]] = []
         for name in data.get("versions", {}):
             if not isinstance(name, str):
                 continue
             match = NATIVE_MODEL_VERSION_RE.match(name)
             if match:
-                major, minor, patch = (int(part) for part in match.groups())
-                parsed.append((major, minor, patch, name))
+                m_val, minor, patch = (int(part) for part in match.groups())
+                if major is not None and m_val != int(major):
+                    continue
+                parsed.append((m_val, minor, patch, name))
         return max(parsed)[3] if parsed else None
 
-    def _next_native_candidate_unlocked(self, data: dict) -> tuple[str, str | None]:
+    def _next_native_candidate_unlocked(
+        self,
+        data: dict,
+        *,
+        major: int | None = None,
+        default_minor: int | None = None,
+        taken_versions: Iterable[str] | None = None,
+    ) -> tuple[str, str | None]:
         registered_names = {
             name for name in data.get("versions", {}) if isinstance(name, str)
         }
@@ -304,27 +449,23 @@ class ModelRegistry:
             if artifacts_dir.is_dir()
             else set()
         )
-        all_taken = registered_names | reserved_names | artifact_names
+        extra_taken = {
+            name for name in (taken_versions or ()) if isinstance(name, str) and name
+        }
+        all_taken = registered_names | reserved_names | artifact_names | extra_taken
 
-        parsed_all: list[tuple[int, int, int, str]] = []
-        for name in all_taken:
-            match = NATIVE_MODEL_VERSION_RE.match(name)
-            if match:
-                major, minor, patch = (int(part) for part in match.groups())
-                parsed_all.append((major, minor, patch, name))
-
-        if not parsed_all:
-            major, minor, patch = 0, 1, 0
-        else:
-            major, minor, patch, _ = max(parsed_all)
-            patch += 1
-
+        candidate, _ = compute_next_native_version(
+            all_taken, major=major, default_minor=default_minor
+        )
         # Parent lineage always points to the highest already-committed version in
-        # registry.json (never to an uncommitted in-flight reservation).
-        parent = self._highest_registered_native_version(data)
+        # registry.json within the same target major line (never uncommitted reservations).
+        parent = self._highest_registered_native_version(data, major=major)
 
+        match = NATIVE_MODEL_VERSION_RE.match(candidate)
+        assert match is not None
+        m_val, minor, patch = (int(part) for part in match.groups())
         while True:
-            candidate = f"ZYRQUEN-Native-{major}.{minor}.{patch}"
+            candidate = f"ZYRQUEN-Native-{m_val}.{minor}.{patch}"
             artifact_dir = artifacts_dir / candidate
             res_file = self._reservation_file(candidate)
             if (
@@ -337,19 +478,34 @@ class ModelRegistry:
 
     # ---- atomic reservation ----
     def reserve_next_native_version(
-        self, *, training_run_id: str | None = None
+        self,
+        *,
+        training_run_id: str | None = None,
+        major: int | None = None,
+        default_minor: int | None = None,
+        taken_versions: Iterable[str] | None = None,
+        parent: str | None = None,
     ) -> NativeVersionReservation:
         """Atomically reserve the next ZYRQUEN-Native-MAJOR.MINOR.PATCH version."""
         with self._registry_lock():
             data = self._read()
+            if parent is not None and parent not in data["versions"]:
+                raise RegistryError(f"unknown parent version: {parent}")
             self._reservations_dir.mkdir(parents=True, exist_ok=True)
-            candidate, parent = self._next_native_candidate_unlocked(data)
+            candidate, inferred_parent = self._next_native_candidate_unlocked(
+                data,
+                major=major,
+                default_minor=default_minor,
+                taken_versions=taken_versions,
+            )
+            resolved_parent = parent if parent is not None else inferred_parent
             token = secrets.token_hex(16)
             res_file = self._reservation_file(candidate)
             payload = {
                 "version": candidate,
-                "parent": parent,
+                "parent": resolved_parent,
                 "token": token,
+                "source": "canonical_auto",
                 "training_run_id": training_run_id,
                 "pid": os.getpid(),
                 "created_at": datetime.now(timezone.utc).isoformat(),
@@ -364,8 +520,79 @@ class ModelRegistry:
                 os.close(fd)
             return NativeVersionReservation(
                 version=candidate,
-                parent=parent,
+                parent=resolved_parent,
                 token=token,
+                source="canonical_auto",
+            )
+
+    def reserve_next_v10_version(
+        self,
+        *,
+        training_run_id: str | None = None,
+        taken_versions: Iterable[str] | None = None,
+    ) -> NativeVersionReservation:
+        """Atomically reserve the next canonical V10 version (ZYRQUEN-Native-10.MINOR.PATCH)."""
+        return self.reserve_next_native_version(
+            training_run_id=training_run_id,
+            major=10,
+            default_minor=0,
+            taken_versions=taken_versions,
+        )
+
+    def reserve_specific_native_version(
+        self,
+        version: str,
+        *,
+        training_run_id: str | None = None,
+        parent: str | None = None,
+        require_v10: bool = False,
+    ) -> NativeVersionReservation:
+        """Atomically reserve an explicit canonical version, rejecting duplicates or collisions."""
+        validated = validate_native_model_version_name(version, require_v10=require_v10)
+        with self._registry_lock():
+            data = self._read()
+            if validated in data.get("versions", {}):
+                raise RegistryError(f"version already registered: {validated}")
+            artifact_dir = self.root / "artifacts" / validated
+            if artifact_dir.exists():
+                raise RegistryError(f"artifact directory already exists: {validated}")
+            if parent is not None and parent not in data.get("versions", {}):
+                raise RegistryError(f"unknown parent version: {parent}")
+
+            self._reservations_dir.mkdir(parents=True, exist_ok=True)
+            res_file = self._reservation_file(validated)
+            if res_file.is_symlink():
+                raise RegistryError(f"refusing symlinked reservation file for {validated}")
+            resolved_parent = parent
+            if resolved_parent is None:
+                match = NATIVE_MODEL_VERSION_RE.match(validated)
+                assert match is not None
+                resolved_parent = self._highest_registered_native_version(
+                    data, major=int(match.group(1))
+                )
+            token = secrets.token_hex(16)
+            payload = {
+                "version": validated,
+                "parent": resolved_parent,
+                "token": token,
+                "source": "explicit",
+                "training_run_id": training_run_id,
+                "pid": os.getpid(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            try:
+                fd = os.open(res_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError as exc:
+                raise RegistryError(f"version already reserved: {validated}") from exc
+            try:
+                os.write(fd, json.dumps(payload, indent=2).encode("utf-8"))
+            finally:
+                os.close(fd)
+            return NativeVersionReservation(
+                version=validated,
+                parent=resolved_parent,
+                token=token,
+                source="explicit",
             )
 
     def release_reservation(self, version: str, token: str) -> bool:
@@ -514,11 +741,17 @@ class ModelRegistry:
         metrics: dict | None = None,
         notes: str = "",
         training_run_id: str | None = None,
+        major: int | None = None,
+        default_minor: int | None = None,
+        taken_versions: Iterable[str] | None = None,
     ) -> dict:
         """Atomically allocate, register, and record the next native version without auto-promotion."""
         with self._registry_lock():
             reservation = self.reserve_next_native_version(
-                training_run_id=training_run_id
+                training_run_id=training_run_id,
+                major=major,
+                default_minor=default_minor,
+                taken_versions=taken_versions,
             )
             try:
                 return self.register(
@@ -535,6 +768,30 @@ class ModelRegistry:
                 self.release_reservation(reservation.version, reservation.token)
                 raise
 
+    def register_next_v10_version(
+        self,
+        checkpoint_dir: str | Path,
+        tokenizer_path: str | Path,
+        dataset_dir: str | Path,
+        *,
+        metrics: dict | None = None,
+        notes: str = "",
+        training_run_id: str | None = None,
+        taken_versions: Iterable[str] | None = None,
+    ) -> dict:
+        """Atomically allocate, register, and record the next canonical V10 version."""
+        return self.register_next_native_version(
+            checkpoint_dir,
+            tokenizer_path,
+            dataset_dir,
+            metrics=metrics,
+            notes=notes,
+            training_run_id=training_run_id,
+            major=10,
+            default_minor=0,
+            taken_versions=taken_versions,
+        )
+
     # ---- query / verify ----
     def get(self, version: str) -> dict:
         try:
@@ -543,25 +800,62 @@ class ModelRegistry:
             raise RegistryError(f"unknown version: {version}") from None
 
     def list_versions(self) -> list[dict]:
-        return sorted(self._read()["versions"].values(), key=lambda r: r["created_at"])
+        versions = [r for r in self._read()["versions"].values() if isinstance(r, dict)]
+        return sorted(versions, key=lambda r: str(r.get("created_at") or ""))
 
     def active_version(self) -> str | None:
-        return self._read()["active"]
+        return self._read().get("active")
 
     def verify(self, version: str) -> bool:
         rec = self.get(version)
+        if not isinstance(rec, dict):
+            return False
+        resolved_root = self.root.resolve()
         for key, digest_field in (("checkpoint", "sha256"), ("tokenizer", "file_sha256")):
-            p = self.root / rec[key]["path"]
-            if not p.is_file() or _sha256(p) != rec[key][digest_field]:
+            section = rec.get(key)
+            if not isinstance(section, dict):
                 return False
-        manifest_path = self.root / rec["dataset"]["path"]
-        if not manifest_path.is_file():
+            rel = section.get("path")
+            expected_digest = section.get(digest_field)
+            if (
+                not isinstance(rel, str)
+                or not rel
+                or not isinstance(expected_digest, str)
+                or not expected_digest
+            ):
+                return False
+            p = self.root / rel
+            if (
+                p.is_symlink()
+                or not p.resolve().is_relative_to(resolved_root)
+                or not p.is_file()
+                or _sha256(p) != expected_digest
+            ):
+                return False
+        ds_section = rec.get("dataset")
+        if not isinstance(ds_section, dict):
+            return False
+        ds_rel = ds_section.get("path")
+        ds_digest = ds_section.get("content_sha256")
+        if (
+            not isinstance(ds_rel, str)
+            or not ds_rel
+            or not isinstance(ds_digest, str)
+            or not ds_digest
+        ):
+            return False
+        manifest_path = self.root / ds_rel
+        if (
+            manifest_path.is_symlink()
+            or not manifest_path.resolve().is_relative_to(resolved_root)
+            or not manifest_path.is_file()
+        ):
             return False
         try:
-            return json.loads(manifest_path.read_text(encoding="utf-8")).get("content_sha256") == \
-                rec["dataset"]["content_sha256"]
-        except json.JSONDecodeError:
+            manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
             return False
+        return isinstance(manifest_data, dict) and manifest_data.get("content_sha256") == ds_digest
 
     # ---- lifecycle & evaluation gate ----
     def attach_evaluation_evidence(
@@ -903,3 +1197,126 @@ class ModelRegistry:
                 data["versions"][to_version]["workflow_lineage"] = lineage
             self._write(data)
             return to_version
+
+
+def resolve_canonical_model_version(
+    *,
+    explicit_version: str | None = None,
+    parent_version: str | None = None,
+    registry: ModelRegistry | None = None,
+    existing_checkpoint_versions: Iterable[str] = (),
+    target_major: int | None = 10,
+    training_run_id: str | None = None,
+) -> NativeVersionReservation:
+    """Resolve ONE canonical native model version ID across CheckpointManager and ModelRegistry.
+
+    - Resolution happens once per `training_run_id`: if an active reservation already exists
+      for `training_run_id` in `registry`, the same `NativeVersionReservation` is returned
+      (or `RegistryError` is raised if `explicit_version` conflicts with it).
+    - If `explicit_version` is supplied, it is validated against the canonical contract
+      (and `V10_MODEL_VERSION_RE` when `target_major == 10`) and rejected if it already
+      exists in checkpoint history or ModelRegistry.
+    - If `explicit_version` is omitted, a single canonical ID is allocated once using the
+      shared major-line rule (`ZYRQUEN-Native-10.0.0` onward for V10) and atomically
+      reserved in `registry` when present.
+    """
+    taken_ckpt = {
+        str(v) for v in existing_checkpoint_versions if isinstance(v, str) and v
+    }
+    normalized_parent = (
+        parent_version.strip()
+        if isinstance(parent_version, str)
+        else parent_version
+    )
+    if normalized_parent == "":
+        normalized_parent = None
+    normalized_run_id = (
+        training_run_id.strip()
+        if isinstance(training_run_id, str)
+        else None
+    ) or None
+
+    require_v10 = target_major == 10
+    default_minor = 0 if require_v10 else 1
+
+    if registry is not None:
+        with registry._registry_lock():
+            if normalized_run_id is not None:
+                active_res = registry._read_reservations_unlocked()
+                for res_payload in active_res.values():
+                    if not isinstance(res_payload, dict):
+                        continue
+                    if res_payload.get("training_run_id") != normalized_run_id:
+                        continue
+                    existing_ver = res_payload.get("version")
+                    existing_token = res_payload.get("token")
+                    if not isinstance(existing_ver, str) or not isinstance(existing_token, str) or not existing_token:
+                        continue
+                    if require_v10 and not is_v10_model_version(existing_ver):
+                        raise RegistryError(
+                            f"training_run_id {normalized_run_id} holds non-V10 reservation {existing_ver}"
+                        )
+                    if explicit_version is not None and explicit_version != existing_ver:
+                        raise RegistryError(
+                            f"training_run_id {normalized_run_id} already resolved to {existing_ver} (cannot rebind to {explicit_version})"
+                        )
+                    if normalized_parent is not None and normalized_parent != res_payload.get("parent"):
+                        raise RegistryError(
+                            f"training_run_id {normalized_run_id} already resolved with parent {res_payload.get('parent')!r}"
+                        )
+                    return NativeVersionReservation(
+                        version=existing_ver,
+                        parent=res_payload.get("parent"),
+                        token=existing_token,
+                        source=str(res_payload.get("source") or "canonical_auto"),
+                    )
+
+            if explicit_version is not None:
+                validated = validate_native_model_version_name(
+                    explicit_version, require_v10=require_v10
+                )
+                if validated in taken_ckpt:
+                    raise RegistryError(
+                        f"model_version already exists in checkpoint version_manifest.json: {validated}"
+                    )
+                return registry.reserve_specific_native_version(
+                    validated,
+                    training_run_id=normalized_run_id,
+                    parent=normalized_parent,
+                    require_v10=require_v10,
+                )
+
+            return registry.reserve_next_native_version(
+                training_run_id=normalized_run_id,
+                major=target_major,
+                default_minor=default_minor,
+                taken_versions=taken_ckpt,
+                parent=normalized_parent,
+            )
+
+    if explicit_version is not None:
+        validated = validate_native_model_version_name(
+            explicit_version, require_v10=require_v10
+        )
+        if validated in taken_ckpt:
+            raise RegistryError(
+                f"model_version already exists in checkpoint version_manifest.json: {validated}"
+            )
+        return NativeVersionReservation(
+            version=validated,
+            parent=normalized_parent,
+            token="",
+            source="explicit",
+        )
+
+    candidate, inferred_parent = compute_next_native_version(
+        taken_ckpt,
+        major=target_major,
+        default_minor=default_minor,
+    )
+    return NativeVersionReservation(
+        version=candidate,
+        parent=normalized_parent if normalized_parent is not None else inferred_parent,
+        token="",
+        source="canonical_auto",
+    )

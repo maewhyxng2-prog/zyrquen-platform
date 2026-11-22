@@ -551,12 +551,12 @@ def main() -> int:
         checkpoint_info = verify_registry_model(registry_root, args.model_version)
 
         if args.run_inference:
-            if not checkpoint_dir or not args.model_version:
+            if (not checkpoint_dir and not registry_root) or not args.model_version:
                 inference_status = "BLOCKED"
                 raise EvaluationNotConfiguredError(
-                    "--run-inference requires --checkpoint-dir and --model-version"
+                    "--run-inference requires --model-version and either --checkpoint-dir or --registry-root"
                 )
-            engine = EvaluationEngine(checkpoint_dir=checkpoint_dir)
+            engine = EvaluationEngine(checkpoint_dir=checkpoint_dir, registry_root=registry_root)
             try:
                 inference_result = engine.evaluate_native_model(
                     args.model_version,

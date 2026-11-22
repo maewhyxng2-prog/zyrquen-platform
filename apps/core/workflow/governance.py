@@ -139,8 +139,46 @@ class WorkflowGovernance:
             raise ApprovalViolationError("Approval state changed concurrently.")
         return updated
 
-    def verify_and_consume(self, run_id: str, step: WorkflowStepSpec) -> dict[str, Any] | None:
-        """Verify HMAC signature, expiry, and consume an approved token atomically."""
+    def has_valid_approval(
+        self,
+        run_id: str,
+        *,
+        action_type: str = "compute.paid_gpu",
+        scope: str | None = None,
+    ) -> bool:
+        """Read-only verification of an active HMAC-signed admin approval (does not consume)."""
+        now = datetime.now(timezone.utc)
+        for approval in self.store.list_approvals(status="approved", limit=100):
+            if approval.get("run_id") != run_id or approval.get("action_type") != action_type:
+                continue
+            if scope is not None and approval.get("scope") != scope:
+                continue
+            try:
+                if datetime.fromisoformat(approval["expires_at"]) <= now:
+                    continue
+            except (KeyError, ValueError, TypeError):
+                continue
+            expected_sig = self._compute_signature(
+                approval_id=approval["id"],
+                run_id=approval["run_id"],
+                step_key=approval["step_key"],
+                action_type=approval["action_type"],
+                scope=approval["scope"],
+                expires_at=approval["expires_at"],
+            )
+            provided_sig = str(approval.get("signature_hmac") or "")
+            if provided_sig and hmac.compare_digest(expected_sig, provided_sig):
+                return True
+        return False
+
+    def verify_and_consume(
+        self,
+        run_id: str,
+        step: WorkflowStepSpec,
+        *,
+        expected_scope: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Verify HMAC signature, action/scope binding, expiry, and consume an approved token atomically."""
         if not self.requires_human_approval(step):
             return None
 
@@ -153,6 +191,16 @@ class WorkflowGovernance:
             return None
 
         approval = candidates[0]
+        if approval.get("action_type") != step.action_type:
+            raise ApprovalViolationError(
+                f"Approval {approval['id']} action_type={approval.get('action_type')!r} "
+                f"does not match step action_type={step.action_type!r}."
+            )
+        if expected_scope is not None and approval.get("scope") != expected_scope:
+            raise ApprovalViolationError(
+                f"Approval {approval['id']} scope={approval.get('scope')!r} "
+                f"does not match required scope={expected_scope!r}."
+            )
         if datetime.fromisoformat(approval["expires_at"]) <= datetime.now(timezone.utc):
             raise ApprovalViolationError(f"Approval {approval['id']} has expired.")
 
@@ -178,8 +226,12 @@ class WorkflowGovernance:
         approval_id: str,
         *,
         expected_action_type: str = "training.execute",
+        expected_run_id: str | None = None,
+        expected_step_key: str | None = None,
+        expected_scope: str | None = None,
+        expected_model_version: str | None = None,
     ) -> dict[str, Any]:
-        """Verify HMAC signature, expiry, action_type, and consume an explicit approval_id."""
+        """Verify HMAC signature, expiry, bindings, and consume an explicit approval_id."""
         approval = self.store.get_approval(approval_id)
         if approval is None:
             raise ApprovalViolationError(f"Approval request not found: {approval_id}")
@@ -188,6 +240,28 @@ class WorkflowGovernance:
                 f"Approval {approval_id} action_type={approval.get('action_type')!r} "
                 f"does not match required {expected_action_type!r}."
             )
+        if expected_run_id is not None and approval.get("run_id") != expected_run_id:
+            raise ApprovalViolationError(
+                f"Approval {approval_id} run_id={approval.get('run_id')!r} "
+                f"does not match required {expected_run_id!r}."
+            )
+        if expected_step_key is not None and approval.get("step_key") != expected_step_key:
+            raise ApprovalViolationError(
+                f"Approval {approval_id} step_key={approval.get('step_key')!r} "
+                f"does not match required {expected_step_key!r}."
+            )
+        if expected_scope is not None and approval.get("scope") != expected_scope:
+            raise ApprovalViolationError(
+                f"Approval {approval_id} scope={approval.get('scope')!r} "
+                f"does not match required {expected_scope!r}."
+            )
+        if expected_model_version is not None:
+            required_model_scope = f"model:{expected_model_version}"
+            if approval.get("scope") != required_model_scope:
+                raise ApprovalViolationError(
+                    f"Approval {approval_id} scope={approval.get('scope')!r} "
+                    f"does not match required model scope {required_model_scope!r}."
+                )
         if approval.get("status") != "approved":
             raise ApprovalViolationError(
                 f"Approval {approval_id} is not in 'approved' state (status={approval.get('status')!r})."

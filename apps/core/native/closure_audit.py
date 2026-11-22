@@ -25,7 +25,15 @@ from apps.core.native.config import (
 )
 from apps.core.native.dataset import SCHEMA as DATASET_SCHEMA
 from apps.core.native.evaluation import EvaluationEngine
-from apps.core.native.registry import FROZEN_BASELINE_NAMES, ModelRegistry, RegistryError
+from apps.core.native.registry import (
+    FROZEN_BASELINE_NAMES,
+    PROMOTABLE_LIFECYCLE_STATES,
+    V10_VERSIONING_CONTRACT,
+    ModelRegistry,
+    RegistryError,
+    _validate_evaluation_evidence_record,
+    is_v10_model_version,
+)
 from apps.core.native.sft import (
     IGNORE_INDEX,
     SFT_FORMAT_VERSION,
@@ -263,18 +271,26 @@ def _check_contract_5(repo_root: Path) -> dict[str, Any]:
         reg_ok = (
             hasattr(ModelRegistry, "register")
             and hasattr(ModelRegistry, "attach_evaluation_evidence")
+            and hasattr(ModelRegistry, "reserve_next_v10_version")
             and {"v7", "v8", "v9"}.issubset(FROZEN_BASELINE_NAMES)
+        )
+        contract_ok = (
+            V10_VERSIONING_CONTRACT.target_major == 10
+            and V10_VERSIONING_CONTRACT.prefix == "ZYRQUEN-Native-10."
+            and V10_VERSIONING_CONTRACT.matches("ZYRQUEN-Native-10.0.0")
+            and not V10_VERSIONING_CONTRACT.matches("ZYRQUEN-Native-0.1.0")
         )
         streaming_ok, streaming_detail = _verify_streaming_sft_parity(repo_root)
 
-        passed = bool(train_finite_ok and sft_finite_ok and ckpt_ok and reg_ok and streaming_ok)
+        passed = bool(train_finite_ok and sft_finite_ok and ckpt_ok and reg_ok and contract_ok and streaming_ok)
         checks.extend([
             {"label": "isfinite_guard", "passed": train_finite_ok and sft_finite_ok, "detail": "loss finiteness verified before optimizer.step()"},
             {"label": "versioned_ckpt", "passed": ckpt_ok, "detail": "tokenizer_sha256 manifest verification"},
             {"label": "registry_integrity", "passed": reg_ok, "detail": "FROZEN_BASELINE_NAMES (v7, v8, v9) protected"},
+            {"label": "v10_versioning_contract", "passed": contract_ok, "detail": f"{V10_VERSIONING_CONTRACT.schema} ({V10_VERSIONING_CONTRACT.initial_version})"},
             {"label": "streaming_parity", "passed": streaming_ok, "detail": streaming_detail},
         ])
-        summary = "Versioned checkpoints, NaN/Inf optimizer guards, ModelRegistry protection, and streaming SFT parity verified"
+        summary = "Versioned checkpoints, V10 canonical versioning contract, NaN/Inf optimizer guards, ModelRegistry protection, and streaming SFT parity verified"
     except Exception as exc:
         passed = False
         summary = f"Contract 5 verification failed: {exc}"
@@ -293,25 +309,33 @@ def _check_contract_5(repo_root: Path) -> dict[str, Any]:
 
 def _inspect_eval_report(eval_report_path: str | Path | None) -> dict[str, Any]:
     if not eval_report_path:
-        return {"configured": False, "passed": False, "overall_status": None, "inference_status": None, "reason": "EVAL_REPORT_NOT_CONFIGURED"}
+        return {"configured": False, "passed": False, "overall_status": None, "inference_status": None, "model_version": None, "reason": "EVAL_REPORT_NOT_CONFIGURED"}
 
     path = Path(eval_report_path)
     if path.is_symlink() or not path.is_file():
-        return {"configured": True, "passed": False, "overall_status": "FAILED", "inference_status": None, "reason": "EVAL_REPORT_INVALID_PATH"}
+        return {"configured": True, "passed": False, "overall_status": "FAILED", "inference_status": None, "model_version": None, "reason": "EVAL_REPORT_INVALID_PATH"}
 
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"configured": True, "passed": False, "overall_status": "FAILED", "inference_status": None, "reason": "EVAL_REPORT_UNREADABLE"}
+        return {"configured": True, "passed": False, "overall_status": "FAILED", "inference_status": None, "model_version": None, "reason": "EVAL_REPORT_UNREADABLE"}
 
     if not isinstance(data, dict):
-        return {"configured": True, "passed": False, "overall_status": "FAILED", "inference_status": None, "reason": "EVAL_REPORT_INVALID_SCHEMA"}
+        return {"configured": True, "passed": False, "overall_status": "FAILED", "inference_status": None, "model_version": None, "reason": "EVAL_REPORT_INVALID_SCHEMA"}
 
     report_schema = data.get("report_schema") or data.get("schema")
     overall = str(data.get("overall_status", "")).strip().upper() or "NOT RUN"
     inference = str(data.get("inference_status", "")).strip().upper() or "NOT RUN"
     dataset_ok = str(data.get("dataset_integrity", "")).strip().upper() == "PASS"
     leakage_ok = str(data.get("leakage_audit_status", "")).strip().upper() == "PASS"
+
+    ckpt_meta = data.get("checkpoint")
+    eval_model_version: str | None = None
+    if isinstance(ckpt_meta, dict) and ckpt_meta.get("model_version") is not None:
+        eval_model_version = str(ckpt_meta.get("model_version")).strip() or None
+    elif data.get("model_version") is not None:
+        eval_model_version = str(data.get("model_version")).strip() or None
+    version_ok = eval_model_version is None or is_v10_model_version(eval_model_version)
 
     # Zero-regression check if comparison entries are present
     reg_entries = data.get("regression_comparison")
@@ -326,6 +350,7 @@ def _inspect_eval_report(eval_report_path: str | Path | None) -> dict[str, Any]:
         and dataset_ok
         and leakage_ok
         and regression_ok
+        and version_ok
     )
     reason = None
     if not passed:
@@ -333,6 +358,8 @@ def _inspect_eval_report(eval_report_path: str | Path | None) -> dict[str, Any]:
             reason = "EVAL_REPORT_SCHEMA_MISMATCH"
         elif overall == "BLOCKED" or inference == "BLOCKED":
             reason = "EVAL_INFERENCE_BLOCKED"
+        elif not version_ok:
+            reason = "EVAL_REPORT_NON_V10_MODEL"
         elif not regression_ok:
             reason = "EVAL_REGRESSION_FAILED"
         elif overall in {"FAIL", "FAILED"}:
@@ -344,6 +371,7 @@ def _inspect_eval_report(eval_report_path: str | Path | None) -> dict[str, Any]:
         "configured": True,
         "passed": passed,
         "report_schema": report_schema,
+        "model_version": eval_model_version,
         "overall_status": overall,
         "inference_status": inference,
         "dataset_integrity": data.get("dataset_integrity"),
@@ -354,32 +382,83 @@ def _inspect_eval_report(eval_report_path: str | Path | None) -> dict[str, Any]:
 
 def _inspect_registry(registry_root: str | Path | None) -> dict[str, Any]:
     if not registry_root:
-        return {"configured": False, "active_version": None, "verified_v10_count": 0, "reason": "MODEL_REGISTRY_NOT_CONFIGURED"}
+        return {
+            "configured": False,
+            "active_version": None,
+            "active_v10_version": None,
+            "registered_count": 0,
+            "registered_v10_count": 0,
+            "ignored_legacy_versions": [],
+            "verified_v10_count": 0,
+            "verified_v10_versions": [],
+            "reason": "MODEL_REGISTRY_NOT_CONFIGURED",
+        }
 
     path = Path(registry_root)
     if path.is_symlink() or not path.is_dir():
-        return {"configured": True, "active_version": None, "verified_v10_count": 0, "reason": "MODEL_REGISTRY_UNAVAILABLE"}
+        return {
+            "configured": True,
+            "active_version": None,
+            "active_v10_version": None,
+            "registered_count": 0,
+            "registered_v10_count": 0,
+            "ignored_legacy_versions": [],
+            "verified_v10_count": 0,
+            "verified_v10_versions": [],
+            "reason": "MODEL_REGISTRY_UNAVAILABLE",
+        }
 
     try:
         reg = ModelRegistry(path)
         active = reg.active_version()
         versions = reg.list_versions()
     except RegistryError:
-        return {"configured": True, "active_version": None, "verified_v10_count": 0, "reason": "MODEL_REGISTRY_UNREADABLE"}
+        return {
+            "configured": True,
+            "active_version": None,
+            "active_v10_version": None,
+            "registered_count": 0,
+            "registered_v10_count": 0,
+            "ignored_legacy_versions": [],
+            "verified_v10_count": 0,
+            "verified_v10_versions": [],
+            "reason": "MODEL_REGISTRY_UNREADABLE",
+        }
 
-    verified_v10_count = 0
+    verified_v10_versions: list[str] = []
+    registered_v10_versions: list[str] = []
+    ignored_legacy_versions: list[str] = []
     for rec in versions:
-        version_name = str(rec.get("version", ""))
-        if version_name.startswith("ZYRQUEN-Native-10."):
-            ev = rec.get("evaluation_evidence")
-            if isinstance(ev, dict) and ev.get("passed") is True and ev.get("zero_regression") is True:
-                verified_v10_count += 1
+        if not isinstance(rec, dict):
+            continue
+        version_name = str(rec.get("version") or "")
+        if not is_v10_model_version(version_name):
+            if version_name:
+                ignored_legacy_versions.append(version_name)
+            continue
+        registered_v10_versions.append(version_name)
+        if rec.get("lifecycle_status") not in PROMOTABLE_LIFECYCLE_STATES:
+            continue
+        ev = rec.get("evaluation_evidence")
+        try:
+            _validate_evaluation_evidence_record(ev, version_name)
+            if not reg.verify(version_name):
+                continue
+        except RegistryError:
+            continue
+        verified_v10_versions.append(version_name)
 
+    verified_v10_count = len(verified_v10_versions)
+    active_v10 = active if is_v10_model_version(active) else None
     return {
         "configured": True,
         "active_version": active,
+        "active_v10_version": active_v10,
         "registered_count": len(versions),
+        "registered_v10_count": len(registered_v10_versions),
+        "ignored_legacy_versions": ignored_legacy_versions,
         "verified_v10_count": verified_v10_count,
+        "verified_v10_versions": verified_v10_versions,
         "reason": None if verified_v10_count > 0 else "TRAINED_V10_MODEL_UNAVAILABLE",
     }
 
@@ -463,8 +542,20 @@ def build_v10_closure_audit(
 
     native_loaded = bool(runtime_health.get("native_model_loaded"))
     is_trained = bool(runtime_health.get("is_trained"))
+    runtime_model_ver = runtime_health.get("model_version")
+    is_trained_v10 = is_trained and (
+        runtime_model_ver is None or is_v10_model_version(runtime_model_ver)
+    )
     dataset_configured = bool(resolved_dataset_dir and Path(resolved_dataset_dir).is_dir())
     tokenizer_configured = bool(resolved_tokenizer_path and Path(resolved_tokenizer_path).is_file())
+
+    eval_report_version = eval_info.get("model_version")
+    eval_registry_mismatch = bool(
+        eval_info.get("passed")
+        and eval_report_version is not None
+        and registry_info.get("configured")
+        and eval_report_version not in (registry_info.get("verified_v10_versions") or [])
+    )
 
     blockers: list[str] = []
     if not torch_installed:
@@ -475,9 +566,11 @@ def build_v10_closure_audit(
         blockers.append("TOKENIZER_NOT_CONFIGURED")
     if eval_info.get("reason"):
         blockers.append(str(eval_info["reason"]))
+    if eval_registry_mismatch:
+        blockers.append("EVAL_REPORT_MODEL_VERSION_UNVERIFIED")
     if registry_info.get("reason"):
         blockers.append(str(registry_info["reason"]))
-    if not is_trained and registry_info.get("verified_v10_count", 0) == 0:
+    if not is_trained_v10 and registry_info.get("verified_v10_count", 0) == 0:
         if "TRAINED_V10_MODEL_UNAVAILABLE" not in blockers:
             blockers.append("TRAINED_V10_MODEL_UNAVAILABLE")
 
@@ -490,16 +583,25 @@ def build_v10_closure_audit(
     elif eval_info.get("overall_status") == "BLOCKED" or eval_info.get("inference_status") == "BLOCKED":
         v10d_status = "BLOCKED"
         v10d_summary = "Configured V10 evaluation report reports BLOCKED status."
-    elif eval_info.get("overall_status") in {"FAIL", "FAILED"} or eval_info.get("reason") in {
-        "EVAL_REPORT_INVALID_PATH",
-        "EVAL_REPORT_UNREADABLE",
-        "EVAL_REPORT_INVALID_SCHEMA",
-        "EVAL_REGRESSION_FAILED",
-        "EVAL_FAILED",
-    }:
+    elif (
+        eval_info.get("overall_status") in {"FAIL", "FAILED"}
+        or eval_registry_mismatch
+        or eval_info.get("reason") in {
+            "EVAL_REPORT_INVALID_PATH",
+            "EVAL_REPORT_UNREADABLE",
+            "EVAL_REPORT_INVALID_SCHEMA",
+            "EVAL_REPORT_NON_V10_MODEL",
+            "EVAL_REGRESSION_FAILED",
+            "EVAL_FAILED",
+        }
+    ):
         v10d_status = "FAILED"
-        v10d_summary = f"V10 evaluation artifact failed verification ({eval_info.get('reason')})."
-    elif eval_info.get("passed") and (is_trained or registry_info.get("verified_v10_count", 0) > 0):
+        v10d_summary = (
+            "Configured V10 evaluation report targets an unverified model version."
+            if eval_registry_mismatch
+            else f"V10 evaluation artifact failed verification ({eval_info.get('reason')})."
+        )
+    elif eval_info.get("passed") and (is_trained_v10 or registry_info.get("verified_v10_count", 0) > 0):
         v10d_status = "PASS"
         v10d_summary = "Verified V10 trained model, registry evidence, and passing native evaluation report confirmed."
         blockers = []
@@ -555,8 +657,13 @@ def build_v10_closure_audit(
         },
     ]
 
+    active_v10_model = registry_info.get("active_v10_version") or (
+        runtime_model_ver if is_v10_model_version(runtime_model_ver) else None
+    )
+
     return {
         "schema": CLOSURE_AUDIT_SCHEMA,
+        "versioning_contract": V10_VERSIONING_CONTRACT.schema,
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "overall_status": overall_status,
         "static_status": static_status,
@@ -574,11 +681,15 @@ def build_v10_closure_audit(
             "native_runtime_status": str(runtime_health.get("runtime_status", "unavailable")),
             "native_model_loaded": native_loaded,
             "is_trained": is_trained,
-            "active_model_version": registry_info.get("active_version") or runtime_health.get("model_version"),
+            "active_model_version": registry_info.get("active_version") or runtime_model_ver,
+            "active_v10_model_version": active_v10_model,
             "eval_report_configured": bool(eval_info.get("configured")),
             "eval_report_status": eval_info.get("overall_status"),
+            "eval_report_model_version": eval_report_version,
             "registry_configured": bool(registry_info.get("configured")),
             "verified_v10_models": int(registry_info.get("verified_v10_count", 0)),
+            "verified_v10_versions": list(registry_info.get("verified_v10_versions") or []),
+            "ignored_legacy_versions": list(registry_info.get("ignored_legacy_versions") or []),
             "dataset_configured": dataset_configured,
             "tokenizer_configured": tokenizer_configured,
         },

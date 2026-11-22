@@ -58,9 +58,13 @@ class EvaluationEngine:
         checkpoint_dir: str | Path | None = None,
         max_val_loss: float | None = None,
         max_perplexity: float | None = None,
+        *,
+        registry_root: str | Path | None = None,
+        load_fn: Any | None = None,
     ):
         self.max_val_loss = max_val_loss
         self.max_perplexity = max_perplexity
+        self._load_fn = load_fn
         self.validator = ModelValidator(
             max_val_loss=max_val_loss,
             max_perplexity=max_perplexity,
@@ -71,10 +75,15 @@ class EvaluationEngine:
         else:
             self.checkpoint_dir = Path(checkpoint_dir)
             self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            self.versions = VersionedCheckpointManager(self.checkpoint_dir)
+            ckpt_kwargs = {"load_fn": load_fn} if load_fn is not None else {}
+            self.versions = VersionedCheckpointManager(self.checkpoint_dir, **ckpt_kwargs)
+
+        self.registry_root: Path | None = Path(registry_root) if registry_root is not None else None
 
     def get_status(self) -> dict[str, Any]:
-        configured = self.checkpoint_dir is not None and self.checkpoint_dir.is_dir()
+        ckpt_configured = self.checkpoint_dir is not None and self.checkpoint_dir.is_dir()
+        reg_configured = self.registry_root is not None and self.registry_root.is_dir()
+        configured = ckpt_configured or reg_configured
         torch_installed = importlib.util.find_spec("torch") is not None
         if not configured:
             status = "not_configured"
@@ -84,17 +93,130 @@ class EvaluationEngine:
             status = "evidence_validation_only"
         return {
             "status": status,
-            "checkpoint_dir_configured": configured,
+            "checkpoint_dir_configured": ckpt_configured,
+            "registry_root_configured": reg_configured,
             "native_inference_evaluation_wired": True,
             "torch_installed": torch_installed,
         }
 
-    def _require_configured(self) -> tuple[Path, VersionedCheckpointManager]:
-        if self.checkpoint_dir is None or self.versions is None:
+    def _require_configured(self) -> tuple[Path, VersionedCheckpointManager | None]:
+        if self.checkpoint_dir is None and self.registry_root is None:
             raise EvaluationNotConfiguredError(
-                "checkpoint_dir is not configured for evaluation"
+                "checkpoint_dir or registry_root must be configured for evaluation"
             )
-        return self.checkpoint_dir, self.versions
+        if self.checkpoint_dir is not None:
+            return self.checkpoint_dir, self.versions
+        assert self.registry_root is not None
+        return self.registry_root, None
+
+    def _resolve_version_artifacts(
+        self,
+        model_version: str,
+        *,
+        checkpoint_id: str | None = None,
+    ) -> dict[str, Any]:
+        base_dir, versions = self._require_configured()
+        if not isinstance(model_version, str) or not model_version.strip():
+            raise EvaluationEvidenceError("model_version must be a non-empty string")
+
+        # 1. Try VersionedCheckpointManager (version_manifest.json)
+        if versions is not None and self.checkpoint_dir is not None:
+            version = versions.get_version(model_version)
+            if version:
+                if not versions.verify_version(model_version):
+                    raise EvaluationEvidenceError(
+                        f"checkpoint integrity check failed for model_version: {model_version}"
+                    )
+                if checkpoint_id is not None and checkpoint_id not in {
+                    version.get("checkpoint_file"),
+                    version.get("checkpoint_sha256"),
+                }:
+                    raise EvaluationEvidenceError(
+                        f"checkpoint_id does not match model_version {model_version}"
+                    )
+                ckpt_file = version.get("checkpoint_file")
+                if not ckpt_file:
+                    raise EvaluationEvidenceError(f"checkpoint_file missing for {model_version}")
+                ckpt_path = (self.checkpoint_dir / str(ckpt_file)).resolve()
+                if not ckpt_path.is_relative_to(self.checkpoint_dir.resolve()) or not ckpt_path.is_file():
+                    raise EvaluationEvidenceError(f"invalid checkpoint file for {model_version}")
+                if self.registry_root is not None:
+                    from apps.core.native.registry import ModelRegistry, RegistryError
+
+                    reg_kwargs = {"load_fn": self._load_fn} if self._load_fn is not None else {}
+                    reg = ModelRegistry(self.registry_root, **reg_kwargs)
+                    try:
+                        reg_rec = reg.get(model_version)
+                    except RegistryError:
+                        reg_rec = None
+                    if reg_rec is not None:
+                        if not reg.verify(model_version):
+                            raise EvaluationEvidenceError(
+                                f"registry artifact integrity check failed for model_version: {model_version}"
+                            )
+                        reg_ckpt_sha = (reg_rec.get("checkpoint") or {}).get("sha256")
+                        if reg_ckpt_sha != version.get("checkpoint_sha256"):
+                            raise EvaluationEvidenceError(
+                                f"artifact mismatch between checkpoint_dir and registry for {model_version}"
+                            )
+
+                return {
+                    **version,
+                    "_source": "versioned_checkpoint",
+                    "_checkpoint_path": ckpt_path,
+                    "_tokenizer_path": self.checkpoint_dir / "tokenizer.json",
+                    "_report_dir": self.checkpoint_dir,
+                }
+
+        # 2. Fallback / Direct load from ModelRegistry artifacts/<version>/
+        if self.registry_root is not None:
+            from apps.core.native.registry import ModelRegistry, RegistryError
+
+            reg_kwargs = {"load_fn": self._load_fn} if self._load_fn is not None else {}
+            reg = ModelRegistry(self.registry_root, **reg_kwargs)
+            try:
+                if not reg.verify(model_version):
+                    raise EvaluationEvidenceError(
+                        f"registry artifact integrity check failed for model_version: {model_version}"
+                    )
+                rec = reg.get(model_version)
+            except RegistryError as exc:
+                raise EvaluationEvidenceError(f"registry lookup failed for {model_version}: {exc}") from exc
+
+            ckpt_info = rec.get("checkpoint") or {}
+            tok_info = rec.get("tokenizer") or {}
+            ds_info = rec.get("dataset") or {}
+            ckpt_rel = str(ckpt_info.get("path") or "")
+            tok_rel = str(tok_info.get("path") or "")
+            ckpt_path = (self.registry_root / ckpt_rel).resolve()
+            tok_path = (self.registry_root / tok_rel).resolve()
+            if not ckpt_path.is_relative_to(self.registry_root.resolve()) or not ckpt_path.is_file():
+                raise EvaluationEvidenceError(f"registry checkpoint missing for {model_version}")
+            if not tok_path.is_relative_to(self.registry_root.resolve()) or not tok_path.is_file():
+                raise EvaluationEvidenceError(f"registry tokenizer missing for {model_version}")
+            if checkpoint_id is not None and checkpoint_id not in {
+                ckpt_path.name,
+                ckpt_info.get("sha256"),
+                ckpt_rel,
+            }:
+                raise EvaluationEvidenceError(
+                    f"checkpoint_id does not match model_version {model_version}"
+                )
+            report_dir = self.checkpoint_dir or (self.registry_root / "artifacts" / model_version)
+            return {
+                "model_version": model_version,
+                "dataset_version": ds_info.get("version"),
+                "dataset_content_hash": ds_info.get("content_sha256"),
+                "checkpoint_file": ckpt_rel,
+                "checkpoint_sha256": ckpt_info.get("sha256"),
+                "tokenizer_sha256": tok_info.get("sha256"),
+                "_source": "model_registry",
+                "_checkpoint_path": ckpt_path,
+                "_tokenizer_path": tok_path,
+                "_report_dir": report_dir,
+            }
+
+        raise EvaluationEvidenceError(f"ไม่เจอ model_version: {model_version}")
 
     def verify_checkpoint_version(
         self,
@@ -102,24 +224,8 @@ class EvaluationEngine:
         *,
         checkpoint_id: str | None = None,
     ) -> dict[str, Any]:
-        _, versions = self._require_configured()
-        if not isinstance(model_version, str) or not model_version.strip():
-            raise EvaluationEvidenceError("model_version must be a non-empty string")
-        version = versions.get_version(model_version)
-        if not version:
-            raise EvaluationEvidenceError(f"ไม่เจอ model_version: {model_version}")
-        if not versions.verify_version(model_version):
-            raise EvaluationEvidenceError(
-                f"checkpoint integrity check failed for model_version: {model_version}"
-            )
-        if checkpoint_id is not None and checkpoint_id not in {
-            version.get("checkpoint_file"),
-            version.get("checkpoint_sha256"),
-        }:
-            raise EvaluationEvidenceError(
-                f"checkpoint_id does not match model_version {model_version}"
-            )
-        return version
+        resolved = self._resolve_version_artifacts(model_version, checkpoint_id=checkpoint_id)
+        return {k: v for k, v in resolved.items() if not k.startswith("_")}
 
     def verify_dataset(
         self,
@@ -203,8 +309,9 @@ class EvaluationEngine:
         dataset_dir: str | Path | None = None,
         dataset_checksum: str | None = None,
     ) -> dict[str, Any]:
-        checkpoint_dir, _ = self._require_configured()
-        version = self.verify_checkpoint_version(model_version)
+        resolved = self._resolve_version_artifacts(model_version)
+        version = {k: v for k, v in resolved.items() if not k.startswith("_")}
+        report_dir = Path(resolved["_report_dir"])
 
         if not isinstance(metrics, dict) or not metrics:
             raise EvaluationEvidenceError(
@@ -228,7 +335,8 @@ class EvaluationEngine:
                     "dataset_checksum does not match checkpoint dataset_content_hash"
                 )
 
-        report = self.validator.validate(checkpoint_dir, metrics)
+        validate_dir = self.checkpoint_dir if self.checkpoint_dir is not None else report_dir
+        report = self.validator.validate(validate_dir, metrics)
         if isinstance(report, dict):
             passed = bool(report.get("passed", report.get("is_valid", report.get("valid", False))))
             detail = report
@@ -254,8 +362,9 @@ class EvaluationEngine:
             "validator": detail,
             "evaluated_at": datetime.now(timezone.utc).isoformat(),
         }
-        out = (checkpoint_dir / f"evaluation_{model_version}.json").resolve()
-        if not out.is_relative_to(checkpoint_dir.resolve()):
+        report_dir.mkdir(parents=True, exist_ok=True)
+        out = (report_dir / f"evaluation_{model_version}.json").resolve()
+        if not out.is_relative_to(report_dir.resolve()):
             raise EvaluationEvidenceError("model_version produces an invalid report path")
         tmp = out.with_suffix(".tmp")
         tmp.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -276,17 +385,25 @@ class EvaluationEngine:
         capability_pass_threshold: float = 0.5,
     ) -> dict[str, Any]:
         """Execute greedy native ZyrquenModel inference over verified SFT splits."""
-        checkpoint_dir, _ = self._require_configured()
+        self._require_configured()
         try:
             import torch
             from apps.core.native.model import ZyrquenModel
             from apps.core.native.registry import _safe_torch_load
+            from apps.core.workflow.resource_guard import MAX_CPU_THREADS, enforce_cpu_thread_cap
         except ModuleNotFoundError as exc:
             raise EvaluationNotConfiguredError(
                 "PyTorch runtime is not installed; native inference evaluation cannot run"
             ) from exc
 
-        version = self.verify_checkpoint_version(model_version)
+        if str(device).startswith("cpu"):
+            enforce_cpu_thread_cap(MAX_CPU_THREADS, torch_mod=torch)
+
+        resolved = self._resolve_version_artifacts(model_version)
+        version = {k: v for k, v in resolved.items() if not k.startswith("_")}
+        ckpt_path = Path(resolved["_checkpoint_path"])
+        default_tok_path = Path(resolved["_tokenizer_path"])
+
         manifest = self.verify_dataset(
             dataset_dir,
             expected_version=version.get("dataset_version"),
@@ -297,7 +414,7 @@ class EvaluationEngine:
                 "evaluate_native_model requires an SFT dataset with 'input' and 'target' fields"
             )
 
-        tok_candidate = Path(tokenizer_path) if tokenizer_path else (checkpoint_dir / "tokenizer.json")
+        tok_candidate = Path(tokenizer_path) if tokenizer_path else default_tok_path
         if not tok_candidate.is_file() or tok_candidate.is_symlink():
             raise EvaluationEvidenceError(
                 f"tokenizer.json missing or symlinked: {tok_candidate}"
@@ -307,14 +424,8 @@ class EvaluationEngine:
         except (OSError, ValueError, KeyError) as exc:
             raise EvaluationEvidenceError(f"failed to load tokenizer: {exc}") from exc
 
-        ckpt_file = version.get("checkpoint_file")
-        if not ckpt_file:
-            raise EvaluationEvidenceError(f"checkpoint_file missing for {model_version}")
-        ckpt_path = (checkpoint_dir / str(ckpt_file)).resolve()
-        if not ckpt_path.is_relative_to(checkpoint_dir.resolve()) or not ckpt_path.is_file():
-            raise EvaluationEvidenceError(f"invalid checkpoint file for {model_version}")
-
-        state = _safe_torch_load(str(ckpt_path))
+        loader = self._load_fn or _safe_torch_load
+        state = loader(str(ckpt_path))
         if not isinstance(state, dict) or "model" not in state or "model_config" not in state:
             raise EvaluationEvidenceError("checkpoint missing model weights or model_config")
 
@@ -366,7 +477,9 @@ class EvaluationEngine:
 
                 prefix_ids = encode_sft_prompt(tok, bound_prompt, sep=sep)
                 if len(prefix_ids) >= cfg.max_seq_len:
-                    prefix_ids = prefix_ids[-(cfg.max_seq_len - 1) :]
+                    raise EvaluationEvidenceError(
+                        f"encoded prompt length ({len(prefix_ids)}) exceeds or equals model max_seq_len ({cfg.max_seq_len}); silent truncation is forbidden"
+                    )
                 prompt_tensor = torch.tensor([prefix_ids], dtype=torch.long, device=device)
 
                 generated_ids: list[int] = []

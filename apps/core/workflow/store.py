@@ -132,6 +132,18 @@ class WorkflowStore:
                     workflow_key TEXT PRIMARY KEY,
                     last_triggered_at TEXT NOT NULL
                 );
+
+                CREATE TRIGGER IF NOT EXISTS trg_wf_audit_no_update
+                BEFORE UPDATE ON workflow_audit_logs
+                BEGIN
+                    SELECT RAISE(ABORT, 'workflow_audit_logs is append-only');
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS trg_wf_audit_no_delete
+                BEFORE DELETE ON workflow_audit_logs
+                BEGIN
+                    SELECT RAISE(ABORT, 'workflow_audit_logs is append-only');
+                END;
                 """
             )
 

@@ -86,12 +86,24 @@ def perplexity(loss: float) -> float:
 def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
           checkpoint_dir: str | Path, log_path: str | Path, device: str = "cpu",
           cost_controller=None, tokenizer_fingerprint: str | None = None,
-          dataset_version: str | None = None) -> dict:
+          dataset_version: str | None = None,
+          runtime_guard=None, disk_reserve_gb: float | None = None,
+          cpu_threads: int | None = None, max_checkpoints: int = 3) -> dict:
     import torch
 
     from apps.core.training_infrastructure.monitoring.training_monitor import TrainingMonitor
     from apps.core.training_infrastructure.recovery.checkpoint_recovery import (
         CheckpointManager, capture_rng_state, restore_rng_state)
+    from apps.core.workflow.resource_guard import (
+        MAX_CPU_THREADS, check_disk_reserve, enforce_cpu_thread_cap)
+
+    if str(device).startswith("cpu") or cpu_threads is not None or runtime_guard is not None:
+        target_threads = int(
+            cpu_threads
+            if cpu_threads is not None
+            else (getattr(runtime_guard, "cpu_threads", MAX_CPU_THREADS))
+        )
+        enforce_cpu_thread_cap(target_threads, torch_mod=torch)
 
     rng = random.Random(cfg.seed)
     torch.manual_seed(cfg.seed)
@@ -103,7 +115,7 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
         [{"params": decay, "weight_decay": cfg.weight_decay},
          {"params": no_decay, "weight_decay": 0.0}], lr=cfg.lr, betas=(0.9, 0.95))
 
-    ckpts = CheckpointManager(checkpoint_dir)
+    ckpts = CheckpointManager(checkpoint_dir, keep_last=max(1, int(max_checkpoints)))
     monitor = TrainingMonitor(log_path)
     start_step = 0
     resumed = ckpts.load_latest()
@@ -133,25 +145,54 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
         model.train()
         return sum(losses) / len(losses)
 
-    def save(step: int) -> None:
+    stopped_reason = None
+    checkpoint_blocked = False
+    checkpoint_saved = False
+
+    def save(step: int) -> bool:
+        nonlocal stopped_reason, checkpoint_blocked, checkpoint_saved
+        if runtime_guard is not None:
+            ok_guard, guard_reason, _ = runtime_guard.check_runtime(
+                "before_checkpoint", step=step, checkpoint_write=True
+            )
+            if not ok_guard:
+                checkpoint_blocked = True
+                if stopped_reason is None:
+                    stopped_reason = guard_reason
+                return False
+        elif disk_reserve_gb is not None:
+            ok_disk, _ = check_disk_reserve(checkpoint_dir, reserve_gb=float(disk_reserve_gb))
+            if not ok_disk:
+                checkpoint_blocked = True
+                if stopped_reason is None:
+                    stopped_reason = "disk_reserve_violated"
+                return False
         ckpts.save(step, {
             "model": model.state_dict(), "optimizer": optimizer.state_dict(),
             "step": step, "batch_rng": rng.getstate(), "rng": capture_rng_state(),
             "config": cfg.__dict__, "model_config": model.cfg.to_dict(),
             "tokenizer_sha256": tokenizer_fingerprint, "dataset_version": dataset_version,
         })
+        checkpoint_saved = True
+        return True
 
     model.train()
     last_val = None
     last_train_loss = None
-    stopped_reason = None
     if cost_controller is not None:
         cost_controller.start()
+    if runtime_guard is not None:
+        runtime_guard.start()
     step = start_step
     while step < cfg.max_steps:
         if cost_controller is not None and cost_controller.should_stop():
             stopped_reason = cost_controller.exceeded()
             break
+        if runtime_guard is not None:
+            ok_guard, guard_reason, _ = runtime_guard.check_runtime("before_step", step=step)
+            if not ok_guard:
+                stopped_reason = guard_reason
+                break
         lr = lr_at(step, cfg)
         for group in optimizer.param_groups:
             group["lr"] = lr
@@ -167,6 +208,16 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
             monitor.log(step + 1, total_loss, lr, tokens=0)
             stopped_reason = "loss_diverged"
             break
+        if cost_controller is not None and cost_controller.should_stop():
+            optimizer.zero_grad(set_to_none=True)
+            stopped_reason = cost_controller.exceeded()
+            break
+        if runtime_guard is not None:
+            ok_guard, guard_reason, _ = runtime_guard.check_runtime("before_optimizer_step", step=step)
+            if not ok_guard:
+                optimizer.zero_grad(set_to_none=True)
+                stopped_reason = guard_reason
+                break
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         optimizer.step()
         last_train_loss = total_loss
@@ -181,23 +232,39 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
         if step % cfg.eval_interval == 0 or step == cfg.max_steps:
             last_val = evaluate()
         if step % cfg.checkpoint_interval == 0 or step == cfg.max_steps:
-            save(step)
+            if not save(step):
+                break
 
-    if stopped_reason in ("loss_diverged",):
-        pass  # do not checkpoint a diverged state
-    elif stopped_reason is not None and step > start_step:
-        save(step)  # budget stop: keep progress so the run can resume
+    if stopped_reason in (
+        "loss_diverged",
+        "ram_hard_limit",
+        "disk_reserve_violated",
+        "disk_budget_violated",
+    ):
+        pass  # do not checkpoint a diverged or unsafe state
+    elif stopped_reason is not None and step > start_step and not checkpoint_blocked:
+        save(step)  # timeout/budget stop: keep safe progress only if disk/RAM checks pass
     if cost_controller is not None:
         cost_controller.pause()
+    if runtime_guard is not None:
+        runtime_guard.pause()
     if last_val is None and stopped_reason is None:
         last_val = evaluate()
     parameter_changed = any(
         not torch.equal(initial_parameters[name], parameter.detach())
         for name, parameter in model.named_parameters()
     )
-    return {"steps": step, "resumed_from": start_step, "stopped_reason": stopped_reason,
-            "train_loss": last_train_loss, "parameter_changed": parameter_changed,
-            "val_loss": last_val, "perplexity": perplexity(last_val) if last_val is not None else None}
+    return {
+        "steps": step,
+        "resumed_from": start_step,
+        "stopped_reason": stopped_reason,
+        "train_loss": last_train_loss,
+        "parameter_changed": parameter_changed,
+        "val_loss": last_val,
+        "perplexity": perplexity(last_val) if last_val is not None else None,
+        "checkpoint_blocked": checkpoint_blocked,
+        "checkpoint_saved": checkpoint_saved,
+    }
 
 
 def train_sft(
@@ -214,6 +281,10 @@ def train_sft(
     prompt_format: str | None = None,
     sep: str | None = None,
     pad_id: int = 0,
+    runtime_guard=None,
+    disk_reserve_gb: float | None = None,
+    cpu_threads: int | None = None,
+    max_checkpoints: int = 3,
 ) -> dict:
     """Supervised fine-tuning / native SFT training over `(x, y)` pairs with `-100` label masking."""
     import torch
@@ -225,9 +296,22 @@ def train_sft(
         capture_rng_state,
         restore_rng_state,
     )
+    from apps.core.workflow.resource_guard import (
+        MAX_CPU_THREADS,
+        check_disk_reserve,
+        enforce_cpu_thread_cap,
+    )
 
     if not train_pairs or not val_pairs:
         raise ValueError("train_pairs and val_pairs must both be non-empty")
+
+    if str(device).startswith("cpu") or cpu_threads is not None or runtime_guard is not None:
+        target_threads = int(
+            cpu_threads
+            if cpu_threads is not None
+            else (getattr(runtime_guard, "cpu_threads", MAX_CPU_THREADS))
+        )
+        enforce_cpu_thread_cap(target_threads, torch_mod=torch)
 
     resolved_format = prompt_format or SFT_FORMAT_VERSION
     resolved_sep = SFT_SEP if sep is None else sep
@@ -247,7 +331,7 @@ def train_sft(
         betas=(0.9, 0.95),
     )
 
-    ckpts = CheckpointManager(checkpoint_dir)
+    ckpts = CheckpointManager(checkpoint_dir, keep_last=max(1, int(max_checkpoints)))
     monitor = TrainingMonitor(log_path)
     start_step = 0
     resumed = ckpts.load_latest()
@@ -284,7 +368,28 @@ def train_sft(
         model.train()
         return sum(losses) / len(losses)
 
-    def save(step: int) -> None:
+    stopped_reason = None
+    checkpoint_blocked = False
+    checkpoint_saved = False
+
+    def save(step: int) -> bool:
+        nonlocal stopped_reason, checkpoint_blocked, checkpoint_saved
+        if runtime_guard is not None:
+            ok_guard, guard_reason, _ = runtime_guard.check_runtime(
+                "before_checkpoint", step=step, checkpoint_write=True
+            )
+            if not ok_guard:
+                checkpoint_blocked = True
+                if stopped_reason is None:
+                    stopped_reason = guard_reason
+                return False
+        elif disk_reserve_gb is not None:
+            ok_disk, _ = check_disk_reserve(checkpoint_dir, reserve_gb=float(disk_reserve_gb))
+            if not ok_disk:
+                checkpoint_blocked = True
+                if stopped_reason is None:
+                    stopped_reason = "disk_reserve_violated"
+                return False
         ckpts.save(
             step,
             {
@@ -301,18 +406,26 @@ def train_sft(
                 "sep": resolved_sep,
             },
         )
+        checkpoint_saved = True
+        return True
 
     model.train()
     last_val = None
     last_train_loss = None
-    stopped_reason = None
     if cost_controller is not None:
         cost_controller.start()
+    if runtime_guard is not None:
+        runtime_guard.start()
     step = start_step
     while step < cfg.max_steps:
         if cost_controller is not None and cost_controller.should_stop():
             stopped_reason = cost_controller.exceeded()
             break
+        if runtime_guard is not None:
+            ok_guard, guard_reason, _ = runtime_guard.check_runtime("before_step", step=step)
+            if not ok_guard:
+                stopped_reason = guard_reason
+                break
         lr = lr_at(step, cfg)
         for group in optimizer.param_groups:
             group["lr"] = lr
@@ -330,6 +443,16 @@ def train_sft(
             monitor.log(step + 1, total_loss, lr, tokens=0)
             stopped_reason = "loss_diverged"
             break
+        if cost_controller is not None and cost_controller.should_stop():
+            optimizer.zero_grad(set_to_none=True)
+            stopped_reason = cost_controller.exceeded()
+            break
+        if runtime_guard is not None:
+            ok_guard, guard_reason, _ = runtime_guard.check_runtime("before_optimizer_step", step=step)
+            if not ok_guard:
+                optimizer.zero_grad(set_to_none=True)
+                stopped_reason = guard_reason
+                break
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         optimizer.step()
         last_train_loss = total_loss
@@ -343,14 +466,22 @@ def train_sft(
         if step % cfg.eval_interval == 0 or step == cfg.max_steps:
             last_val = evaluate()
         if step % cfg.checkpoint_interval == 0 or step == cfg.max_steps:
-            save(step)
+            if not save(step):
+                break
 
-    if stopped_reason in ("loss_diverged",):
+    if stopped_reason in (
+        "loss_diverged",
+        "ram_hard_limit",
+        "disk_reserve_violated",
+        "disk_budget_violated",
+    ):
         pass
-    elif stopped_reason is not None and step > start_step:
+    elif stopped_reason is not None and step > start_step and not checkpoint_blocked:
         save(step)
     if cost_controller is not None:
         cost_controller.pause()
+    if runtime_guard is not None:
+        runtime_guard.pause()
     if last_val is None and stopped_reason is None:
         last_val = evaluate()
     parameter_changed = any(
@@ -366,4 +497,6 @@ def train_sft(
         "val_loss": last_val,
         "perplexity": perplexity(last_val) if last_val is not None else None,
         "prompt_format": resolved_format,
+        "checkpoint_blocked": checkpoint_blocked,
+        "checkpoint_saved": checkpoint_saved,
     }

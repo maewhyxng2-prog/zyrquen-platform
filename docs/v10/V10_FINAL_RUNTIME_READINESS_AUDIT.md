@@ -1,24 +1,25 @@
 # ZYRQUEN V10 — FINAL RUNTIME READINESS AUDIT
 
-- **Audit Mode:** `100% READ-ONLY / PRE-TRAINING / NO EXECUTION`
+- **Audit Mode:** `PRE-TRAINING / NO EXECUTION (UPDATED AFTER BLOCKER REMEDIATION)`
 - **Target Repository:** `maewhyxng2-prog/zyrquen-platform`
 - **Deliverable Path:** `docs/v10/V10_FINAL_RUNTIME_READINESS_AUDIT.md`
 - **TORCH_RUNTIME_STATUS:** `TORCH_RUNTIME_STATUS = NOT INSTALLED`
-- **RUNTIME_TEST_READINESS:** `RUNTIME_TEST_READINESS = BLOCKED`
+- **RUNTIME_TEST_READINESS:** `RUNTIME_TEST_READINESS = BLOCKED` *(Remediated at code/unit level -> `READY_FOR_PYTORCH_CPU_PREPARATION`, waiting solely on approved PyTorch CPU setup)*
 
 ---
 
 ## 1. Executive Summary
 
-การตรวจสอบความพร้อมแบบ **READ-ONLY 100%** สำหรับ **ZYRQUEN V10** ก่อนการอนุมัติ Runtime Test จริง พบว่าโครงสร้างสถาปัตยกรรมฝั่ง Native (`ZyrquenConfig`, `ZyrquenModel`, `ZyrquenTokenizer`, `train_sft`, `EvaluationEngine`, `VersionedCheckpointManager`, `ModelRegistry`, `WorkflowGovernance`) มีสัญญาควบคุม (contracts) และระบบรักษาความปลอดภัยหลักครบถ้วนในระดับ Source Code และไม่มีการพึ่งพา External AI API หรือ Pretrained Weights จากภายนอกใน Native Path
+การตรวจสอบและแก้ไขข้อบกพร่องเชิงโครงสร้าง (Blockers 02–06) สำหรับ **ZYRQUEN V10** เสร็จสมบูรณ์ในระดับ Source Code และ Unit/Integration Tests (ดูรายละเอียดใน `docs/v10/V10_CRITICAL_BLOCKER_REMEDIATION_REPORT.md`) โครงสร้างฝั่ง Native (`ZyrquenConfig`, `ZyrquenModel`, `ZyrquenTokenizer`, `train_sft`, `EvaluationEngine`, `VersionedCheckpointManager`, `ModelRegistry`, `WorkflowGovernance`, `TrainingRuntimeGuard`) บังคับใช้เพดานทรัพยากรและสัญญาความปลอดภัยครบถ้วน โดยไม่มีการพึ่งพา External AI API หรือ Pretrained Weights จากภายนอก
 
-อย่างไรก็ตาม **ยังไม่สามารถอนุมัติ Runtime Test ได้ในสถานะปัจจุบัน (`RUNTIME_TEST_READINESS = BLOCKED`)** ด้วยเหตุผลหลัก 5 ประการ:
+อย่างไรก็ตาม **ยังไม่สามารถเริ่ม Runtime Training/Inference จริงได้ (`RUNTIME_TEST_READINESS = BLOCKED`)** เนื่องจาก:
 
-1. **PyTorch ยังไม่ถูกติดตั้ง (`TORCH_RUNTIME_STATUS = NOT INSTALLED`):** สภาพแวดล้อมไม่มีแพ็กเกจ `torch` (และไม่ได้ระบุใน `apps/api/requirements.txt`) จึงยังไม่สามารถทดสอบ `import torch` หรือจัดสรร CPU Tensor ได้
-2. **CPU Thread Limit (`<= 2` cores) ไม่ได้ถูกบังคับใช้ตอน Runtime:** เครื่องมี 4 CPU cores แต่ `handle_training_execute` และ `apps/core/native/train.py` ไม่ได้เรียก `torch.set_num_threads` / `torch.set_num_interop_threads` หรือกำหนด `OMP_NUM_THREADS` / `MKL_NUM_THREADS`
-3. **Training-to-Evaluation Artifact Handoff ขาดการเชื่อมต่อโดยตรง:** `handle_training_execute` (`apps/core/workflow/handlers/groups.py`) เรียก `train_sft` ซึ่งบันทึกผ่าน `CheckpointManager` (`ckpt_*.pt` + `manifest.json` เท่านั้น ไม่มี `version_manifest.json`) ในขณะที่ `EvaluationEngine.evaluate_native_model` และ `tools/eval_nagi_v10.py` บังคับโหลดผ่าน `VersionedCheckpointManager` ที่ต้องมี `version_manifest.json` และไม่รองรับการโหลดจาก `ModelRegistry` (`registry_root/artifacts/<version>/`) โดยตรง
-4. **Timeout และ RAM Preemption ยังไม่สมบูรณ์ใน Workflow Hook:** `handle_training_execute` เรียก `train_sft` / `train` โดยไม่ส่ง `cost_controller` (ทำให้ Experiment Timeout `<= 1200s` และ Loop Timeout `<= 3600s` ไม่ถูกบังคับระหว่าง Step) และ `RamMonitor` เป็นการตรวจแบบ Passive/Post-hoc หลัง `train()` จบ ไม่สามารถ Preempt กลาง Step ได้
-5. **Security / Governance Binding Gaps:** `WorkflowGovernance.verify_and_consume_by_id` (`apps/core/workflow/governance.py:176-215`) ไม่ได้ตรวจ `scope` (`model_version`) หรือ `run_id` ทำให้ Token ที่อนุมัติสำหรับ `model.promote` สามารถถูกนำไปใช้ข้ามเวอร์ชันได้ และ `CentralWorkflowOrchestrator` (`apps/core/workflow/orchestrator.py:297`) รับค่า `approved_paid_gpu` จาก Raw Payload Boolean แทนการตรวจ Token จาก Tier-2 Governance โดยตรง
+1. **PyTorch ยังไม่ถูกติดตั้ง (`TORCH_RUNTIME_STATUS = NOT INSTALLED`):** สภาพแวดล้อมยังไม่มีแพ็กเกจ `torch` (ต้องขออนุมัติแยกต่างหากก่อนติดตั้ง)
+2. **Blockers 02–06 (สถานะ `REMEDIATED — STATIC/UNIT PASS`):**
+   - **CPU Thread Limit (`<= 2` cores):** แก้ไขแล้วผ่าน `enforce_cpu_thread_cap()` ใน `resource_guard.py`, `train.py`, `groups.py`, `engine.py`
+   - **Training-to-Evaluation Artifact Handoff:** แก้ไขแล้วผ่าน `VersionedCheckpointManager.register_existing_checkpoint()`, checkpoint run isolation, auto tokenizer copy, และ `EvaluationEngine` dual-loader (`checkpoint_dir` + `registry_root`)
+   - **Experiment (`<=1200s`) / Loop (`<=3600s`) Timeout & Mid-Step RAM (`3.0/3.5 GB`) / Disk (`>=2.0 GB`, new `<=1.0 GB`):** แก้ไขแล้วผ่าน `TrainingRuntimeGuard` + `RamMonitor` pre-step/pre-optimizer/pre-checkpoint guards
+   - **Security & Governance Binding:** แก้ไขแล้วผ่านการผูก `run_id`, `step_key`, `scope` (`model:<version>`) ใน `verify_and_consume_by_id`, การลบ payload boolean bypass `approved_paid_gpu`, และ SQLite append-only audit triggers
 
 ---
 
@@ -201,36 +202,16 @@
 
 ---
 
-## 10. Critical Blockers
+## 10. Critical Blockers (Post-Remediation Status)
 
-1. **BLOCKER-01 (`PYTORCH_CPU_READINESS`):** `TORCH_RUNTIME_STATUS = NOT INSTALLED` — ไม่มี `torch` ใน Environment และไม่ได้ระบุใน `apps/api/requirements.txt` จึงไม่สามารถ Import หรือ Allocate CPU Tensor ได้
-2. **BLOCKER-02 (`TRAINING_HOOK` / `EVALUATION_GATE`):** **Artifact Format Handoff Disconnect** — `handle_training_execute` เรียก `train_sft` ซึ่งบันทึกผ่าน `CheckpointManager` (ไม่มี `version_manifest.json` และไม่เขียน `tokenizer.json` ลงใน `checkpoint_dir`) แต่ `EvaluationEngine.evaluate_native_model` และ `tools/eval_nagi_v10.py` บังคับโหลดผ่าน `VersionedCheckpointManager` (ต้องมี `version_manifest.json`) และไม่รองรับการโหลดจาก `ModelRegistry` (`registry_root/artifacts/<version>/`)
-3. **BLOCKER-03 (`RESOURCE_GUARD`):** **CPU Thread Limit (`<= 2`) Not Enforced at Runtime** — เครื่องมี 4 cores แต่ไม่มีการเรียก `torch.set_num_threads(<=2)` / `torch.set_num_interop_threads(<=2)` หรือตั้ง `OMP_NUM_THREADS`/`MKL_NUM_THREADS` ใน `handle_training_execute` และ `apps/core/native/train.py`
-4. **BLOCKER-04 (`RESOURCE_GUARD`):** **Missing Experiment & Loop Timeout Enforcement in Workflow Hook** — `handle_training_execute` เรียก `train_sft`/`train` โดยไม่ส่ง `cost_controller` ทำให้ Experiment timeout `<= 1200s` (20 นาที) ไม่ทำงานระหว่างเทรน และ `AutonomousTrainingLoop` ไม่มีตัวตัด Loop timeout `<= 3600s` (60 นาที)
-5. **BLOCKER-05 (`SECURITY_GOVERNANCE`):** **Unscoped Lifecycle Approval Consumption (`verify_and_consume_by_id`)** — การโปรโมต/สเตจ/โรลแบ็กโมเดลไม่ตรวจสอบ `scope` (`model_version`) หรือ `run_id` ทำให้ Token เดียวกันนำไปใช้กับโมเดลเวอร์ชันอื่นได้
-6. **BLOCKER-06 (`RESOURCE_GUARD`):** **Passive RAM Monitor Only & Missing Per-Checkpoint Disk Reserve Check** — `RamMonitor` ไม่สามารถ Preempt การเทรนกลาง Step เมื่อเกิน `3.5 GB` (ตรวจหลังเทรนจบเท่านั้น) และ `train_sft` ไม่ได้ตรวจ Disk reserve `>= 2.0 GB` ก่อนเขียน Checkpoint ระหว่างเทรน
+1. **BLOCKER-01 (`PYTORCH_CPU_READINESS` — `OPEN / NEEDS SEPARATE APPROVAL`):** `TORCH_RUNTIME_STATUS = NOT INSTALLED` — ยังไม่มี `torch` ใน Environment และห้ามติดตั้งเองโดยพลการ
+2. **BLOCKER-02 (`TRAINING_HOOK` / `EVALUATION_GATE` — `REMEDIATED [UNIT PASS]`):** `handle_training_execute`, `VersionedCheckpointManager.register_existing_checkpoint`, และ `EvaluationEngine` เชื่อมต่อกันครบทั้ง `checkpoint_dir` และ `registry_root` พร้อมป้องกัน overwrite
+3. **BLOCKER-03 (`RESOURCE_GUARD` — `REMEDIATED [UNIT PASS]`):** บังคับ `cpu_threads <= 2` ผ่าน `enforce_cpu_thread_cap()` ในทุกจุดเข้า-ออกของการฝึกและประเมินผล
+4. **BLOCKER-04 (`RESOURCE_GUARD` — `REMEDIATED [UNIT PASS]`):** `TrainingRuntimeGuard` + `CostController` บังคับ Experiment Timeout `<= 1200s` และ Loop Timeout `<= 3600s` พร้อม Audit Trail แล้ว
+5. **BLOCKER-05 (`SECURITY_GOVERNANCE` — `REMEDIATED [UNIT PASS]`):** ปิดการข้าม Paid GPU ด้วย boolean, ผูก `model:<version>`/`run_id`/`step_key` บน Single-Use HMAC Tokens, และเพิ่ม SQLite append-only audit triggers แล้ว
+6. **BLOCKER-06 (`RESOURCE_GUARD` — `REMEDIATED [UNIT PASS]`):** `RamMonitor` callbacks (`3.0 / 3.5 GB`) และ per-checkpoint disk checks (`>= 2.0 GB`, new `<= 1.0 GB`) ทำงานก่อนทุก Step, Optimizer Step, และ Checkpoint Write พร้อมป้องกัน partial checkpoint
 
----
-
-## 11. Required Fixes
-
-รายการแก้ไขที่ต้องดำเนินการ (หลังได้รับอนุมัติแก้ไขโค้ดและก่อนเริ่ม Runtime Test จริง):
-
-1. **ติดตั้งและยึดเวอร์ชัน PyTorch CPU-only (`NEEDS SEPARATE APPROVAL`):** เพิ่ม/ติดตั้ง PyTorch CPU build ที่เข้ากันได้กับ Python 3.11 บน Linux x86_64 และทดสอบ `import torch` + CPU tensor allocation (`torch.zeros((2, 2))`)
-2. **บังคับใช้ CPU Thread Cap `<= 2` ใน Runtime Hook:** กำหนด `OMP_NUM_THREADS`, `MKL_NUM_THREADS` และเรียก `torch.set_num_threads(min(cpu_threads, 2))` และ `torch.set_num_interop_threads(1)` ใน `handle_training_execute` และ `apps/core/native/train.py` รวมถึงให้ `WorkflowResourceGuard.check_step` ตรวจ `cpu_threads <= 2`
-3. **เชื่อม `CostController` และ Timeout เข้ากับ Training Hook:** ส่ง `CostController(max_runtime_seconds=min(timeout_seconds, 1200))` จาก `handle_training_execute` เข้าไปยัง `train_sft` / `train` และบังคับใช้ Loop timeout `<= 3600s` ใน `AutonomousTrainingLoop` พร้อมให้ `RamMonitor` ตรวจ Threshold ระหว่าง step callback (เช่น `on_step` / `cost_controller`) เพื่อหยุดได้ทันทีเมื่อเกิน Hard limit `3.5 GB`
-4. **เชื่อมต่อ Artifact Handoff ระหว่าง `handle_training_execute` ↔ `VersionedCheckpointManager` / `ModelRegistry` ↔ `EvaluationEngine`:**
-   - ให้ `handle_training_execute` (หรือ `VersionedCheckpointManager`) เขียน `version_manifest.json` และ `tokenizer.json` หรือเพิ่ม Adapter ใน `EvaluationEngine.evaluate_native_model` ให้โหลดจาก `ModelRegistry` (`registry_root/artifacts/<version>/`) ได้อย่างตรวจสอบ Hash ครบถ้วน
-   - เชื่อม `training.native_controlled_run` ให้รัน `data.verify_and_audit` ก่อนเทรน และเชื่อมต่อไปยัง `evaluation.verify_and_gate` (ที่รัน `EvaluationEngine` จริงเมื่อยังไม่มี `report_path`)
-   - แยก/สุ่ม `checkpoint_dir` หรือ Version Directory ต่อ Run เพื่อป้องกัน `CheckpointManager` เขียนทับ `ckpt_{step:08d}.pt` เดิมและลบไฟล์เก่า (`keep_last=3`)
-   - ตรวจ `check_disk_reserve(..., reserve_gb=2.0)` ก่อนเขียน Checkpoint ทุกครั้งใน `train` / `train_sft`
-5. **อุดช่องโหว่ Security & Governance:**
-   - บังคับตรวจ `expected_scope` (เช่น `f"model:{model_version}"`) ใน `WorkflowGovernance.verify_and_consume_by_id`
-   - ปรับ `CentralWorkflowOrchestrator` (`orchestrator.py:297`) ไม่ให้เชื่อ `payload.get("approved_paid_gpu")` แบบ Raw Boolean แต่ต้องตรวจจาก Tier-2 `compute.paid_gpu` Approval Record ที่ Verified แล้ว
-   - บังคับให้กำหนด `ZYRQUEN_APPROVAL_SECRET` เมื่อทำงานหลายโปรเซสและพิจารณาเพิ่ม SQLite trigger ป้องกันการแก้/ลบตาราง `workflow_audit_logs`
-6. **Clean-up Evaluation Edge Cases:**
-   - เปลี่ยน Silent Prompt Truncation ใน `EvaluationEngine.evaluate_native_model` (`engine.py:368-369`) เป็น Explicit Failure/Validation Error เมื่อ Prompt เกิน `max_seq_len`
-   - ถอดหรือแยก Legacy Mock `apps/core/evaluation/engine.py` ออกเพื่อป้องกันการนำ Mock Metrics (`15.5` / `0.85`) มาใช้งานโดยไม่ได้ตั้งใจ
+*(รายละเอียดการแก้ไขและผลรัน unit/integration test 52+20 รายการอยู่ใน `docs/v10/V10_CRITICAL_BLOCKER_REMEDIATION_REPORT.md`)*
 
 ---
 
@@ -238,26 +219,24 @@
 
 | Audit Category | Verdict | Rationale Summary |
 |---|---|---|
-| **ENVIRONMENT_READINESS** | `PASS` | Host มี Python 3.11.2, Linux x86_64, RAM ว่าง 10.57 GiB, Disk ว่าง 282.20 GiB, CPU-only พร้อมติดตั้ง PyTorch CPU (หมายเหตุ: มี 4 cores จึงต้อง Clamp `<= 2` threads ตอน Runtime) |
-| **PYTORCH_CPU_READINESS** | `BLOCKED` | `TORCH_RUNTIME_STATUS = NOT INSTALLED` — ยังไม่พบ `torch` และยังไม่ได้ทดสอบ Import / CPU Tensor |
-| **RESOURCE_GUARD** | `STATIC PASS` | Budget validators, Disk pre-check, Status mapping, และ Recovery classification มีครบในโค้ดและ Unit Tests แบบ Mock **แต่** ยังขาด Runtime CPU thread clamp (`<= 2`), `cost_controller` timeout wiring ใน Hook, Per-checkpoint disk check, Mid-step RAM preemption, และ Paid-GPU governance binding |
-| **TRAINING_HOOK** | `BLOCKED` | ขาด `torch` ใน Runtime, ขาดการเชื่อมต่อ Artifact (`CheckpointManager` vs `VersionedCheckpointManager`/`EvaluationEngine`), และไม่มี `cost_controller`/CPU thread limit ใน `handle_training_execute` |
-| **EVALUATION_GATE** | `STATIC PASS` | Anti-false-PASS contracts, Hash checks, 6-capability gate, และ Zero-regression checks ผ่านระดับ Static **แต่** Runtime `NOT RUN` (ต้องใช้ `torch`), ไม่รองรับ Artifact จาก `handle_training_execute`/`ModelRegistry` โดยตรง, และยังมี Legacy Mock ค้างใน `apps/core/evaluation/engine.py` |
-| **CHECKPOINT_INTEGRITY** | `STATIC PASS` | `CheckpointManager` (`weights_only=True`, atomic write, SHA-256, symlink check), `VersionedCheckpointManager`, และ `ModelRegistry` (flock + atomic reservation) ผ่านระดับ Static **แต่** `train_sft` ยังไม่ได้ใช้ `VersionedCheckpointManager` และยังไม่มี Runtime checkpoint |
-| **SECURITY_GOVERNANCE** | `STATIC PASS` | Tier-1/Tier-2, Admin RBAC, HMAC-SHA256, Single-use DB update, และ Secret redaction ผ่านระดับ Static **แต่** พบช่องโหว่ `verify_and_consume_by_id` ไม่ผูก `scope`/`run_id`, `approved_paid_gpu` payload boolean, และ ephemeral secret fallback |
-| **NATIVE_ONLY_COMPLIANCE** | `STATIC PASS` | ไม่พบ External AI APIs หรือ Pretrained Weights ภายนอกใน Native Training/Inference Path (`download_model.py` แยกอิสระและไม่ถูกเรียกใน V10) |
+| **ENVIRONMENT_READINESS** | `PASS` | Host มี Python 3.11.2, Linux x86_64, RAM ว่าง ~10.62 GiB, Disk ว่าง ~282.14 GiB, CPU-only พร้อมติดตั้ง PyTorch CPU (`cpu_threads <= 2` ถูกบังคับในโค้ดแล้ว) |
+| **PYTORCH_CPU_READINESS** | `BLOCKED` | `TORCH_RUNTIME_STATUS = NOT INSTALLED` — ยังไม่พบ `torch` และยังไม่ได้ทดสอบ Import / CPU Tensor (`NEEDS SEPARATE APPROVAL`) |
+| **RESOURCE_GUARD** | `STATIC / UNIT PASS` | `TrainingRuntimeGuard`, `enforce_cpu_thread_cap`, `RamMonitor`, `disk_reserve >= 2.0 GB`, `new_disk <= 1.0 GB`, และ `1200s`/`3600s` timeouts ผ่านการทดสอบด้วย Synthetic Clocks/Mocks (`NOT RUN` บน real PyTorch tensors) |
+| **TRAINING_HOOK** | `BLOCKED (RUNTIME)` / `UNIT PASS` | Source contract, Budget Lock, isolation, และ `VersionedCheckpointManager` wiring ผ่านระดับ Unit แต่ Runtime จริง **`BLOCKED`** เพราะ `TORCH_NOT_INSTALLED` |
+| **EVALUATION_GATE** | `STATIC / UNIT PASS` | รองรับทั้ง `checkpoint_dir` (`version_manifest.json`) และ `registry_root`, ปฏิเสธ oversized prompt, และ anti-false-PASS ครบ (`NOT RUN` บน real PyTorch inference) |
+| **CHECKPOINT_INTEGRITY** | `STATIC / UNIT PASS` | Atomic save, SHA-256, `register_existing_checkpoint`, isolated directory fallback, และ `ModelRegistry` lineage ผ่านครบ (ยังไม่มี real `.pt` checkpoint บนดิสก์) |
+| **SECURITY_GOVERNANCE** | `STATIC / UNIT PASS` | ปิด paid-GPU boolean bypass, บังคับ `model:<version>` token scoping, และ SQLite immutable audit triggers แล้ว |
+| **NATIVE_ONLY_COMPLIANCE** | `STATIC PASS` | ไม่พบ External AI APIs หรือ Pretrained Weights ภายนอก (`EXTERNAL_AI_SCAN_CLEAN`) |
 
-- **Final Decision:** **`RUNTIME_TEST_READINESS = BLOCKED`**
-- **Next Gate Required:** แก้ไข Blockers ข้อ 1–6 และขอ **`NEEDS SEPARATE APPROVAL`** สำหรับการติดตั้ง PyTorch CPU, การรันชุด Test, และการทำ Controlled Runtime Smoke Test
+- **Final Decision:** **`RUNTIME_TEST_READINESS = BLOCKED`** (`READY_FOR_PYTORCH_CPU_PREPARATION`)
+- **Next Gate Required:** ขอ **`NEEDS SEPARATE APPROVAL`** เพื่อติดตั้ง PyTorch CPU-only และทดสอบ `import torch` + CPU tensor ก่อนพิจารณาอนุมัติ Controlled Smoke Test (`<= 500` steps)
 
 ---
 
-## 13. Explicit Confirmation: No Training Started
+## 13. Explicit Confirmation: No Training or Dependency Mutation Executed
 
-ขอรับรองอย่างเป็นทางการว่าตลอดการตรวจสอบ **ZYRQUEN V10 — FINAL RUNTIME READINESS AUDIT** ครั้งนี้ดำเนินการภายใต้เงื่อนไข **READ-ONLY 100%** โดยสมบูรณ์:
+- **NO TRAINING STARTED:** ไม่มีการเริ่ม Training จริงใดๆ (`train`, `train_sft`, `tools/train_nagi_v10.py` ไม่ได้รันเทรนจริง)
+- **NO INFERENCE EXECUTED:** ไม่มีการรัน Inference บนโมเดลจริง (`TORCH_RUNTIME_STATUS = NOT INSTALLED`)
+- **NO DEPENDENCIES INSTALLED:** ไม่มีการติดตั้ง `torch` หรือแพ็กเกจใดๆ (`importlib.util.find_spec("torch") is None`)
+- **NO DATASETS OR CHECKPOINTS GENERATED:** ไม่มีโฟลเดอร์ `data/`, `eval/`, หรือ `checkpoints/` ใน Workspace
 
-- **NO TRAINING STARTED:** ไม่มีการเริ่ม Training ใดๆ (`train`, `train_sft`, `tools/train_nagi_v10.py`, หรือ `AutonomousTrainingLoop` ไม่ได้ถูกสั่งรัน)
-- **NO INFERENCE EXECUTED:** ไม่มีการรัน Inference หรือ Evaluation บนโมเดล (`EvaluationEngine`, `tools/eval_nagi_v10.py` ไม่ได้ถูกสั่งรัน)
-- **NO DEPENDENCIES INSTALLED:** ไม่มีการติดตั้ง `torch` หรือแพ็กเกจใดๆ (`TORCH_RUNTIME_STATUS = NOT INSTALLED`)
-- **NO DATASETS OR CHECKPOINTS GENERATED:** ไม่มีโฟลเดอร์ `data/`, `eval/`, หรือ `checkpoints/` ถูกสร้างขึ้น
-- **NO SOURCE CODE MODIFIED:** ไม่มีการแก้ไขไฟล์ Source Code, Config, Workflow, หรือ Script ใดๆ ใน Repository (สร้างเพียงไฟล์รายงาน `docs/v10/V10_FINAL_RUNTIME_READINESS_AUDIT.md` ฉบับนี้เท่านั้น)

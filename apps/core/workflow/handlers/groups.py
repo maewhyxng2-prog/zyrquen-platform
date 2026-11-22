@@ -9,14 +9,23 @@ Each handler wraps verified repository modules cleanly and obeys strict truth ru
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import math
 import os
 import re
+import shutil
+import uuid
 from pathlib import Path
 from typing import Any
 
-from apps.core.native.registry import ModelRegistry, RegistryError
+from apps.core.native.registry import (
+    ModelRegistry,
+    NativeVersionReservation,
+    RegistryError,
+    is_v10_model_version,
+    resolve_canonical_model_version,
+)
 from apps.core.workflow.models import (
     LeakageGateFailedError,
     StepExecutionResult,
@@ -253,17 +262,23 @@ def handle_training_execute(ctx: dict[str, Any], payload: dict[str, Any]) -> Ste
         )
 
     # 2. torch — honest check unless a test injects _train_fn
+    from apps.core.workflow.resource_guard import (
+        MIN_DISK_RESERVE_GB as _MIN_DISK_RESERVE_GB,
+        TrainingRuntimeGuard as _TrainingRuntimeGuard,
+        check_torch_cpu_runtime as _check_torch_cpu,
+        enforce_cpu_thread_cap as _enforce_cpu_threads,
+    )
+
     if ctx.get("_train_fn") is None:
-        try:
-            import torch  # noqa: F401
-        except ModuleNotFoundError:
+        torch_probe = _check_torch_cpu()
+        if not torch_probe["available"]:
             return StepExecutionResult(
                 verdict="BLOCKED",
                 summary="Native training blocked: PyTorch runtime is not installed in this host.",
                 error_code="torch_not_installed",
             )
 
-    # 3. Budget Gate — stricter than resource_guard on steps
+    # 3. Budget Gate — stricter than resource_guard on steps, CPU threads, timeouts, checkpoints
     try:
         from apps.core.workflow.autonomous_training_loop import validate_budget as _validate_budget
         from apps.core.workflow.autonomous_training_loop import check_disk_reserve as _check_disk
@@ -276,14 +291,49 @@ def handle_training_execute(ctx: dict[str, Any], payload: dict[str, Any]) -> Ste
     max_steps = int(payload.get("max_steps", payload.get("steps", train_cfg_in.get("max_steps", 500))) or 500)
     block_size = int(payload.get("block_size", payload.get("seq_len", train_cfg_in.get("block_size", 128))) or 128)
     params_declared = int(payload.get("params", 0) or 0)
-    ok, reason = _validate_budget(params=params_declared, seq_len=block_size, batch_size=batch_size, steps=max_steps)
+    cpu_threads = int(payload.get("cpu_threads", train_cfg_in.get("cpu_threads", 2)) or 2)
+    exp_timeout = float(payload.get("experiment_timeout_sec", payload.get("timeout_seconds", 1200.0)) or 1200.0)
+    loop_timeout = float(payload.get("loop_timeout_sec", 3600.0) or 3600.0)
+    disk_reserve_gb = float(payload.get("disk_reserve_gb", _MIN_DISK_RESERVE_GB) or _MIN_DISK_RESERVE_GB)
+    max_checkpoints = int(payload.get("max_checkpoints", 3) or 3)
+
+    if max_checkpoints < 1 or max_checkpoints > 10:
+        return StepExecutionResult(
+            verdict="BLOCKED",
+            error_code="budget_violated",
+            summary=f"Budget Lock violated: max_checkpoints={max_checkpoints} outside [1, 10]",
+        )
+    if disk_reserve_gb < _MIN_DISK_RESERVE_GB:
+        return StepExecutionResult(
+            verdict="BLOCKED",
+            error_code="budget_violated",
+            summary=f"Budget Lock violated: disk_reserve_gb={disk_reserve_gb} < {_MIN_DISK_RESERVE_GB}",
+        )
+
+    ok, reason = _validate_budget(
+        params=params_declared,
+        seq_len=block_size,
+        batch_size=batch_size,
+        steps=max_steps,
+        cpu_threads=cpu_threads,
+        experiment_timeout_sec=exp_timeout,
+        loop_timeout_sec=loop_timeout,
+    )
     if not ok:
         return StepExecutionResult(verdict="BLOCKED", error_code="budget_violated", summary=f"Budget Lock violated: {reason}")
 
-    # 4. Disk Guard before any training / checkpoint
-    checkpoint_dir = str(payload.get("checkpoint_dir") or ctx.get("checkpoint_dir") or "checkpoints/training_hook")
-    log_path = str(payload.get("log_path") or str(_Path(checkpoint_dir) / "train.log"))
-    disk_ok, disk_info = _check_disk(checkpoint_dir)
+    # Enforce CPU thread cap across OpenMP/BLAS env vars and PyTorch if present
+    _enforce_cpu_threads(cpu_threads)
+
+    # 4. Checkpoint isolation (prevent accidental overwrites) & Disk Guard
+    base_ckpt_dir = str(payload.get("checkpoint_dir") or ctx.get("checkpoint_dir") or "checkpoints/training_hook")
+    ckpt_dir_path = _Path(base_ckpt_dir)
+    if (ckpt_dir_path / "manifest.json").exists() and not bool(payload.get("resume_existing", False)):
+        iso_tag = str(ctx.get("run_id") or uuid.uuid4().hex[:8])
+        ckpt_dir_path = ckpt_dir_path / f"run_{iso_tag}"
+    checkpoint_dir = str(ckpt_dir_path)
+    log_path = str(payload.get("log_path") or str(ckpt_dir_path / "train.log"))
+    disk_ok, disk_info = _check_disk(checkpoint_dir, reserve_gb=disk_reserve_gb)
     if not disk_ok:
         return StepExecutionResult(
             verdict="BLOCKED", error_code="disk_reserve_violated",
@@ -403,14 +453,122 @@ def handle_training_execute(ctx: dict[str, Any], payload: dict[str, Any]) -> Ste
                 summary=f"Dataset preparation/tokenization failed: {e}",
             )
 
-    # 6. Build model & train inside RAM Monitor
-    monitor = _RamMonitor()
+    # 5.5 Resolve ONE canonical model_version before training (eliminates dual naming & duplicates)
+    registry_root = str(payload.get("registry_root") or "").strip()
+    load_fn_override = ctx.get("_load_fn")
+    reg_kwargs = {"load_fn": load_fn_override} if load_fn_override is not None else {}
+    active_registry = ModelRegistry(registry_root, **reg_kwargs) if registry_root else None
+
+    existing_ckpt_versions: list[str] = []
+    vm_path = ckpt_dir_path / "version_manifest.json"
+    if vm_path.is_file() and not vm_path.is_symlink():
+        try:
+            vm_data = json.loads(vm_path.read_text(encoding="utf-8"))
+            existing_ckpt_versions = [
+                str(item.get("model_version"))
+                for item in (vm_data.get("versions") or [])
+                if isinstance(item, dict) and item.get("model_version")
+            ]
+        except Exception:
+            existing_ckpt_versions = []
+
+    if "model_version" in payload and payload["model_version"] is not None:
+        explicit_model_version: str | None = str(payload["model_version"])
+    else:
+        explicit_model_version = None
+
+    target_major_raw = payload.get("target_major")
+    if target_major_raw is not None:
+        target_major: int | None = int(target_major_raw)
+    elif (
+        str(dataset_version or "").startswith("10.")
+        or dataset_manifest.get("dataset") == "nagi_v10"
+        or is_v10_model_version(explicit_model_version)
+    ):
+        target_major = 10
+    elif dataset_version and str(dataset_version).split(".", 1)[0].isdigit():
+        parsed_major = int(str(dataset_version).split(".", 1)[0])
+        target_major = None if parsed_major == 0 else parsed_major
+    else:
+        target_major = 10
+
+    try:
+        canonical_reservation: NativeVersionReservation = resolve_canonical_model_version(
+            explicit_version=explicit_model_version,
+            parent_version=payload.get("parent_version"),
+            registry=active_registry,
+            existing_checkpoint_versions=existing_ckpt_versions,
+            target_major=target_major,
+            training_run_id=str(ctx.get("run_id") or "") or None,
+        )
+    except RegistryError as exc:
+        err_msg = str(exc)
+        err_code = (
+            "duplicate_model_version"
+            if any(tok in err_msg.lower() for tok in ("already registered", "already reserved", "already exists"))
+            else "invalid_model_version"
+        )
+        return StepExecutionResult(
+            verdict="BLOCKED",
+            error_code=err_code,
+            summary=f"Canonical model_version resolution blocked: {exc}",
+        )
+
+    canonical_version = canonical_reservation.version
+    resolved_parent = canonical_reservation.parent
+    reservation_consumed = False
+
+    def _release_unconsumed_reservation() -> None:
+        if not reservation_consumed and active_registry is not None and canonical_reservation.token:
+            try:
+                active_registry.release_reservation(
+                    canonical_version, canonical_reservation.token
+                )
+            except Exception:
+                pass
+
+    # 6. Build model & train inside TrainingRuntimeGuard + RAM Monitor
+    runtime_guard = ctx.get("runtime_guard")
+    if runtime_guard is None:
+        runtime_guard = _TrainingRuntimeGuard(
+            checkpoint_dir,
+            experiment_timeout_sec=exp_timeout,
+            loop_timeout_sec=loop_timeout,
+            disk_reserve_gb=disk_reserve_gb,
+            cpu_threads=cpu_threads,
+            audit_logger=ctx.get("audit"),
+            run_id=ctx.get("run_id"),
+            step_key=ctx.get("step_key"),
+        )
+
+    def _on_soft_ram(ram_snap: dict[str, Any]) -> None:
+        audit_obj = ctx.get("audit")
+        if audit_obj is not None:
+            try:
+                audit_obj.record(
+                    actor_id="system:resource_guard",
+                    event_type="training.ram_soft_warning",
+                    resource=f"training:{checkpoint_dir}",
+                    decision="WARN",
+                    details=ram_snap,
+                    run_id=ctx.get("run_id"),
+                    step_key=ctx.get("step_key"),
+                )
+            except Exception:
+                pass
+
+    monitor = _RamMonitor(on_soft_limit=_on_soft_ram)
     monitor.start()
+    built_model_cfg_dict: dict[str, Any] = dict(payload.get("model_config") or {})
     try:
         if ctx.get("_model") is not None:
             model = ctx["_model"]
+            if hasattr(model, "cfg") and hasattr(model.cfg, "to_dict"):
+                built_model_cfg_dict = model.cfg.to_dict()
         elif ctx.get("_model_factory") is not None:
             model = ctx["_model_factory"](payload)
+            if hasattr(model, "cfg") and hasattr(model.cfg, "to_dict"):
+                built_model_cfg_dict = model.cfg.to_dict()
         else:
             try:
                 from apps.core.native.config import MAX_V10_PARAMETERS as _MAX_V10_PARAMS, ZyrquenConfig as _ZCfg
@@ -455,6 +613,7 @@ def handle_training_execute(ctx: dict[str, Any], payload: dict[str, Any]) -> Ste
                 model_cfg = _ZCfg(**defaults)
                 model_cfg.validate_parameter_budget(_MAX_V10_PARAMS)
                 model = _ZModel(model_cfg)
+                built_model_cfg_dict = model_cfg.to_dict()
                 real_params = int(model.num_parameters())
                 if real_params > _MAX_V10_PARAMS:
                     return StepExecutionResult(
@@ -481,6 +640,18 @@ def handle_training_execute(ctx: dict[str, Any], payload: dict[str, Any]) -> Ste
         except Exception as e:
             return StepExecutionResult(verdict="BLOCKED", error_code="train_config_failed", summary=f"TrainConfig build failed: {e}")
 
+        def _filter_optional_kwargs(fn: Any, candidates: dict[str, Any]) -> dict[str, Any]:
+            try:
+                sig = inspect.signature(fn)
+            except (TypeError, ValueError):
+                return candidates
+            accepts_var_kw = any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+            )
+            if accepts_var_kw:
+                return candidates
+            return {k: v for k, v in candidates.items() if k in sig.parameters}
+
         # Call injected _train_fn or real train_sft / train
         injected_train_fn = ctx.get("_train_fn")
         if is_sft_run:
@@ -488,6 +659,20 @@ def handle_training_execute(ctx: dict[str, Any], payload: dict[str, Any]) -> Ste
                 train_fn = injected_train_fn
             else:
                 from apps.core.native.train import train_sft as train_fn  # type: ignore
+            call_kwargs = _filter_optional_kwargs(
+                train_fn,
+                {
+                    "device": "cpu",
+                    "cost_controller": runtime_guard.cost_controller,
+                    "pad_id": int(getattr(tokenizer, "pad_id", 0) if tokenizer is not None else 0),
+                    "tokenizer_fingerprint": tokenizer_fingerprint,
+                    "dataset_version": dataset_version,
+                    "runtime_guard": runtime_guard,
+                    "disk_reserve_gb": disk_reserve_gb,
+                    "cpu_threads": cpu_threads,
+                    "max_checkpoints": max_checkpoints,
+                },
+            )
             result = train_fn(
                 model,
                 list(train_pairs),
@@ -495,16 +680,26 @@ def handle_training_execute(ctx: dict[str, Any], payload: dict[str, Any]) -> Ste
                 train_cfg,
                 checkpoint_dir,
                 log_path,
-                device="cpu",
-                pad_id=int(getattr(tokenizer, "pad_id", 0) if tokenizer is not None else 0),
-                tokenizer_fingerprint=tokenizer_fingerprint,
-                dataset_version=dataset_version,
+                **call_kwargs,
             )
         else:
             if injected_train_fn is not None:
                 train_fn = injected_train_fn
             else:
                 from apps.core.native.train import train as train_fn  # type: ignore
+            call_kwargs = _filter_optional_kwargs(
+                train_fn,
+                {
+                    "device": "cpu",
+                    "cost_controller": runtime_guard.cost_controller,
+                    "tokenizer_fingerprint": tokenizer_fingerprint,
+                    "dataset_version": dataset_version,
+                    "runtime_guard": runtime_guard,
+                    "disk_reserve_gb": disk_reserve_gb,
+                    "cpu_threads": cpu_threads,
+                    "max_checkpoints": max_checkpoints,
+                },
+            )
             result = train_fn(
                 model,
                 list(train_ids),
@@ -512,71 +707,184 @@ def handle_training_execute(ctx: dict[str, Any], payload: dict[str, Any]) -> Ste
                 train_cfg,
                 checkpoint_dir,
                 log_path,
-                device="cpu",
-                tokenizer_fingerprint=tokenizer_fingerprint,
-                dataset_version=dataset_version,
+                **call_kwargs,
             )
     except Exception as e:
+        _release_unconsumed_reservation()
         return StepExecutionResult(verdict="FAIL", error_code="training_failed", summary=f"Training failed: {e}")
     finally:
         ram_info = monitor.stop()
 
     if ram_info.get("exceeded_hard"):
+        _release_unconsumed_reservation()
         return StepExecutionResult(
             verdict="BLOCKED", error_code="ram_hard_stop",
             summary=f"RAM hard stop exceeded: peak {ram_info['peak_gb']} GB >= 3.5 GB — no checkpoint claimed.",
         )
     if not isinstance(result, dict):
+        _release_unconsumed_reservation()
         return StepExecutionResult(verdict="FAIL", error_code="training_bad_result", summary=f"train() returned non-dict: {type(result).__name__}")
+
     stopped = result.get("stopped_reason")
     if stopped == "loss_diverged":
+        _release_unconsumed_reservation()
         return StepExecutionResult(verdict="FAIL", error_code="loss_diverged", summary=f"Training diverged: val_loss={result.get('val_loss')} steps={result.get('steps')}")
+    if stopped in ("ram_hard_limit", "disk_reserve_violated", "disk_budget_violated", "experiment_timeout", "loop_timeout", "max_runtime_seconds"):
+        _release_unconsumed_reservation()
+        err_code = "experiment_timeout" if stopped == "max_runtime_seconds" else str(stopped)
+        return StepExecutionResult(
+            verdict="BLOCKED",
+            error_code=err_code,
+            summary=f"Training blocked safely by RuntimeGuard: {err_code} steps={result.get('steps')}",
+            output={"steps": result.get("steps"), "stopped_reason": stopped, "checkpoint_blocked": result.get("checkpoint_blocked")},
+        )
     if stopped not in (None, "", "budget_exceeded", "cost_exceeded"):
+        _release_unconsumed_reservation()
         return StepExecutionResult(verdict="FAIL", error_code="training_stopped", summary=f"Training stopped: {stopped} steps={result.get('steps')} val_loss={result.get('val_loss')}")
     if result.get("val_loss") is None:
+        _release_unconsumed_reservation()
         return StepExecutionResult(verdict="FAIL", error_code="training_no_val", summary="Training finished without val_loss — cannot PASS without evidence.")
     if result.get("parameter_changed") is False:
+        _release_unconsumed_reservation()
         return StepExecutionResult(verdict="FAIL", error_code="training_no_change", summary="Training finished but parameters did not change — cannot PASS.")
 
-    metrics_payload = {
+    metrics_payload: dict[str, Any] = {
+        "model_version": canonical_version,
+        "parent_version": resolved_parent,
+        "version_source": "explicit" if explicit_model_version is not None else "canonical_auto",
         "steps": result.get("steps"),
         "epochs": result.get("epochs"),
         "train_loss": result.get("train_loss"),
         "val_loss": result.get("val_loss"),
         "perplexity": result.get("perplexity"),
         "ram_peak_gb": ram_info.get("peak_gb"),
+        "checkpoint_dir": checkpoint_dir,
         "prompt_format": result.get("prompt_format") or ("zyrquen.sft.v1" if is_sft_run else "token_stream.v1"),
     }
 
+    # Ensure tokenizer.json and VersionedCheckpointManager version_manifest.json use the SINGLE canonical_version
+    ckpt_manifest_file = _Path(checkpoint_dir) / "manifest.json"
+    tok_dest = _Path(checkpoint_dir) / "tokenizer.json"
+    if ckpt_manifest_file.is_file():
+        if not tok_dest.exists():
+            if tokenizer_path_raw and _Path(tokenizer_path_raw).is_file():
+                shutil.copy2(tokenizer_path_raw, tok_dest)
+            elif tokenizer is not None and hasattr(tokenizer, "save"):
+                tokenizer.save(tok_dest)
+
+        from apps.core.native.checkpoint import VersionedCheckpointManager as _VCM
+
+        vcm_kwargs = {"load_fn": load_fn_override} if load_fn_override is not None else {}
+        vcm = _VCM(checkpoint_dir, **vcm_kwargs)
+        if vcm.get_version(canonical_version) is not None:
+            _release_unconsumed_reservation()
+            return StepExecutionResult(
+                verdict="BLOCKED",
+                error_code="duplicate_model_version",
+                summary=f"Duplicate model_version already present in version_manifest.json: {canonical_version}",
+                output=metrics_payload,
+            )
+        if vcm._inner.latest_valid() is not None:
+            try:
+                version_rec = vcm.register_existing_checkpoint(
+                    model_version=canonical_version,
+                    parent_version=resolved_parent,
+                    dataset_version=str(dataset_version or "unknown"),
+                    dataset_content_hash=str(dataset_manifest.get("content_sha256") or "unknown"),
+                    config={
+                        "model_config": built_model_cfg_dict,
+                        "train_config": {
+                            "batch_size": batch_size,
+                            "block_size": block_size,
+                            "max_steps": max_steps,
+                        },
+                    },
+                    tokenizer_sha256=tokenizer_fingerprint,
+                    val_loss=float(result["val_loss"]) if result.get("val_loss") is not None else None,
+                    perplexity=float(result["perplexity"]) if result.get("perplexity") is not None else None,
+                    metrics={
+                        k: v
+                        for k, v in metrics_payload.items()
+                        if isinstance(v, (int, float)) and not isinstance(v, bool)
+                    },
+                )
+                if not vcm.verify_version(canonical_version):
+                    _release_unconsumed_reservation()
+                    return StepExecutionResult(
+                        verdict="FAIL",
+                        error_code="checkpoint_verification_failed",
+                        summary=f"Versioned checkpoint verification failed for {canonical_version}.",
+                        output=metrics_payload,
+                    )
+                metrics_payload["checkpoint_model_version"] = canonical_version
+                metrics_payload["checkpoint_sha256"] = version_rec["checkpoint_sha256"]
+                metrics_payload["version_manifest_path"] = str(vcm.version_manifest_path)
+            except Exception as e:
+                _release_unconsumed_reservation()
+                return StepExecutionResult(
+                    verdict="FAIL",
+                    error_code="version_manifest_registration_failed",
+                    summary=f"Training finished but VersionedCheckpointManager registration failed: {e}",
+                    output=metrics_payload,
+                )
+
     registered_version: str | None = None
-    registry_root = str(payload.get("registry_root") or "").strip()
-    if registry_root and dataset_dir and tokenizer_path_raw and (ctx.get("_train_fn") is None or payload.get("register_in_registry")):
+    reg_tok_path = tokenizer_path_raw or (str(tok_dest) if tok_dest.is_file() else "")
+    should_register_registry = bool(
+        active_registry is not None
+        and dataset_dir
+        and reg_tok_path
+        and ckpt_manifest_file.is_file()
+        and payload.get("register_in_registry", True)
+    )
+    if should_register_registry and active_registry is not None:
         try:
-            reg = ModelRegistry(registry_root)
-            rec = reg.register_next_native_version(
+            rec = active_registry.register(
+                canonical_version,
                 checkpoint_dir,
-                tokenizer_path_raw,
+                reg_tok_path,
                 dataset_dir,
                 metrics={k: v for k, v in metrics_payload.items() if isinstance(v, (int, float)) and not isinstance(v, bool)},
                 notes=str(payload.get("notes") or f"Registered by handle_training_execute (steps={result.get('steps')})"),
-                training_run_id=str(ctx.get("run_id") or "") or None,
+                parent=resolved_parent,
+                reservation_token=canonical_reservation.token or None,
+                architecture=built_model_cfg_dict or None,
+                training_metadata={
+                    "batch_size": batch_size,
+                    "block_size": block_size,
+                    "max_steps": max_steps,
+                    "training_run_id": str(ctx.get("run_id") or "") or None,
+                },
+                prompt_format=str(metrics_payload.get("prompt_format") or ""),
             )
+            reservation_consumed = True
             registered_version = rec["version"]
+            if (
+                metrics_payload.get("checkpoint_sha256")
+                and rec.get("checkpoint", {}).get("sha256") != metrics_payload.get("checkpoint_sha256")
+            ):
+                raise RegistryError("checkpoint SHA-256 mismatch between version_manifest.json and ModelRegistry")
+            metrics_payload["registry_model_version"] = registered_version
             metrics_payload["model_version"] = registered_version
         except Exception as e:
+            _release_unconsumed_reservation()
             return StepExecutionResult(
                 verdict="FAIL",
                 error_code="registry_registration_failed",
                 summary=f"Training finished but ModelRegistry registration failed: {e}",
                 output=metrics_payload,
             )
+    else:
+        _release_unconsumed_reservation()
 
     emitted: list[tuple[str, dict[str, Any]]] = []
-    if registered_version is not None:
+    event_version = registered_version or metrics_payload.get("model_version")
+    if event_version is not None:
         emitted.append((
             "training.completed",
             {
-                "model_version": registered_version,
+                "model_version": event_version,
+                "checkpoint_dir": checkpoint_dir,
                 "steps": result.get("steps"),
                 "val_loss": result.get("val_loss"),
             },
@@ -598,33 +906,76 @@ def handle_evaluation_verify(ctx: dict[str, Any], payload: dict[str, Any]) -> St
     registry_root = str(
         payload.get("registry_root") or os.getenv("ZYRQUEN_MODEL_REGISTRY_ROOT", "")
     ).strip()
+    checkpoint_dir = str(payload.get("checkpoint_dir") or "").strip()
     version = str(payload.get("model_version") or "").strip()
-    if not registry_root or not version:
+    if (not registry_root and not checkpoint_dir) or not version:
         return StepExecutionResult(
             verdict="NOT RUN",
-            summary="No registry_root or model_version provided; evaluation skipped honestly.",
-            output={"registry_root": registry_root or None, "model_version": version or None},
+            summary="No registry_root/checkpoint_dir or model_version provided; evaluation skipped honestly.",
+            output={
+                "registry_root": registry_root or None,
+                "checkpoint_dir": checkpoint_dir or None,
+                "model_version": version or None,
+            },
             evidence={"verdict": "NOT RUN", "reason": "no_model_version_targeted"},
         )
 
-    reg = ModelRegistry(registry_root)
-    try:
-        ok = reg.verify(version)
-        rec = reg.get(version)
-    except RegistryError as exc:
+    if registry_root:
+        reg = ModelRegistry(registry_root)
+        try:
+            ok = reg.verify(version)
+            compat = reg.check_compatibility(version) if ok else {"compatible": False, "reasons": ["sha256_verify_failed"]}
+            rec = reg.get(version)
+        except RegistryError as exc:
+            return StepExecutionResult(
+                verdict="BLOCKED",
+                summary=f"Artifact verification failed for {version}: {exc}",
+                output={"model_version": version, "verified": False},
+                evidence={"verdict": "BLOCKED", "error": str(exc)},
+                error_code="artifact_verification_failed",
+            )
+        passed = bool(ok and compat.get("compatible"))
+        if passed and checkpoint_dir and (Path(checkpoint_dir) / "version_manifest.json").is_file():
+            from apps.core.native.checkpoint import VersionedCheckpointManager as _VCM
+
+            vcm = _VCM(checkpoint_dir)
+            ver_rec = vcm.get_version(version)
+            if (
+                ver_rec is None
+                or not vcm.verify_version(version)
+                or ver_rec.get("checkpoint_sha256") != rec.get("checkpoint", {}).get("sha256")
+            ):
+                passed = False
         return StepExecutionResult(
-            verdict="BLOCKED",
-            summary=f"Artifact verification failed for {version}: {exc}",
-            output={"model_version": version, "verified": False},
-            evidence={"verdict": "BLOCKED", "error": str(exc)},
-            error_code="artifact_verification_failed",
+            verdict="PASS" if passed else "FAIL",
+            summary=f"Model artifact SHA-256 & compatibility verification for {version}: {'PASS' if passed else 'FAIL'}",
+            output={
+                "model_version": version,
+                "verified": ok,
+                "compatibility": compat,
+                "lifecycle_status": rec.get("lifecycle_status"),
+            },
+            evidence={"verdict": "PASS" if passed else "FAIL", "checkpoint_sha256": rec["checkpoint"]["sha256"]},
         )
 
+    from apps.core.native.checkpoint import VersionedCheckpointManager as _VCM
+
+    vcm = _VCM(checkpoint_dir)
+    ok = vcm.verify_version(version)
+    ver_rec = vcm.get_version(version)
+    if ver_rec is None:
+        return StepExecutionResult(
+            verdict="BLOCKED",
+            summary=f"Checkpoint version not found in version_manifest.json: {version}",
+            output={"model_version": version, "checkpoint_dir": checkpoint_dir, "verified": False},
+            evidence={"verdict": "BLOCKED", "reason": "version_not_found"},
+            error_code="artifact_verification_failed",
+        )
     return StepExecutionResult(
         verdict="PASS" if ok else "FAIL",
-        summary=f"Model artifact SHA-256 verification for {version}: {'PASS' if ok else 'FAIL'}",
-        output={"model_version": version, "verified": ok, "lifecycle_status": rec.get("lifecycle_status")},
-        evidence={"verdict": "PASS" if ok else "FAIL", "checkpoint_sha256": rec["checkpoint"]["sha256"]},
+        summary=f"Versioned checkpoint SHA-256 verification for {version}: {'PASS' if ok else 'FAIL'}",
+        output={"model_version": version, "checkpoint_dir": checkpoint_dir, "verified": ok},
+        evidence={"verdict": "PASS" if ok else "FAIL", "checkpoint_sha256": ver_rec["checkpoint_sha256"]},
     )
 
 

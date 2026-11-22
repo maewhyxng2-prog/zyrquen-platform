@@ -293,9 +293,23 @@ class CentralWorkflowOrchestrator:
         previous_outputs: dict[str, Any],
         requested_by_user_id: str | None,
     ) -> str:
-        # 1. Resource Guard pre-flight check
-        approved_gpu = bool(payload.get("approved_paid_gpu", False))
-        res_check = self.resource_guard.check_step(step, payload, has_paid_gpu_approval=approved_gpu)
+        # 1. Resource Guard pre-flight check (paid GPU requires verified HMAC governance approval)
+        has_paid_gpu_approval = self.governance.has_valid_approval(
+            run_id, action_type="compute.paid_gpu"
+        )
+        if payload.get("approved_paid_gpu") and not has_paid_gpu_approval:
+            self.audit.record(
+                actor_id=requested_by_user_id or "system:orchestrator",
+                event_type="workflow.paid_gpu_bypass_rejected",
+                resource=f"step:{step.step_key}",
+                decision="BLOCKED",
+                details={"reason": "payload_boolean_paid_gpu_bypass_not_permitted"},
+                run_id=run_id,
+                step_key=step.step_key,
+            )
+        res_check = self.resource_guard.check_step(
+            step, payload, has_paid_gpu_approval=has_paid_gpu_approval
+        )
         self.store.update_run(run_id, resource_snapshot=res_check.snapshot)
 
         if not res_check.allowed:
@@ -326,9 +340,12 @@ class CentralWorkflowOrchestrator:
 
         # 2. Tier-2 Human Approval Gate
         consumed_approval: dict[str, Any] | None = None
+        expected_step_scope = f"{defn.workflow_key}:{step.step_key}"
         if self.governance.requires_human_approval(step):
             try:
-                consumed_approval = self.governance.verify_and_consume(run_id, step)
+                consumed_approval = self.governance.verify_and_consume(
+                    run_id, step, expected_scope=expected_step_scope
+                )
             except ApprovalViolationError as exc:
                 self.store.update_step(
                     run_id,
@@ -396,6 +413,7 @@ class CentralWorkflowOrchestrator:
                     "run_id": run_id,
                     "step_key": step.step_key,
                     "resource_guard": self.resource_guard,
+                    "audit": self.audit,
                     "previous_outputs": previous_outputs,
                     "consumed_approval": consumed_approval,
                 }
@@ -504,6 +522,8 @@ class CentralWorkflowOrchestrator:
         expected_action_type: str,
         actor_id: str,
         resource: str,
+        expected_model_version: str | None = None,
+        expected_run_id: str | None = None,
     ) -> dict[str, Any]:
         token_id = str(approval_id or "").strip()
         if not token_id:
@@ -521,6 +541,9 @@ class CentralWorkflowOrchestrator:
             consumed = self.governance.verify_and_consume_by_id(
                 token_id,
                 expected_action_type=expected_action_type,
+                expected_run_id=expected_run_id,
+                expected_scope=resource,
+                expected_model_version=expected_model_version,
             )
         except ApprovalViolationError as exc:
             self.audit.record(
@@ -541,12 +564,15 @@ class CentralWorkflowOrchestrator:
         approval_id: str,
         actor_id: str,
         reason: str = "",
+        expected_run_id: str | None = None,
     ) -> dict[str, Any]:
         consumed = self._consume_lifecycle_approval(
             approval_id=approval_id,
             expected_action_type="model.stage",
             actor_id=actor_id,
             resource=f"model:{version}",
+            expected_model_version=version,
+            expected_run_id=expected_run_id,
         )
         compat = registry.check_compatibility(version)
         if not compat["compatible"]:
@@ -583,12 +609,15 @@ class CentralWorkflowOrchestrator:
         *,
         approval_id: str,
         actor_id: str,
+        expected_run_id: str | None = None,
     ) -> dict[str, Any]:
         consumed = self._consume_lifecycle_approval(
             approval_id=approval_id,
             expected_action_type="model.promote",
             actor_id=actor_id,
             resource=f"model:{version}",
+            expected_model_version=version,
+            expected_run_id=expected_run_id,
         )
         try:
             registry.promote(
@@ -626,12 +655,16 @@ class CentralWorkflowOrchestrator:
         to_version: str | None = None,
         approval_id: str,
         actor_id: str,
+        expected_run_id: str | None = None,
     ) -> dict[str, Any]:
+        target_label = to_version or "previous"
         consumed = self._consume_lifecycle_approval(
             approval_id=approval_id,
             expected_action_type="model.rollback",
             actor_id=actor_id,
-            resource=f"model:{to_version or 'previous'}",
+            resource=f"model:{target_label}",
+            expected_model_version=target_label,
+            expected_run_id=expected_run_id,
         )
         try:
             target = registry.rollback(to_version, approval_id=consumed["id"])

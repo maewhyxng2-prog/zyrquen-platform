@@ -52,8 +52,8 @@
 ## 4. V10-C Training Hook & Native Evaluation Integration
 - **Status:** **`VERIFIED`** *(Hook / API / UI Wired; Live PyTorch Execution Pending)*
 
-- **Training Hook (`handle_training_execute`):** Wires `ZyrquenConfig`, slot-safe `ZyrquenTokenizer`, `train_sft`, Tier-2 HMAC token, and resource guard (`test_v10c_integration_hook.py`) (**`VERIFIED`**).
-- **Evaluation Hook (`EvaluationEngine.evaluate_native_model`):** Wired with `native_inference_evaluation_wired = True`; reports `NOT RUN` / `BLOCKED` honestly without `torch` (**`VERIFIED`**).
+- **Training Hook (`handle_training_execute`):** Wires `ZyrquenConfig`, slot-safe `ZyrquenTokenizer`, `train_sft`, Tier-2 HMAC token, `TrainingRuntimeGuard` (`<=2` CPU threads, `1200s`/`3600s` timeouts, RAM/Disk guards), isolated run directory, and `VersionedCheckpointManager.register_existing_checkpoint` (`test_v10c_integration_hook.py`, `test_v10_remediation_suite.py`) (**`VERIFIED`**).
+- **Evaluation Hook (`EvaluationEngine.evaluate_native_model`):** Wired with `native_inference_evaluation_wired = True`, supports both `checkpoint_dir` (`version_manifest.json`) and `registry_root` (`artifacts/<version>/`), rejects oversized prompts (`>= cfg.max_seq_len`) without silent truncation, and reports `NOT RUN` / `BLOCKED` honestly without `torch` (**`VERIFIED`**).
 - **CLI Suite (`tools/*_nagi_v10.py`):** `train_nagi_v10.py`, `eval_nagi_v10.py`, `diagnose_nagi_v10.py`, `compare_nagi_v10.py` tested for honest `NOT RUN` / `BLOCKED` reporting (**`VERIFIED`**).
 - **Closure Audit API & Dashboard:** `apps/core/native/closure_audit.py`, `GET /v1/v10/closure-audit`, Next.js proxy route, and `<ClosureAudit />` component tested via `test_v10_closure_audit.py`, Vitest, `tsc`, `next build`, and `lint` (**`VERIFIED`**).
 
@@ -102,7 +102,7 @@
 ## 10. Resource Readiness
 - **Status:** **`PENDING`** *(Guard logic `VERIFIED`; Runtime RSS/Latency `NOT RUN`)*
 
-- **Configured Guardrails:** `RAM_SOFT_GB = 3.0 GB`, `RAM_HARD_GB = 3.5 GB`, `DISK_RESERVE_GB >= 2.0 GB`, `MAX_STEPS = 500`, `CPU threads <= 2` (**`VERIFIED`** in policy/code).
+- **Configured & Remediated Guardrails:** `RAM_SOFT_GB = 3.0 GB` (warn + audit), `RAM_HARD_GB = 3.5 GB` (pre-step/pre-checkpoint stop), `DISK_RESERVE_GB >= 2.0 GB` (pre-run & pre-checkpoint), `MAX_NEW_DISK_GB = 1.0 GB`, `MAX_STEPS = 500`, `CPU threads <= 2` (`enforce_cpu_thread_cap`), `EXPERIMENT_TIMEOUT <= 1200s`, `LOOP_TIMEOUT <= 3600s` (**`VERIFIED`** in code, mocks, and `test_v10_remediation_suite.py`).
 - **Runtime Measurement:** Actual PyTorch CPU Peak RSS and `sec/step` telemetry remain **`NOT RUN`**.
 
 ---
@@ -135,7 +135,9 @@
 - **Status:** **`VERIFIED`** *(Static & Unit Evidence Only)*
 
 - Python static compile: `python3 -m compileall -q apps tools tests phases` (`STATIC PASS`)
-- Python V10 unit/integration/audit suite: `python3 -m unittest tests/test_v10a_contracts.py tests/test_v10c_integration_hook.py tests/test_v10_closure_audit.py -v` (`27` tests ran: `26` OK, `1` skipped `pydantic not installed in environment`)
+- Python V10 unit/integration/audit/remediation suite: `python3 -m unittest tests/test_v10a_contracts.py tests/test_v10c_integration_hook.py tests/test_v10_closure_audit.py tests/test_evaluation_gate_safety.py tests/test_workflow_engine.py tests/test_v10_remediation_suite.py -v` (`52` tests ran: `51` OK, `1` skipped `pydantic not installed in environment`)
+- Module unit tests (`test_autonomous_training_loop`, `test_training_hook`, `test_checkpoint`, `test_evaluation`): `20` passed, `12` skipped (`ModuleNotFoundError: No module named 'torch'`)
+- Remediation & Audit Reports: `docs/v10/V10_CRITICAL_BLOCKER_REMEDIATION_REPORT.md`, `docs/v10/V10_FINAL_RUNTIME_READINESS_AUDIT.md`
 - Core anchors inspected: `apps/core/native/closure_audit.py`, `apps/api/routers/workflows.py`, `apps/web/src/components/ClosureAudit.tsx`
 - Prior frontend verification recorded on Closure Audit dashboard feature: `apps/web` Vitest (`21/21`), `tsc`, `next build`, `lint` (`STATIC / UNIT PASS`; live FastAPI+PyTorch runtime **`NOT RUN`**)
 

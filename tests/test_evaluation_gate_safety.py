@@ -498,16 +498,22 @@ class TestEvaluationGateFalsePassClosure(unittest.TestCase):
                 requested_by_user_id="admin-1",
             )[0]["id"]
 
-            def _mint_approved_token(action_type: str) -> str:
+            _tok_seq = {"n": 0}
+
+            def _mint_approved_token(action_type: str, target_version: str) -> str:
+                _tok_seq["n"] += 1
                 step = WorkflowStepSpec(
-                    step_key=f"step-{action_type}",
+                    step_key=f"step-{action_type}-{target_version}-{_tok_seq['n']}",
                     handler_key="security.audit",
                     action_type=action_type,
                     lane="governance",
                     tier="tier2_approval",
                 )
                 pending = orch.governance.ensure_pending_approval(
-                    run_id=run_id, step=step, requested_by_user_id="admin-1", scope="model"
+                    run_id=run_id,
+                    step=step,
+                    requested_by_user_id="admin-1",
+                    scope=f"model:{target_version}",
                 )
                 approved = orch.governance.decide_approval(
                     pending["id"], approve=True, approver_user_id="admin-1", approver_role="admin", reason="verified"
@@ -523,12 +529,17 @@ class TestEvaluationGateFalsePassClosure(unittest.TestCase):
                 orch.rollback_model_with_approval(reg, approval_id="forged-id", actor_id="a@example.com")
 
             # Wrong action_type token rejected (training.execute token cannot promote)
-            train_tok = _mint_approved_token("training.execute")
+            train_tok = _mint_approved_token("training.execute", rec1["version"])
             with self.assertRaises(ApprovalViolationError):
                 orch.promote_model_with_approval(reg, rec1["version"], approval_id=train_tok, actor_id="a@example.com")
 
+            # Wrong model_version scope token rejected (token for rec2 cannot promote rec1)
+            wrong_ver_tok = _mint_approved_token("model.promote", rec2["version"])
+            with self.assertRaises(ApprovalViolationError):
+                orch.promote_model_with_approval(reg, rec1["version"], approval_id=wrong_ver_tok, actor_id="a@example.com")
+
             # Valid single-use tokens for stage -> promote v0.1.0 -> promote v0.1.1 -> rollback to v0.1.0
-            stage_tok = _mint_approved_token("model.stage")
+            stage_tok = _mint_approved_token("model.stage", rec1["version"])
             staged = orch.stage_model_with_approval(
                 reg, rec1["version"], approval_id=stage_tok, actor_id="admin@example.com", reason="canary"
             )
@@ -536,19 +547,19 @@ class TestEvaluationGateFalsePassClosure(unittest.TestCase):
             with self.assertRaises(ApprovalViolationError):
                 orch.stage_model_with_approval(reg, rec1["version"], approval_id=stage_tok, actor_id="admin@example.com")
 
-            prom1_tok = _mint_approved_token("model.promote")
+            prom1_tok = _mint_approved_token("model.promote", rec1["version"])
             p1_res = orch.promote_model_with_approval(
                 reg, rec1["version"], approval_id=prom1_tok, actor_id="admin@example.com"
             )
             self.assertEqual(p1_res["active_version"], rec1["version"])
 
-            prom2_tok = _mint_approved_token("model.promote")
+            prom2_tok = _mint_approved_token("model.promote", rec2["version"])
             p2_res = orch.promote_model_with_approval(
                 reg, rec2["version"], approval_id=prom2_tok, actor_id="admin@example.com"
             )
             self.assertEqual(p2_res["active_version"], rec2["version"])
 
-            rb_tok = _mint_approved_token("model.rollback")
+            rb_tok = _mint_approved_token("model.rollback", "previous")
             rb_res = orch.rollback_model_with_approval(
                 reg, approval_id=rb_tok, actor_id="admin@example.com"
             )

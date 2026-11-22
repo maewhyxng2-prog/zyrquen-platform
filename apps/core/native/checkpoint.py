@@ -144,6 +144,70 @@ class VersionedCheckpointManager:
         self._write_versions(existing)
         return data
 
+    def register_existing_checkpoint(
+        self,
+        *,
+        model_version: str,
+        dataset_version: str,
+        dataset_content_hash: str,
+        config: dict,
+        parent_version: str | None = None,
+        tokenizer_sha256: str | None = None,
+        val_loss: float | None = None,
+        perplexity: float | None = None,
+        metrics: dict | None = None,
+        step: int | None = None,
+    ) -> dict:
+        """Index the latest (or specified) CheckpointManager artifact in version_manifest.json without duplicating .pt."""
+        existing = self._read_versions()
+        if any(version.get("model_version") == model_version for version in existing):
+            raise ValueError(f"model_version duplicate: {model_version} already exists")
+
+        manifest_entries = self._inner._read_manifest()
+        if step is not None:
+            inner_entry = next(
+                (item for item in manifest_entries if item.get("step") == step),
+                None,
+            )
+            if inner_entry is None or not self._inner.verify(inner_entry):
+                raise ValueError(f"checkpoint integrity verification failed for step {step}")
+        else:
+            inner_entry = self._inner.latest_valid()
+            if inner_entry is None:
+                raise ValueError("no verified checkpoint found in checkpoint_dir")
+
+        ckpt_path = self.dir / inner_entry["file"]
+        resolved_tok_sha = tokenizer_sha256
+        if not resolved_tok_sha:
+            try:
+                loaded = self._inner._load(str(ckpt_path))
+                if isinstance(loaded, dict):
+                    raw_tok = loaded.get("tokenizer_sha256")
+                    if isinstance(raw_tok, str) and raw_tok:
+                        resolved_tok_sha = raw_tok
+            except Exception:
+                pass
+
+        entry = ModelVersion(
+            model_version=model_version,
+            parent_version=parent_version,
+            step=int(inner_entry["step"]),
+            checkpoint_file=str(inner_entry["file"]),
+            checkpoint_sha256=_sha256_file(ckpt_path),
+            dataset_version=dataset_version,
+            dataset_content_hash=dataset_content_hash,
+            config_hash=_hash_dict(config),
+            tokenizer_sha256=resolved_tok_sha,
+            val_loss=val_loss,
+            perplexity=perplexity,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            metrics=metrics or {},
+        )
+        data = asdict(entry)
+        existing.append(data)
+        self._write_versions(existing)
+        return data
+
     def list_versions(self) -> list[dict]:
         return self._read_versions()
 

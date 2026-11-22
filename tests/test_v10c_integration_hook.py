@@ -321,7 +321,7 @@ class TestV10CIntegrationHook(unittest.TestCase):
                     requested_by_user_id="admin",
                 )[0]["id"]
 
-                def _mint_approved_token(tag: str, action_type: str) -> str:
+                def _mint_approved_token(tag: str, action_type: str, target_version: str) -> str:
                     step = WorkflowStepSpec(
                         step_key=f"step-{tag}",
                         handler_key="security.audit",
@@ -330,7 +330,10 @@ class TestV10CIntegrationHook(unittest.TestCase):
                         tier="tier2_approval",
                     )
                     pending = orch.governance.ensure_pending_approval(
-                        run_id=run_id, step=step, requested_by_user_id="admin", scope="prod"
+                        run_id=run_id,
+                        step=step,
+                        requested_by_user_id="admin",
+                        scope=f"model:{target_version}",
                     )
                     approved = orch.governance.decide_approval(
                         pending["id"], approve=True, approver_user_id="admin", approver_role="admin", reason="verified"
@@ -410,9 +413,9 @@ class TestV10CIntegrationHook(unittest.TestCase):
                 )
                 self.assertEqual(gate_base.verdict, "PASS", gate_base.summary)
 
-                t_stage = _mint_approved_token("stage-base", "model.stage")
+                t_stage = _mint_approved_token("stage-base", "model.stage", "ZYRQUEN-Native-10.0.0")
                 orch.stage_model_with_approval(reg, "ZYRQUEN-Native-10.0.0", approval_id=t_stage, actor_id="admin")
-                t_prom = _mint_approved_token("prom-base", "model.promote")
+                t_prom = _mint_approved_token("prom-base", "model.promote", "ZYRQUEN-Native-10.0.0")
                 orch.promote_model_with_approval(reg, "ZYRQUEN-Native-10.0.0", approval_id=t_prom, actor_id="admin")
                 self.assertEqual(reg.active_version(), "ZYRQUEN-Native-10.0.0")
 
@@ -465,9 +468,9 @@ class TestV10CIntegrationHook(unittest.TestCase):
                 )
                 self.assertEqual(gate_cand.verdict, "PASS", gate_cand.summary)
 
-                t_stage2 = _mint_approved_token("stage-cand", "model.stage")
+                t_stage2 = _mint_approved_token("stage-cand", "model.stage", "ZYRQUEN-Native-10.1.0")
                 orch.stage_model_with_approval(reg, "ZYRQUEN-Native-10.1.0", approval_id=t_stage2, actor_id="admin")
-                t_prom2 = _mint_approved_token("prom-cand", "model.promote")
+                t_prom2 = _mint_approved_token("prom-cand", "model.promote", "ZYRQUEN-Native-10.1.0")
                 orch.promote_model_with_approval(reg, "ZYRQUEN-Native-10.1.0", approval_id=t_prom2, actor_id="admin")
                 self.assertEqual(reg.active_version(), "ZYRQUEN-Native-10.1.0")
 
