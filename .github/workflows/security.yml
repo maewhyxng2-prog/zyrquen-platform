@@ -95,11 +95,12 @@ jobs:
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
+      # Audit the committed lockfile before npm ci mutates the working tree.
+      - name: Audit npm dependencies
+        run: npm audit --package-lock-only --audit-level=high
+
       - name: Install dependencies
         run: npm ci --workspaces=false
-
-      - name: Audit npm dependencies
-        run: npm audit --audit-level=high
 
   dependency-review:
     name: Pull Request Dependency Review
