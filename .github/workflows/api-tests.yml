@@ -85,7 +85,8 @@ jobs:
             apps/core/test_*.py \
             apps/core/native \
             apps/core/training_infrastructure \
-            apps/core/training
+            apps/core/training \
+            tests/test_p0_2_runtime_guard.py
 
   web:
     name: Web Tests and Build
