@@ -257,15 +257,7 @@ class TrainingOrchestrator:
             )
             run_dir.mkdir(parents=True, exist_ok=False)
             model = ZyrquenModel(prepared.model_config)
-            try:
-                from apps.core.workflow.resource_guard import TrainingRuntimeGuard
-                runtime_guard = TrainingRuntimeGuard(
-                    run_dir / "checkpoints",
-                    run_id=str(run_id),
-                    step_key="orchestrator",
-                )
-            except ValueError as exc:
-                raise TrainingUnavailable(f"Training guard is misconfigured: {exc}") from exc
+            runtime_guard = _create_training_runtime_guard(run_dir, run_id)
             result = train_sft(
                 model,
                 train_pairs,
@@ -309,15 +301,7 @@ class TrainingOrchestrator:
 
             run_dir.mkdir(parents=True, exist_ok=False)
             model = ZyrquenModel(prepared.model_config)
-            try:
-                from apps.core.workflow.resource_guard import TrainingRuntimeGuard
-                runtime_guard = TrainingRuntimeGuard(
-                    run_dir / "checkpoints",
-                    run_id=str(run_id),
-                    step_key="orchestrator",
-                )
-            except ValueError as exc:
-                raise TrainingUnavailable(f"Training guard is misconfigured: {exc}") from exc
+            runtime_guard = _create_training_runtime_guard(run_dir, run_id)
             result = train(
                 model,
                 train_ids,
@@ -421,3 +405,26 @@ def _cost_controller_from_env():
     from apps.core.training.cost_limits import cost_controller_from_env
 
     return cost_controller_from_env()
+
+
+def _create_training_runtime_guard(run_dir: Path, run_id: UUID):
+    """Build a fail-closed runtime guard backed by the shared workflow audit store."""
+    try:
+        from apps.core.workflow.audit import WorkflowAuditLogger
+        from apps.core.workflow.resource_guard import TrainingRuntimeGuard
+        from apps.core.workflow.store import WorkflowStore
+
+        db_path = Path(
+            os.getenv("ZYRQUEN_WORKFLOW_DB_PATH", "/tmp/zyrquen_workflow.db")
+        )
+        audit_logger = WorkflowAuditLogger(WorkflowStore(db_path))
+        return TrainingRuntimeGuard(
+            run_dir / "checkpoints",
+            audit_logger=audit_logger,
+            run_id=str(run_id),
+            step_key="training_orchestrator.run",
+        )
+    except Exception as exc:
+        raise TrainingUnavailable(
+            "Training runtime guard or audit store could not be initialized."
+        ) from exc
