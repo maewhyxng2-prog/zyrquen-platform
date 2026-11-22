@@ -42,7 +42,7 @@ describe("API key auto-rotate backend lifecycle", () => {
     vi.useRealTimers();
   });
 
-  it("creates, schedules, rotates due keys automatically, enforces ownership, and blocks revoked keys", async () => {
+  it("creates schedules, rotates only on explicit POST, enforces ownership, and blocks revoked keys", async () => {
     vi.useFakeTimers();
     const baseTime = new Date("2026-11-22T12:00:00.000Z");
     vi.setSystemTime(baseTime);
@@ -137,7 +137,7 @@ describe("API key auto-rotate backend lifecycle", () => {
     expect(manualBody.rotation_count).toBe(1);
     expect(manualBody.last_rotated_at).toBe(baseTime.toISOString());
 
-    // Advance 8 days so the 7-day auto-rotation schedule becomes due
+    // Advance 8 days so the configured rotation date becomes due
     vi.setSystemTime(new Date(baseTime.getTime() + 8 * 86_400_000));
     const freshLogin = await handleInMemoryBackendRequest({
       method: "POST",
@@ -165,9 +165,20 @@ describe("API key auto-rotate backend lifecycle", () => {
     }>;
     const autoRotated = keysAfterDue.find((item) => item.id === created.id);
     expect(autoRotated).toBeDefined();
-    expect(autoRotated?.rotation_count).toBe(2);
-    // Secrets must never be exposed in GET listing
+    expect(autoRotated?.rotation_count).toBe(1);
+    expect(autoRotated?.key_prefix).toBe(manualBody.key_prefix);
+    // GET is read-only and never invalidates the existing secret.
     expect(autoRotated?.key).toBeUndefined();
+
+    const dueRotate = await handleInMemoryBackendRequest({
+      method: "POST",
+      path: `users/me/api-keys/${created.id}/rotate`,
+      authorizationHeader: freshOwnerAuth,
+    });
+    expect(dueRotate.status).toBe(200);
+    const dueBody = dueRotate.body as { key: string; rotation_count: number };
+    expect(dueBody.key).not.toBe(manualBody.key);
+    expect(dueBody.rotation_count).toBe(2);
 
     // Revoke and verify rotation / schedule changes are rejected cleanly
     const revokeRes = await handleInMemoryBackendRequest({
