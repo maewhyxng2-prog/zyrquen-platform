@@ -17,9 +17,15 @@ Content-Type: application/json
 }
 ```
 
-The response contains the plaintext `key` once. The database stores only its SHA-256 digest. Copy it to a secret manager immediately; it cannot be retrieved later. `GET /users/me/api-keys` returns metadata only. `GET /users/me/api-keys/{id}/usage` returns completed inference totals attributed to that key. `DELETE /users/me/api-keys/{id}` revokes an owned key; keys belonging to another user are indistinguishable from missing keys.
+The response contains the plaintext `key` once. The database stores only its SHA-256 digest. Copy it to a secret manager immediately; it cannot be retrieved later. `GET /users/me/api-keys` returns metadata only and is strictly read-only: listing keys never rotates or invalidates a credential. `GET /users/me/api-keys/{id}/usage` returns completed inference totals attributed to that key. `DELETE /users/me/api-keys/{id}` revokes an owned key; keys belonging to another user are indistinguishable from missing keys.
 
 Keys are restricted to the `native:inference` scope and must have a timezone-aware future expiry. Revocation and expiry are checked on each inference request.
+
+### Rotation behavior
+
+A configured rotation interval records the next target date in key metadata; it does not silently replace a credential in a background request. When rotation is due, an authorized owner must explicitly call `POST /users/me/api-keys/{id}/rotate`. That response returns the replacement plaintext key once. Store it securely and update dependent services immediately; the previous key is invalidated by the rotation. The list endpoint never returns plaintext secrets.
+
+Unattended rotation is intentionally not enabled until a secure one-time secret-delivery workflow is implemented. This avoids invalidating a production key when no safe channel exists to deliver its replacement.
 
 ## Native inference
 
