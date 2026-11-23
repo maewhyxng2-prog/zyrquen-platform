@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from apps.core.training_infrastructure.monitoring.training_monitor import (
@@ -137,6 +138,55 @@ def start_training(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
+
+
+@router.get("/readiness")
+def get_training_readiness(
+    current_user: User = Depends(get_current_user),
+):
+    """Report honest readiness of the Native Training Pipeline without fabricating configuration."""
+    dataset_env = os.getenv("ZYRQUEN_DATASET_DIR", "").strip()
+    tokenizer_env = os.getenv("ZYRQUEN_TOKENIZER_PATH", "").strip()
+    dataset_dir = jobs._orchestrator.dataset_dir or (Path(dataset_env).resolve() if dataset_env else None)
+    tokenizer_path = jobs._orchestrator.tokenizer_path or (Path(tokenizer_env).resolve() if tokenizer_env else None)
+    dataset_configured = bool(dataset_dir is not None and not dataset_dir.is_symlink() and dataset_dir.is_dir())
+    tokenizer_configured = bool(tokenizer_path is not None and not tokenizer_path.is_symlink() and tokenizer_path.is_file())
+    admins = training_admin_emails()
+    admin_configured = bool(admins)
+    is_training_admin = current_user.email.strip().lower() in admins
+    configured = dataset_configured and tokenizer_configured and admin_configured
+    active_run_id = str(jobs._active_run_id) if jobs._future is not None and not jobs._future.done() and jobs._active_run_id else None
+    return {
+        "configured": configured,
+        "status": "ready" if configured else "not_configured",
+        "dataset_configured": dataset_configured,
+        "tokenizer_configured": tokenizer_configured,
+        "admin_allowlist_configured": admin_configured,
+        "is_training_admin": is_training_admin,
+        "tier2_approval_required": True,
+        "active_run_id": active_run_id,
+    }
+
+
+@router.get("/runs")
+def list_training_runs(
+    limit: int = Query(default=20, ge=1, le=100),
+    current_user: User = Depends(require_training_admin),
+    db: Session = Depends(get_db),
+):
+    """List training runs owned by the authenticated training administrator."""
+    runs = (
+        db.query(TrainingRun)
+        .filter(TrainingRun.owner_id == current_user.id)
+        .order_by(desc(TrainingRun.created_at))
+        .limit(limit)
+        .all()
+    )
+    items = []
+    for run in runs:
+        _reconcile_run(run, db)
+        items.append(_run_response(run))
+    return {"items": items}
 
 
 @router.get("/runs/{run_id}", response_model=TrainingRunResponse)

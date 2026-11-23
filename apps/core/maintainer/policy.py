@@ -49,6 +49,7 @@ PROTECTED_GATE_PATHS: tuple[str, ...] = (
     ".github/workflows/capability-development.yml",
     ".github/workflows/data-quality.yml",
     ".github/workflows/api-tests.yml",
+    ".github/workflows/ci.yml",
     ".github/workflows/maintainer-audit.yml",
     ".github/workflows/maintainer-pr-review.yml",
 )

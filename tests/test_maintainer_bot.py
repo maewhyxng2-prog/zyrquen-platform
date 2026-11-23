@@ -269,6 +269,18 @@ class TestCentralWorkflowMaintainerIntegration(unittest.TestCase):
             self.assertEqual(data["schema"], "zyrquen.maintainer.audit.v1")
             self.assertEqual(data["checks"]["native_only_compliance"], "PASS")
 
+    def test_ci_workflow_contract_and_protection(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        ci_path = repo_root / ".github" / "workflows" / "ci.yml"
+        self.assertTrue(ci_path.is_file())
+        self.assertTrue(is_protected_path(".github/workflows/ci.yml"))
+        content = ci_path.read_text(encoding="utf-8")
+        self.assertIn("pull_request:", content)
+        self.assertIn("npm run lint", content)
+        self.assertIn("npm run test", content)
+        self.assertIn("Codex Review Bot", content)
+        self.assertIn("createCommitStatus", content)
+
 
 if __name__ == "__main__":
     unittest.main()

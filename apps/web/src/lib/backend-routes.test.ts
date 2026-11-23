@@ -104,6 +104,24 @@ describe("backend proxy route allowlist", () => {
     ).toBe(true);
     expect(isAllowedBackendRoute("POST", "v1/models/registry/rollback")).toBe(true);
     expect(isAllowedBackendRoute("GET", "v1/v10/closure-audit")).toBe(true);
+    expect(isAllowedBackendRoute("GET", "v1/datasets/status")).toBe(true);
+    expect(isAllowedBackendRoute("GET", "v1/datasets/0.1.0/status")).toBe(true);
+    expect(isAllowedBackendRoute("GET", "v1/datasets/nagi_v11.2/status")).toBe(true);
+    expect(isAllowedBackendRoute("GET", "training/readiness")).toBe(true);
+    expect(isAllowedBackendRoute("GET", "training/runs")).toBe(true);
+    expect(isAllowedBackendRoute("POST", "training/runs")).toBe(true);
+    expect(
+      isAllowedBackendRoute(
+        "GET",
+        "training/runs/123e4567-e89b-42d3-a456-426614174000",
+      ),
+    ).toBe(true);
+    expect(
+      isAllowedBackendRoute(
+        "GET",
+        "training/runs/123e4567-e89b-42d3-a456-426614174000/telemetry",
+      ),
+    ).toBe(true);
   });
 
   it("rejects unknown paths and method/path combinations", () => {
@@ -140,6 +158,19 @@ describe("backend proxy route allowlist", () => {
     expect(isAllowedBackendRoute("GET", "v1/models/registry/ZYRQUEN-Native-0.1.0/stage")).toBe(false);
     expect(isAllowedBackendRoute("POST", "v1/v10/closure-audit")).toBe(false);
     expect(isAllowedBackendRoute("DELETE", "v1/v10/closure-audit")).toBe(false);
+    expect(isAllowedBackendRoute("POST", "v1/datasets/status")).toBe(false);
+    expect(isAllowedBackendRoute("DELETE", "v1/datasets/0.1.0/status")).toBe(false);
+    expect(isAllowedBackendRoute("GET", "v1/datasets/0.1..2/status")).toBe(false);
+    expect(isAllowedBackendRoute("GET", "v1/datasets/../etc/status")).toBe(false);
+    expect(isAllowedBackendRoute("POST", "training/readiness")).toBe(false);
+    expect(isAllowedBackendRoute("DELETE", "training/runs")).toBe(false);
+    expect(isAllowedBackendRoute("GET", "training/runs/not-a-uuid")).toBe(false);
+    expect(
+      isAllowedBackendRoute(
+        "POST",
+        "training/runs/123e4567-e89b-42d3-a456-426614174000/telemetry",
+      ),
+    ).toBe(false);
   });
 });
 

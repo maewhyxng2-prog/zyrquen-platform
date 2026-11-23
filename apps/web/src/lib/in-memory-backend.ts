@@ -2053,5 +2053,68 @@ export async function handleInMemoryBackendRequest(options: {
     return { status: 200, body: store.auditLogs.slice(0, 100) };
   }
 
+  if (method === "GET" && path === "v1/datasets/status") {
+    return {
+      status: 200,
+      body: {
+        configured: false,
+        status: "not_configured",
+        detail: "ZYRQUEN_DATASET_DIR and ZYRQUEN_DATASET_ROOT are not configured in preview backend.",
+        active_dataset: null,
+        datasets: [],
+      },
+    };
+  }
+
+  const datasetVersionMatch = path.match(/^v1\/datasets\/([^/]+)\/status$/i);
+  if (method === "GET" && datasetVersionMatch) {
+    return {
+      status: 503,
+      body: { detail: "Dataset pipeline paths are not configured." },
+    };
+  }
+
+  if (method === "GET" && path === "training/readiness") {
+    return {
+      status: 200,
+      body: {
+        configured: false,
+        status: "not_configured",
+        dataset_configured: false,
+        tokenizer_configured: false,
+        admin_allowlist_configured: false,
+        is_training_admin: currentUser.role === "admin",
+        tier2_approval_required: true,
+        active_run_id: null,
+      },
+    };
+  }
+
+  if (path === "training/runs") {
+    if (method === "GET") {
+      if (currentUser.role !== "admin") {
+        return { status: 403, body: { detail: "Training administrator access is required." } };
+      }
+      return { status: 200, body: { items: [] } };
+    }
+    if (method === "POST") {
+      if (currentUser.role !== "admin") {
+        return { status: 403, body: { detail: "Training administrator access is required." } };
+      }
+      return {
+        status: 503,
+        body: { detail: "Training dataset and tokenizer paths are not configured." },
+      };
+    }
+  }
+
+  const trainingRunItemMatch = path.match(/^training\/runs\/([^/]+)(?:\/(telemetry))?$/i);
+  if (method === "GET" && trainingRunItemMatch) {
+    if (currentUser.role !== "admin") {
+      return { status: 403, body: { detail: "Training administrator access is required." } };
+    }
+    return { status: 404, body: { detail: "Training run not found." } };
+  }
+
   return { status: 404, body: { detail: "ไม่รองรับเส้นทาง API ที่ร้องขอ" } };
 }

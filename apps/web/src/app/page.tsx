@@ -8,8 +8,12 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { ClosureAudit } from "@/components/ClosureAudit";
 import { Icon } from "@/components/Icon";
 import { usePlatformHealth } from "@/hooks/usePlatformHealth";
-import { readSession } from "@/lib/api";
-import type { Session } from "@/lib/types";
+import { apiRequest, readSession } from "@/lib/api";
+import type {
+  DatasetPipelineStatus,
+  Session,
+  TrainingReadinessStatus,
+} from "@/lib/types";
 
 function valueForHealth(ok: boolean | null, label: string, hasError = false) {
   if (ok === null) {
@@ -42,16 +46,31 @@ export default function DashboardPage() {
   } = usePlatformHealth();
   const [session, setSession] = useState<Session | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
+  const [datasetStatus, setDatasetStatus] = useState<DatasetPipelineStatus | null>(null);
+  const [trainingReadiness, setTrainingReadiness] = useState<TrainingReadinessStatus | null>(null);
   const [closureRefreshTick, setClosureRefreshTick] = useState(0);
 
   const syncSession = useCallback(() => {
     readSession()
-      .then((current) => {
+      .then(async (current) => {
         setSession(current);
         setSessionError(null);
+        if (current.authenticated) {
+          const [dsRes, trRes] = await Promise.allSettled([
+            apiRequest<DatasetPipelineStatus>("v1/datasets/status"),
+            apiRequest<TrainingReadinessStatus>("training/readiness"),
+          ]);
+          setDatasetStatus(dsRes.status === "fulfilled" ? dsRes.value : null);
+          setTrainingReadiness(trRes.status === "fulfilled" ? trRes.value : null);
+        } else {
+          setDatasetStatus(null);
+          setTrainingReadiness(null);
+        }
       })
       .catch((reason) => {
         setSession(null);
+        setDatasetStatus(null);
+        setTrainingReadiness(null);
         setSessionError(
           reason instanceof Error
             ? reason.message
@@ -190,12 +209,30 @@ export default function DashboardPage() {
             <span className="metric-label">ไปป์ไลน์ชุดข้อมูล</span>
           </div>
           <div className="metric-value metric-value-small">
-            มีโมดูลหลักในระบบ
+            {datasetStatus?.configured ? "พร้อมใช้งาน" : "เชื่อมต่อ API แล้ว"}
           </div>
           <div className="metric-foot">
-            <StatusBadge tone="info">ยังไม่เปิดใช้ผ่าน API</StatusBadge>
+            <StatusBadge
+              tone={
+                datasetStatus?.status === "ready"
+                  ? "good"
+                  : datasetStatus?.status === "invalid"
+                    ? "bad"
+                    : "info"
+              }
+            >
+              {datasetStatus?.status === "ready"
+                ? "ตรวจพบ Manifest ที่ยืนยันแล้ว"
+                : datasetStatus?.status === "invalid"
+                  ? "Manifest ไม่สมบูรณ์"
+                  : session?.authenticated
+                    ? "ยังไม่ตั้งค่า Dataset Path"
+                    : "GET /v1/datasets/status"}
+            </StatusBadge>
             <span className="metric-caption">
-              ไม่มี Endpoint ตรวจสอบสถานะชุดข้อมูล
+              {datasetStatus?.active_dataset?.version
+                ? `เวอร์ชัน ${datasetStatus.active_dataset.version}`
+                : "ตรวจสอบสถานะชุดข้อมูลแบบ Read-only"}
             </span>
           </div>
         </Panel>
@@ -206,12 +243,20 @@ export default function DashboardPage() {
             <span className="metric-label">ไปป์ไลน์การฝึกโมเดล</span>
           </div>
           <div className="metric-value metric-value-small">
-            มีโมดูลหลักในระบบ
+            {trainingReadiness?.configured ? "พร้อมรับคำสั่ง (Tier-2)" : "เชื่อมต่อ API แล้ว"}
           </div>
           <div className="metric-foot">
-            <StatusBadge tone="info">ยังไม่เปิดใช้ผ่าน API</StatusBadge>
+            <StatusBadge
+              tone={trainingReadiness?.configured ? "good" : "info"}
+            >
+              {trainingReadiness?.configured
+                ? "บังคับ Tier-2 Approval"
+                : session?.authenticated
+                  ? "ยังไม่ตั้งค่า Dataset/Tokenizer"
+                  : "POST /training/runs"}
+            </StatusBadge>
             <span className="metric-caption">
-              ไม่มี Endpoint สั่งงานการฝึกโมเดล
+              สั่งงานและติดตามผลผ่านพื้นที่ทำงานการฝึกอบรม
             </span>
           </div>
         </Panel>
@@ -576,10 +621,9 @@ export default function DashboardPage() {
             <Icon name="layers" size={18} className="subtle-icon" />
           </div>
           <p className="panel-body-copy">
-            ระบบตรวจสอบสถานะ API และ Native Model จาก Endpoint จริง
-            หากตรวจสอบไม่สำเร็จจะแสดงข้อผิดพลาดแทนการรายงานว่าสำเร็จ
-            ส่วนโมดูลเตรียมชุดข้อมูลและการฝึกโมเดล
-            ยังไม่มี Endpoint สำหรับตรวจสอบหรือสั่งงานผ่านหน้าแพลตฟอร์ม
+            ระบบตรวจสอบสถานะ API, Native Model, ไปป์ไลน์ชุดข้อมูล (/v1/datasets/status)
+            และการฝึกโมเดล (/training/runs) จาก Endpoint จริง
+            โดยไม่สร้างข้อมูลจำลอง และบังคับ Tier-2 Human Approval ก่อนเริ่มการฝึกโมเดลทุกครั้ง
           </p>
           <Link className="text-link" href="/training">
             สำรวจพื้นที่ทำงานสำหรับการฝึกอบรม

@@ -16,6 +16,9 @@ const routes: Record<string, ReadonlySet<string>> = {
     "v1/models/registry",
     "v1/models/registry/compare",
     "v1/v10/closure-audit",
+    "v1/datasets/status",
+    "training/readiness",
+    "training/runs",
   ]),
   POST: new Set([
     "auth/login",
@@ -25,6 +28,7 @@ const routes: Record<string, ReadonlySet<string>> = {
     "v1/native-ai/infer/stream",
     "v1/workflows/runs",
     "v1/models/registry/rollback",
+    "training/runs",
   ]),
   PATCH: new Set(["users/me"]),
 };
@@ -76,6 +80,15 @@ export function isAllowedBackendRoute(method: string, path: string): boolean {
   }
   if (new RegExp(`^v1/models/registry/${version}/promote$`, "i").test(path)) {
     return normalizedMethod === "POST";
+  }
+  if (new RegExp(`^v1/datasets/${version}/status$`, "i").test(path)) {
+    return normalizedMethod === "GET";
+  }
+  if (new RegExp(`^training/runs/${id}$`, "i").test(path)) {
+    return normalizedMethod === "GET";
+  }
+  if (new RegExp(`^training/runs/${id}/telemetry$`, "i").test(path)) {
+    return normalizedMethod === "GET";
   }
   return (
     normalizedMethod === "POST" &&

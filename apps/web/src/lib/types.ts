@@ -235,3 +235,66 @@ export type WorkflowServicesStatus = {
     reconciled_runs_count: number;
   };
 };
+
+export type DatasetRecordStatus = {
+  exists: boolean;
+  verified: boolean;
+  status: string;
+  version?: string | null;
+  schema?: string | null;
+  format?: string | null;
+  content_sha256?: string | null;
+  splits?: string[];
+  split_counts?: Record<string, { documents?: number | null; sha256?: string | null }>;
+  licensed_sources_count?: number;
+  v11_leakage_check?: {
+    status: string;
+    passed?: boolean;
+    violations?: string[];
+  };
+  error?: string;
+};
+
+export type DatasetPipelineStatus = {
+  configured: boolean;
+  status: "ready" | "invalid" | "not_configured";
+  detail: string;
+  active_dataset: DatasetRecordStatus | null;
+  datasets: DatasetRecordStatus[];
+};
+
+export type TrainingReadinessStatus = {
+  configured: boolean;
+  status: "ready" | "not_configured";
+  dataset_configured: boolean;
+  tokenizer_configured: boolean;
+  admin_allowlist_configured: boolean;
+  is_training_admin: boolean;
+  tier2_approval_required: boolean;
+  active_run_id: string | null;
+};
+
+export type TrainingRunSummary = {
+  id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  dataset_version: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  result: Record<string, unknown> | null;
+  error_message: string | null;
+};
+
+export type TrainingTelemetryPayload = {
+  run_id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  metrics: Array<Record<string, unknown>>;
+  checkpoints: Array<{
+    step: number;
+    file: string;
+    size_bytes: number;
+    sha256: string;
+  }>;
+  epochs_completed: number | null;
+  epochs_note?: string;
+};

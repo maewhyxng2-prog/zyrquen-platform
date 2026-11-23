@@ -1,0 +1,158 @@
+name: ZYRQUEN CI & Codex PR Status
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-vitest:
+    name: Web Lint, Typecheck & Vitest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install workspace dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run TypeScript typecheck
+        run: npm run typecheck
+
+      - name: Run Vitest unit tests
+        run: npm run test
+
+  maintainer-gate-audit:
+    name: Maintainer Policy & Native-Only Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/apps/api
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run Maintainer Audit & Protected Path Policy Check
+        run: |
+          python -m compileall -q apps tools tests phases
+          python tools/maintainer_bot.py --mode audit --json --out maintainer-audit-report.json
+          if [[ "${{ github.event_name }}" == "pull_request" && "${{ github.head_ref }}" == bot/* ]]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+            mapfile -t CHANGED_FILES < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+            if [ "${#CHANGED_FILES[@]}" -gt 0 ]; then
+              python tools/maintainer_bot.py --mode policy-check --files "${CHANGED_FILES[@]}"
+            fi
+          fi
+
+      - name: Upload Maintainer Audit Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-maintainer-audit-report
+          path: maintainer-audit-report.json
+          retention-days: 7
+
+  codex-review-status:
+    name: Codex Review Bot Status Check
+    needs: [lint-and-vitest, maintainer-gate-audit]
+    if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: write
+      pull-requests: write
+
+    steps:
+      - name: Report PR status check and Codex Review Bot summary
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const lintStatus = '${{ needs.lint-and-vitest.result }}';
+            const auditStatus = '${{ needs.maintainer-gate-audit.result }}';
+            const allPassed = lintStatus === 'success' && auditStatus === 'success';
+            const state = allPassed ? 'success' : 'failure';
+            const sha = context.payload.pull_request.head.sha;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha,
+              state,
+              context: 'ZYRQUEN / Codex Review Bot CI',
+              description: allPassed
+                ? 'Lint, Typecheck, Vitest & Maintainer policy passed'
+                : `Checks failed (lint/vitest: ${lintStatus}, policy: ${auditStatus})`,
+              target_url: runUrl,
+            });
+
+            const marker = '<!-- zyrquen-codex-ci-status -->';
+            const body = [
+              marker,
+              '### ZYRQUEN CI & Codex Review Bot Report',
+              '',
+              `- **Web Lint, Typecheck & Vitest**: \`${lintStatus}\``,
+              `- **Maintainer Policy & Native-Only Check**: \`${auditStatus}\``,
+              `- **Combined PR Status**: \`${state.toUpperCase()}\``,
+              `- **Workflow Run**: [View logs](${runUrl})`,
+              '',
+              allPassed
+                ? '> Ready for **Codex Review Bot** review and Tier-2 human merge approval.'
+                : '> Merge blocked: resolve failing Lint, Vitest, or Policy checks above.',
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 50,
+            });
+            const existing = comments.find((c) => typeof c.body === 'string' && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+            if (!allPassed) {
+              core.setFailed(`PR checks failed (lint-and-vitest=${lintStatus}, maintainer-gate-audit=${auditStatus}).`);
+            }

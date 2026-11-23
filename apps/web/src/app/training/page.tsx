@@ -1,4 +1,5 @@
 import { WorkflowConsole } from "@/components/WorkflowConsole";
+import { TrainingPipelinePanel } from "@/components/TrainingPipelinePanel";
 import { PageHeader } from "@/components/PageHeader";
 import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -65,21 +66,7 @@ export default function TrainingPage() {
         />
       </section>
 
-      <div className="eyebrow section-eyebrow">การติดตามสถานะไปป์ไลน์</div>
-      <section className="training-data-grid">
-        <Panel className="training-data-card">
-          <div className="data-card-heading"><span className="metric-icon"><Icon name="database" /></span><span className="metric-label">สถานะชุดข้อมูล</span></div>
-          <div className="unavailable-block"><strong>ยังไม่เปิดใช้ผ่าน Web API</strong><p>ยังไม่มี Endpoint สำหรับแสดงรายการ ตรวจสอบความถูกต้อง อัปโหลด หรือดู Manifest ของชุดข้อมูล</p></div>
-        </Panel>
-        <Panel className="training-data-card">
-          <div className="data-card-heading"><span className="metric-icon metric-icon-blue"><Icon name="activity" /></span><span className="metric-label">การทำงานของการฝึกโมเดล</span></div>
-          <div className="unavailable-block"><strong>ไม่มีข้อมูลการรันจริง</strong><p>ยังไม่มี Endpoint สำหรับเริ่ม/หยุดงาน ตั้งค่า ดูบันทึกการทำงาน ค่าชี้วัด หรือประวัติการฝึกโมเดล</p></div>
-        </Panel>
-        <Panel className="training-data-card">
-          <div className="data-card-heading"><span className="metric-icon metric-icon-violet"><Icon name="cpu" /></span><span className="metric-label">การใช้ทรัพยากร</span></div>
-          <div className="unavailable-block"><strong>ไม่มีรายงานค่า</strong><p>ข้อมูลการใช้งาน GPU และทรัพยากรการประมวลผลยังไม่สามารถเข้าถึงได้ผ่าน API ปัจจุบัน</p></div>
-        </Panel>
-      </section>
+      <TrainingPipelinePanel />
 
       <section className="future-grid" aria-label="ขอบเขต API และ Runtime">
         <Panel className="future-card">

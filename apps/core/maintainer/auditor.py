@@ -321,6 +321,18 @@ class RepositoryAuditor:
                         message="Workflow lacks explicit least-privilege permissions block.",
                         root_cause="missing_workflow_permissions",
                     )
+                for dep_match in re.finditer(r"cache-dependency-path:\s*([^\s#]+)", wf_text):
+                    dep_rel = dep_match.group(1).strip().strip("\"'")
+                    if dep_rel and not (self.repo_root / dep_rel).is_file():
+                        line_no = wf_text[: dep_match.start()].count("\n") + 1
+                        add_finding(
+                            category="ci_workflow",
+                            severity="medium",
+                            rel_path=rel,
+                            line=line_no,
+                            message=f"Workflow references missing cache-dependency-path: {dep_rel}",
+                            root_cause="missing_ci_cache_dependency_path",
+                        )
 
         # 3. Dependency & Config Hygiene Check
         env_example = self.repo_root / ".env.example"
