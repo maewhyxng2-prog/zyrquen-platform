@@ -40,8 +40,19 @@ def _normalize_python_rng_state(raw_state: Any) -> tuple:
     return (version, tuple(internal_state), gauss_next)
 
 
+def serialize_python_rng_state(raw_state: Any) -> list:
+    """Convert Python RNG tuples to weights_only-safe primitive lists."""
+    version, internal_state, gauss_next = _normalize_python_rng_state(raw_state)
+    return [version, list(internal_state), gauss_next]
+
+
+def restore_python_rng_state(rng: random.Random, raw_state: Any) -> None:
+    """Restore a serialized Python RNG state without pickle globals."""
+    rng.setstate(_normalize_python_rng_state(raw_state))
+
+
 def capture_rng_state() -> dict:
-    state = {"python": random.getstate()}
+    state = {"python": serialize_python_rng_state(random.getstate())}
     try:
         import torch
         state["torch"] = torch.get_rng_state()
