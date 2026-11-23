@@ -1,4 +1,4 @@
-name: ZYRQUEN CI & Codex PR Status
+name: ZYRQUEN CI & PR Status
 
 on:
   push:
@@ -80,8 +80,8 @@ jobs:
           path: maintainer-audit-report.json
           retention-days: 7
 
-  codex-review-status:
-    name: Codex Review Bot Status Check
+  ci-summary-status:
+    name: CI Summary Status Check
     needs: [lint-and-vitest, maintainer-gate-audit]
     if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
@@ -92,7 +92,7 @@ jobs:
       pull-requests: write
 
     steps:
-      - name: Report PR status check and Codex Review Bot summary
+      - name: Report deterministic CI summary
         uses: actions/github-script@v7
         with:
           script: |
@@ -108,26 +108,27 @@ jobs:
               repo: context.repo.repo,
               sha,
               state,
-              context: 'ZYRQUEN / Codex Review Bot CI',
+              context: 'ZYRQUEN / CI Summary',
               description: allPassed
                 ? 'Lint, Typecheck, Vitest & Maintainer policy passed'
                 : `Checks failed (lint/vitest: ${lintStatus}, policy: ${auditStatus})`,
               target_url: runUrl,
             });
 
-            const marker = '<!-- zyrquen-codex-ci-status -->';
+            const marker = '<!-- zyrquen-ci-summary-status -->';
             const body = [
               marker,
-              '### ZYRQUEN CI & Codex Review Bot Report',
+              '### ZYRQUEN Deterministic CI Summary',
               '',
               `- **Web Lint, Typecheck & Vitest**: \`${lintStatus}\``,
               `- **Maintainer Policy & Native-Only Check**: \`${auditStatus}\``,
-              `- **Combined PR Status**: \`${state.toUpperCase()}\``,
+              `- **CI Result**: \`${state.toUpperCase()}\``,
+              '- **Codex Review**: tracked separately by the ZYRQUEN Maintainer PR Review workflow.',
               `- **Workflow Run**: [View logs](${runUrl})`,
               '',
               allPassed
-                ? '> Ready for **Codex Review Bot** review and Tier-2 human merge approval.'
-                : '> Merge blocked: resolve failing Lint, Vitest, or Policy checks above.',
+                ? '> Deterministic CI passed. This is **not** a Codex review result or merge approval.'
+                : '> Merge readiness is blocked until the failing deterministic checks are resolved.',
             ].join('\n');
 
             const { data: comments } = await github.rest.issues.listComments({
