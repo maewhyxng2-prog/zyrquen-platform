@@ -9,7 +9,6 @@ venv/
 .env.*
 *.pem
 *.key
-
 # ZYRQUEN Model Weights - Cloud Volume only, never in Git
 /data/
 models/
@@ -18,11 +17,9 @@ models/
 *.gguf
 *.pt
 *.onnx
-
 # OS / Editor
 .DS_Store
 .vscode/
-
 # --- Added: local DB / test artifacts / tooling ---
 *.db
 *.sqlite3
@@ -30,10 +27,8 @@ models/
 .mypy_cache/
 .ruff_cache/
 *.egg-info/
-
 # Allow the committed env template (".env.*" above would otherwise hide it)
 !.env.example
-
 # Native training outputs - Cloud Volume only, never in Git
 checkpoints/
 runs/
@@ -43,7 +38,6 @@ artifacts/
 node_modules/
 package-lock.json
 !apps/web/package-lock.json
-
 # --- Pilot1 / local-only training artifacts - never in Git ---
 eval/
 eval_reports/
@@ -54,3 +48,5 @@ run_pilot1.py
 zyrquen_RUN_*.zip
 public/assets/aistudio/*.jpg
 public/assets/aistudio/*.png
+model_registry/
+tokenizers/
