@@ -238,6 +238,7 @@ def test_training_readiness_fails_closed_when_preflight_fails(api_client, monkey
     assert response.status_code == 200
     payload = response.json()
     assert payload["configured"] is False
-    assert payload["dataset_integrity_verified"] is False
+    assert payload["dataset_integrity_verified"] is True
     assert payload["training_preflight_passed"] is False
+    assert payload["status"] == "invalid"
     assert payload["preflight_error"] == "Native tokenizer failed validation."
