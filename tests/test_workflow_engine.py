@@ -660,7 +660,56 @@ class TestModelRegistryLifecycleAndEvaluationGate(unittest.TestCase):
             )
             recovered_enabled = orch_default.start(enable_scheduler=False)
             self.assertEqual(recovered_enabled, [run["id"]])
+            status_enabled = orch_default.get_service_status()
+            self.assertTrue(status_enabled["started"])
+            self.assertTrue(status_enabled["scheduler"]["safely_disabled"])
+            self.assertFalse(status_enabled["scheduler"]["running"])
+            self.assertTrue(status_enabled["recovery"]["enabled"])
+            self.assertFalse(status_enabled["recovery"]["safely_disabled"])
+            self.assertTrue(status_enabled["recovery"]["startup_reconciliation_ran"])
+            self.assertEqual(status_enabled["recovery"]["reconciled_runs_count"], 1)
+            self.assertFalse(status_enabled["diagnostics_safe_mode"])
             orch_default.shutdown(wait=True)
+
+    def test_get_service_status_reflects_disabled_diagnostics_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prev_sched = os.environ.get("ZYRQUEN_WORKFLOW_SCHEDULER")
+            prev_rec = os.environ.get("ZYRQUEN_WORKFLOW_RECOVERY")
+            os.environ["ZYRQUEN_WORKFLOW_SCHEDULER"] = "0"
+            os.environ["ZYRQUEN_WORKFLOW_RECOVERY"] = "0"
+            try:
+                orch = CentralWorkflowOrchestrator(
+                    db_path=Path(tmp) / "wf_diag.db",
+                    work_dir=tmp,
+                    approval_secret="unit-test-secret-key-at-least-32-bytes",
+                )
+                recovered = orch.start(enable_scheduler=False, enable_recovery=False)
+                self.assertEqual(recovered, [])
+                status = orch.get_service_status()
+                self.assertEqual(status["service"], "zyrquen-workflow-engine")
+                self.assertTrue(status["started"])
+                self.assertTrue(status["diagnostics_safe_mode"])
+                self.assertEqual(status["scheduler"]["status"], "disabled")
+                self.assertFalse(status["scheduler"]["enabled"])
+                self.assertFalse(status["scheduler"]["running"])
+                self.assertTrue(status["scheduler"]["safely_disabled"])
+                self.assertFalse(status["scheduler"]["env_enabled"])
+                self.assertEqual(status["recovery"]["status"], "disabled")
+                self.assertFalse(status["recovery"]["enabled"])
+                self.assertTrue(status["recovery"]["safely_disabled"])
+                self.assertFalse(status["recovery"]["env_enabled"])
+                self.assertFalse(status["recovery"]["startup_reconciliation_ran"])
+                self.assertEqual(status["recovery"]["reconciled_runs_count"], 0)
+                orch.shutdown(wait=True)
+            finally:
+                if prev_sched is None:
+                    os.environ.pop("ZYRQUEN_WORKFLOW_SCHEDULER", None)
+                else:
+                    os.environ["ZYRQUEN_WORKFLOW_SCHEDULER"] = prev_sched
+                if prev_rec is None:
+                    os.environ.pop("ZYRQUEN_WORKFLOW_RECOVERY", None)
+                else:
+                    os.environ["ZYRQUEN_WORKFLOW_RECOVERY"] = prev_rec
 
 
 if __name__ == "__main__":

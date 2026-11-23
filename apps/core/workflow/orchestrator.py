@@ -45,6 +45,11 @@ class CentralWorkflowOrchestrator:
         self.recovery = RecoveryManager(self.store, self.audit)
         self.event_bus = EventBus(self)
         self.scheduler = CentralScheduler(self, poll_interval_sec=scheduler_interval_sec)
+        self._started: bool = False
+        self._scheduler_enabled: bool | None = None
+        self._recovery_enabled: bool | None = None
+        self._last_recovered_run_ids: list[str] = []
+        self._last_started_at: str | None = None
 
         for defn in register_builtin_workflows(self.registry):
             self.store.upsert_definition(
@@ -67,6 +72,7 @@ class CentralWorkflowOrchestrator:
             if enable_recovery is not None
             else os.getenv("ZYRQUEN_WORKFLOW_RECOVERY", "1").strip() != "0"
         )
+        scheduler_enabled = bool(enable_scheduler)
         recovered: list[str] = []
         if recovery_enabled:
             recovered = self.recovery.reconcile_orphaned_runs(self.queue)
@@ -74,13 +80,65 @@ class CentralWorkflowOrchestrator:
                 run = self.store.get_run(run_id)
                 if run and run["status"] == "PENDING":
                     self._schedule_run_execution(run_id)
-        if enable_scheduler:
+        if scheduler_enabled:
             self.scheduler.start()
+        self._started = True
+        self._scheduler_enabled = scheduler_enabled
+        self._recovery_enabled = recovery_enabled
+        self._last_recovered_run_ids = list(recovered)
+        self._last_started_at = utc_now_iso()
         return recovered
 
     def shutdown(self, wait: bool = True) -> None:
         self.scheduler.stop()
         self.queue.shutdown(wait=wait)
+
+    def get_service_status(self) -> dict[str, Any]:
+        scheduler_env_enabled = os.getenv("ZYRQUEN_WORKFLOW_SCHEDULER", "1").strip() != "0"
+        recovery_env_enabled = os.getenv("ZYRQUEN_WORKFLOW_RECOVERY", "1").strip() != "0"
+        scheduler_running = self.scheduler.is_running()
+        scheduler_enabled = (
+            self._scheduler_enabled
+            if self._scheduler_enabled is not None
+            else scheduler_env_enabled
+        )
+        recovery_enabled = (
+            self._recovery_enabled
+            if self._recovery_enabled is not None
+            else recovery_env_enabled
+        )
+        scheduler_safely_disabled = (not scheduler_enabled) and (not scheduler_running)
+        recovery_safely_disabled = not recovery_enabled
+        if scheduler_running:
+            scheduler_status = "running"
+        elif scheduler_safely_disabled:
+            scheduler_status = "disabled"
+        else:
+            scheduler_status = "idle"
+        return {
+            "service": "zyrquen-workflow-engine",
+            "started": self._started,
+            "started_at": self._last_started_at,
+            "diagnostics_safe_mode": scheduler_safely_disabled and recovery_safely_disabled,
+            "scheduler": {
+                "enabled": scheduler_enabled,
+                "running": scheduler_running,
+                "safely_disabled": scheduler_safely_disabled,
+                "status": scheduler_status,
+                "env_flag": "ZYRQUEN_WORKFLOW_SCHEDULER",
+                "env_enabled": scheduler_env_enabled,
+                "poll_interval_sec": self.scheduler.poll_interval_sec,
+            },
+            "recovery": {
+                "enabled": recovery_enabled,
+                "safely_disabled": recovery_safely_disabled,
+                "status": "enabled" if recovery_enabled else "disabled",
+                "env_flag": "ZYRQUEN_WORKFLOW_RECOVERY",
+                "env_enabled": recovery_env_enabled,
+                "startup_reconciliation_ran": self._started and recovery_enabled,
+                "reconciled_runs_count": len(self._last_recovered_run_ids),
+            },
+        }
 
     def trigger_workflow(
         self,

@@ -9,6 +9,7 @@ const routes: Record<string, ReadonlySet<string>> = {
     "users/me/quota",
     "admin/overview",
     "v1/workflows/definitions",
+    "v1/workflows/services/status",
     "v1/workflows/runs",
     "v1/workflows/approvals",
     "v1/workflows/audit-logs",

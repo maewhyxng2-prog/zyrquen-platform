@@ -211,3 +211,27 @@ export type V10ClosureAudit = {
   stages: V10ClosureStage[];
 };
 
+export type WorkflowServicesStatus = {
+  service: string;
+  started: boolean;
+  started_at: string | null;
+  diagnostics_safe_mode: boolean;
+  scheduler: {
+    enabled: boolean;
+    running: boolean;
+    safely_disabled: boolean;
+    status: "running" | "disabled" | "idle";
+    env_flag: string;
+    env_enabled: boolean;
+    poll_interval_sec: number;
+  };
+  recovery: {
+    enabled: boolean;
+    safely_disabled: boolean;
+    status: "enabled" | "disabled";
+    env_flag: string;
+    env_enabled: boolean;
+    startup_reconciliation_ran: boolean;
+    reconciled_runs_count: number;
+  };
+};

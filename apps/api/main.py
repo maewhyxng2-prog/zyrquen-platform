@@ -208,3 +208,11 @@ async def readiness():
     result = aggregate_readiness(database, native_ai)
     status_code = 200 if result["status"] == "healthy" else 503
     return JSONResponse(status_code=status_code, content=result)
+
+
+@app.get("/v1/workflows/services/status")
+async def workflow_services_status():
+    """Return current runtime status of Workflow Scheduler and Recovery services for diagnostics."""
+    workflow_engine = get_workflow_engine()
+    return workflow_engine.get_service_status()
+

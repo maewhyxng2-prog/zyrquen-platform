@@ -12,13 +12,19 @@ import {
   type ReactNode,
 } from "react";
 import { apiRequest } from "@/lib/api";
-import type { ApiHealth, NativeHealth } from "@/lib/types";
+import type {
+  ApiHealth,
+  NativeHealth,
+  WorkflowServicesStatus,
+} from "@/lib/types";
 
 export type PlatformHealthState = {
   apiHealth: ApiHealth | null;
   nativeHealth: NativeHealth | null;
+  workflowServices: WorkflowServicesStatus | null;
   apiError: string | null;
   nativeError: string | null;
+  workflowServicesError: string | null;
   loading: boolean;
   lastChecked: Date | null;
   platformVersion: string | null;
@@ -32,8 +38,13 @@ const PlatformHealthContext = createContext<PlatformHealthState | null>(null);
 function usePlatformHealthPolling(enabled: boolean): PlatformHealthState {
   const [apiHealth, setApiHealth] = useState<ApiHealth | null>(null);
   const [nativeHealth, setNativeHealth] = useState<NativeHealth | null>(null);
+  const [workflowServices, setWorkflowServices] =
+    useState<WorkflowServicesStatus | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
   const [nativeError, setNativeError] = useState<string | null>(null);
+  const [workflowServicesError, setWorkflowServicesError] = useState<
+    string | null
+  >(null);
   const [loading, setLoading] = useState(enabled);
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
 
@@ -45,10 +56,12 @@ function usePlatformHealthPolling(enabled: boolean): PlatformHealthState {
 
     setLoading(true);
 
-    const [apiResult, nativeResult] = await Promise.allSettled([
-      apiRequest<ApiHealth>("health"),
-      apiRequest<NativeHealth>("v1/native-ai/health"),
-    ]);
+    const [apiResult, nativeResult, workflowServicesResult] =
+      await Promise.allSettled([
+        apiRequest<ApiHealth>("health"),
+        apiRequest<NativeHealth>("v1/native-ai/health"),
+        apiRequest<WorkflowServicesStatus>("v1/workflows/services/status"),
+      ]);
 
     // ป้องกันผลลัพธ์จากคำขอเก่าเขียนทับข้อมูลล่าสุด
     if (currentRequestId !== requestId.current) {
@@ -83,6 +96,18 @@ function usePlatformHealthPolling(enabled: boolean): PlatformHealthState {
         nativeResult.reason instanceof Error
           ? nativeResult.reason.message
           : "ไม่สามารถตรวจสอบความพร้อมของ Native Model ได้",
+      );
+    }
+
+    if (workflowServicesResult.status === "fulfilled") {
+      setWorkflowServices(workflowServicesResult.value);
+      setWorkflowServicesError(null);
+    } else {
+      setWorkflowServices(null);
+      setWorkflowServicesError(
+        workflowServicesResult.reason instanceof Error
+          ? workflowServicesResult.reason.message
+          : "ไม่สามารถตรวจสอบสถานะ Workflow Scheduler และ Recovery ได้",
       );
     }
 
@@ -127,8 +152,10 @@ function usePlatformHealthPolling(enabled: boolean): PlatformHealthState {
     () => ({
       apiHealth,
       nativeHealth,
+      workflowServices,
       apiError,
       nativeError,
+      workflowServicesError,
       loading,
       lastChecked,
       platformVersion,
@@ -139,8 +166,10 @@ function usePlatformHealthPolling(enabled: boolean): PlatformHealthState {
     [
       apiHealth,
       nativeHealth,
+      workflowServices,
       apiError,
       nativeError,
+      workflowServicesError,
       loading,
       lastChecked,
       platformVersion,

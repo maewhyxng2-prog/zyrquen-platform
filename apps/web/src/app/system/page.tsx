@@ -32,8 +32,17 @@ function SystemRow({
 }
 
 export default function SystemPage() {
-  const { apiHealth, nativeHealth, apiError, nativeError, loading, lastChecked, refresh } =
-    usePlatformHealth();
+  const {
+    apiHealth,
+    nativeHealth,
+    workflowServices,
+    apiError,
+    nativeError,
+    workflowServicesError,
+    loading,
+    lastChecked,
+    refresh,
+  } = usePlatformHealth();
   const [session, setSession] = useState<Session | null>(null);
 
   useEffect(() => {
@@ -69,6 +78,46 @@ export default function SystemPage() {
   const nativeTone =
     nativeHealth?.inference_available ? "good" : nativeHealth || nativeError ? "warn" : "neutral";
 
+  const scheduler = workflowServices?.scheduler;
+  const schedulerState =
+    loading && !workflowServices
+      ? "กำลังตรวจสอบ"
+      : scheduler?.safely_disabled
+        ? "ปิดการทำงานอย่างปลอดภัย (Diagnostics)"
+        : scheduler?.running
+          ? "กำลังทำงาน"
+          : scheduler
+            ? "พร้อมทำงาน (ยังไม่เริ่ม)"
+            : workflowServicesError
+              ? "ตรวจสอบไม่สำเร็จ"
+              : "ยังไม่มีข้อมูล";
+  const schedulerTone = scheduler?.safely_disabled
+    ? "info"
+    : scheduler?.running
+      ? "good"
+      : workflowServicesError
+        ? "warn"
+        : "neutral";
+
+  const recovery = workflowServices?.recovery;
+  const recoveryState =
+    loading && !workflowServices
+      ? "กำลังตรวจสอบ"
+      : recovery?.safely_disabled
+        ? "ปิดการทำงานอย่างปลอดภัย (Diagnostics)"
+        : recovery?.enabled
+          ? "เปิดใช้งาน (Startup Reconciliation)"
+          : workflowServicesError
+            ? "ตรวจสอบไม่สำเร็จ"
+            : "ยังไม่มีข้อมูล";
+  const recoveryTone = recovery?.safely_disabled
+    ? "info"
+    : recovery?.enabled
+      ? "good"
+      : workflowServicesError
+        ? "warn"
+        : "neutral";
+
   return (
     <div className="page-stack">
       <PageHeader
@@ -83,7 +132,7 @@ export default function SystemPage() {
             {loading ? "กำลังตรวจสอบ..." : "ตรวจสอบบริการอีกครั้ง"}
           </button>
         }
-        description="ตรวจสอบสถานะการเชื่อมต่อ API และความพร้อมของบริการจาก Endpoint ที่มีอยู่จริง หากบริการไม่พร้อมใช้งานระบบจะแจ้งเตือนตามจริงโดยไม่แสดงสถานะเท็จ"
+        description="ตรวจสอบสถานะการเชื่อมต่อ API ความพร้อมของ Native Model และสถานะความปลอดภัยของ Workflow Scheduler / Recovery จาก Endpoint ที่มีอยู่จริง"
         eyebrow="แพลตฟอร์ม / สถานะระบบ"
         icon="activity"
         title="สถานะสุขภาพของระบบ"
@@ -107,6 +156,32 @@ export default function SystemPage() {
             state={nativeState}
             title="รันไทม์ Native Model"
             tone={nativeTone}
+          />
+          <SystemRow
+            detail={
+              workflowServicesError ||
+              (scheduler
+                ? `GET /v1/workflows/services/status · ${scheduler.env_flag}=${scheduler.env_enabled ? "1" : "0"}${
+                    workflowServices?.diagnostics_safe_mode ? " · โหมดตรวจสอบปลอดภัย" : ""
+                  }`
+                : "GET /v1/workflows/services/status")
+            }
+            icon="command"
+            state={schedulerState}
+            title="ตัวตั้งเวลา Workflow (Scheduler)"
+            tone={schedulerTone}
+          />
+          <SystemRow
+            detail={
+              workflowServicesError ||
+              (recovery
+                ? `GET /v1/workflows/services/status · ${recovery.env_flag}=${recovery.env_enabled ? "1" : "0"} · กู้คืนเมื่อเริ่มระบบ ${recovery.reconciled_runs_count} งาน`
+                : "GET /v1/workflows/services/status")
+            }
+            icon="shield"
+            state={recoveryState}
+            title="ระบบกู้คืนงานค้าง (Recovery)"
+            tone={recoveryTone}
           />
           <SystemRow
             detail={
@@ -167,7 +242,7 @@ export default function SystemPage() {
         <span className="notice-icon"><Icon name="help" size={18} /></span>
         <div>
           <strong>หลักการตรวจสอบสถานะระบบ</strong>
-          <p>API รายงานเฉพาะสถานะสุขภาพบริการโดยรวมและความพร้อมของ Native Model ส่วนฐานข้อมูล พื้นที่จัดเก็บ การใช้ GPU และบันทึกเหตุการณ์ยังไม่ได้เปิดใช้งานผ่านเส้นทาง API ปัจจุบัน ระบบจะไม่แสดงสถานะว่าสำเร็จหากยังไม่ได้ดำเนินการจริง และหากบริการไม่พร้อมใช้งานให้ตรวจสอบการตั้งค่าตัวแปร API ฝั่งเซิร์ฟเวอร์แล้วกดตรวจสอบอีกครั้ง</p>
+          <p>API รายงานเฉพาะสถานะสุขภาพบริการโดยรวม ความพร้อมของ Native Model และสถานะจริงของ Workflow Scheduler กับ Recovery (ผ่าน <code>GET /v1/workflows/services/status</code>) เพื่อให้ยืนยันได้ว่าโมดูลทำงานเบื้องหลังถูกปิดอย่างปลอดภัยระหว่างการตรวจสอบ ระบบจะไม่แสดงสถานะว่าสำเร็จหากยังไม่ได้ดำเนินการจริง</p>
         </div>
       </Panel>
     </div>

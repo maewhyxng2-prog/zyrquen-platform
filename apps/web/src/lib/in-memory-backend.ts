@@ -1519,11 +1519,47 @@ export async function handleInMemoryBackendRequest(options: {
   }
 
   if (method === "GET" && path === "v1/workflows/definitions") {
+    const schedulerEnabled =
+      (process.env.ZYRQUEN_WORKFLOW_SCHEDULER ?? "1").trim() !== "0";
     return {
       status: 200,
       body: {
         items: WORKFLOW_DEFINITIONS,
-        scheduler_active: true,
+        scheduler_active: schedulerEnabled,
+      },
+    };
+  }
+
+  if (method === "GET" && path === "v1/workflows/services/status") {
+    const schedulerEnvEnabled =
+      (process.env.ZYRQUEN_WORKFLOW_SCHEDULER ?? "1").trim() !== "0";
+    const recoveryEnvEnabled =
+      (process.env.ZYRQUEN_WORKFLOW_RECOVERY ?? "1").trim() !== "0";
+    return {
+      status: 200,
+      body: {
+        service: "zyrquen-workflow-engine",
+        started: true,
+        started_at: new Date().toISOString(),
+        diagnostics_safe_mode: !schedulerEnvEnabled && !recoveryEnvEnabled,
+        scheduler: {
+          enabled: schedulerEnvEnabled,
+          running: schedulerEnvEnabled,
+          safely_disabled: !schedulerEnvEnabled,
+          status: schedulerEnvEnabled ? "running" : "disabled",
+          env_flag: "ZYRQUEN_WORKFLOW_SCHEDULER",
+          env_enabled: schedulerEnvEnabled,
+          poll_interval_sec: 60,
+        },
+        recovery: {
+          enabled: recoveryEnvEnabled,
+          safely_disabled: !recoveryEnvEnabled,
+          status: recoveryEnvEnabled ? "enabled" : "disabled",
+          env_flag: "ZYRQUEN_WORKFLOW_RECOVERY",
+          env_enabled: recoveryEnvEnabled,
+          startup_reconciliation_ran: recoveryEnvEnabled,
+          reconciled_runs_count: 0,
+        },
       },
     };
   }

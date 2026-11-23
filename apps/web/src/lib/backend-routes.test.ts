@@ -76,6 +76,7 @@ describe("backend proxy route allowlist", () => {
       ),
     ).toBe(true);
     expect(isAllowedBackendRoute("GET", "v1/workflows/definitions")).toBe(true);
+    expect(isAllowedBackendRoute("GET", "v1/workflows/services/status")).toBe(true);
     expect(isAllowedBackendRoute("GET", "v1/workflows/runs")).toBe(true);
     expect(isAllowedBackendRoute("POST", "v1/workflows/runs")).toBe(true);
     expect(
@@ -131,6 +132,8 @@ describe("backend proxy route allowlist", () => {
     expect(isAllowedBackendRoute("PATCH", "conversations")).toBe(false);
     expect(isAllowedBackendRoute("GET", "conversations/not-a-uuid")).toBe(false);
     expect(isAllowedBackendRoute("GET", "v1/workflows/runs/not-a-uuid")).toBe(false);
+    expect(isAllowedBackendRoute("POST", "v1/workflows/services/status")).toBe(false);
+    expect(isAllowedBackendRoute("DELETE", "v1/workflows/services/status")).toBe(false);
     expect(isAllowedBackendRoute("DELETE", "v1/models/registry/ZYRQUEN-Native-0.1.0/promote")).toBe(false);
     expect(isAllowedBackendRoute("POST", "v1/models/registry/../secret/promote")).toBe(false);
     expect(isAllowedBackendRoute("GET", "v1/models/registry/v1..2/lineage")).toBe(false);

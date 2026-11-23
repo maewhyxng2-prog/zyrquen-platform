@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { apiRequest, readSession } from "@/lib/api";
+import type { WorkflowServicesStatus } from "@/lib/types";
 import {
   computeRunProgress,
   formatDuration,
@@ -147,6 +148,7 @@ export function WorkflowConsole() {
   const [approvals, setApprovals] = useState<WorkflowApprovalItem[]>([]);
   const [registry, setRegistry] = useState<ModelRegistryPayload | null>(null);
   const [schedulerActive, setSchedulerActive] = useState(false);
+  const [serviceStatus, setServiceStatus] = useState<WorkflowServicesStatus | null>(null);
 
   const [baseVersion, setBaseVersion] = useState("");
   const [candidateVersion, setCandidateVersion] = useState("");
@@ -174,6 +176,7 @@ export function WorkflowConsole() {
         apiRequest<{ items: WorkflowRunItem[] }>("v1/workflows/runs?limit=20"),
         apiRequest<ModelRegistryPayload>("v1/models/registry"),
         apiRequest<{ items: WorkflowApprovalItem[] }>("v1/workflows/approvals?limit=25"),
+        apiRequest<WorkflowServicesStatus>("v1/workflows/services/status"),
       ]);
       if (isCancelled?.()) return;
 
@@ -200,6 +203,12 @@ export function WorkflowConsole() {
       } else {
         setIsAdmin(false);
         setApprovals([]);
+      }
+      if (res[4].status === "fulfilled") {
+        setServiceStatus(res[4].value);
+        setSchedulerActive(Boolean(res[4].value.scheduler?.running));
+      } else {
+        setServiceStatus(null);
       }
     } catch (err) {
       if (isCancelled?.()) return;
@@ -519,9 +528,36 @@ export function WorkflowConsole() {
             <h2>ตัวจัดการ Workflow กลาง (Single Central Orchestrator)</h2>
           </div>
           <div className="workflow-actions">
-            <StatusBadge tone={schedulerActive ? "good" : "neutral"}>
-              {schedulerActive ? "Scheduler Active" : "Scheduler Manual / Idle"}
+            <StatusBadge
+              tone={
+                serviceStatus?.scheduler.safely_disabled
+                  ? "info"
+                  : schedulerActive
+                    ? "good"
+                    : "neutral"
+              }
+            >
+              {serviceStatus?.scheduler.safely_disabled
+                ? "Scheduler Safely Disabled"
+                : schedulerActive
+                  ? "Scheduler Active"
+                  : "Scheduler Manual / Idle"}
             </StatusBadge>
+            {serviceStatus ? (
+              <StatusBadge
+                tone={
+                  serviceStatus.recovery.safely_disabled
+                    ? "info"
+                    : serviceStatus.recovery.enabled
+                      ? "good"
+                      : "neutral"
+                }
+              >
+                {serviceStatus.recovery.safely_disabled
+                  ? "Recovery Safely Disabled"
+                  : "Recovery Enabled"}
+              </StatusBadge>
+            ) : null}
             <button
               className="button button-secondary"
               disabled={loading}
