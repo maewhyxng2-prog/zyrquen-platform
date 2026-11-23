@@ -760,4 +760,3 @@ class CentralWorkflowOrchestrator:
             "active_version": target,
             "record": registry.get(target),
         }
-

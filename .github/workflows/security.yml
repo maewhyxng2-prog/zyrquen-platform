@@ -99,7 +99,7 @@ jobs:
         run: npm ci --workspaces=false
 
       - name: Audit npm dependencies
-        run: npm audit --audit-level=high
+        run: npm audit --workspaces=false --audit-level=high
 
   dependency-review:
     name: Pull Request Dependency Review
