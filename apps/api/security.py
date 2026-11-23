@@ -4,9 +4,10 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
+from jwt import InvalidTokenError
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
@@ -98,7 +99,7 @@ def _decode_and_verify_claims(
 
         user_id = UUID(subject)
 
-    except (JWTError, ValueError, TypeError):
+    except (InvalidTokenError, ValueError, TypeError):
         raise credentials_error
 
     from apps.api.models import RevokedToken, User

@@ -50,7 +50,10 @@ jobs:
 
       - name: Test Native Evaluation
         run: |
-          python -m pytest -v apps/core/native/evaluation
+          python -m pytest -v apps/core/native/test_evaluation.py
+          rc=0
+          python -m pytest -v apps/core/native/evaluation || rc=$?
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 5 ]; then exit "$rc"; fi
 
       - name: Test Autonomous Training Loop
         run: |

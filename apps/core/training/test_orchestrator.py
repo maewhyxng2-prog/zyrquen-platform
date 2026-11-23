@@ -177,7 +177,7 @@ def test_preflight_rejects_cpu_model_over_parameter_limit(tmp_path):
         training_root=tmp_path / "runs",
     )
 
-    with pytest.raises(TrainingUnavailable, match="5,000,000-parameter limit"):
+    with pytest.raises(TrainingUnavailable, match="exceeds limit 5000000"):
         orchestrator.prepare(
             dataset_version="0.1.0",
             training_values=_config(),

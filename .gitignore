@@ -42,6 +42,7 @@ artifacts/
 *.npz
 node_modules/
 package-lock.json
+!apps/web/package-lock.json
 
 # --- Pilot1 / local-only training artifacts - never in Git ---
 eval/

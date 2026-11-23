@@ -87,8 +87,21 @@ def test_migration_cycle_on_empty_test_database(pg_engine):
         "api_keys",
         "audit_logs",
         "login_rate_limits",
+        "workflow_definitions",
+        "workflow_runs",
+        "workflow_step_runs",
+        "workflow_approvals",
+        "workflow_audit_logs",
     }
     assert expected.issubset(set(inspector.get_table_names()))
+    api_key_columns = {col["name"] for col in inspector.get_columns("api_keys")}
+    assert {
+        "auto_rotate_enabled",
+        "auto_rotate_interval_days",
+        "last_rotated_at",
+        "next_rotation_at",
+        "rotation_count",
+    }.issubset(api_key_columns)
 
     command.downgrade(config, "base")
     assert not expected.intersection(

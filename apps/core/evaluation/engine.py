@@ -32,7 +32,7 @@ class EvaluationEngine:
 
         perplexity = self.calculate_perplexity(None, None)
         accuracy = self.calculate_token_accuracy(None, None)
-        
+
         safety_violations = 0
         for item in dataset:
             if not self.run_safety_check(item.get("expected_response", "")):
