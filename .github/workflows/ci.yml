@@ -123,7 +123,7 @@ jobs:
               `- **Web Lint, Typecheck & Vitest**: \`${lintStatus}\``,
               `- **Maintainer Policy & Native-Only Check**: \`${auditStatus}\``,
               `- **CI Result**: \`${state.toUpperCase()}\``,
-              '- **Codex Review**: tracked separately by the ZYRQUEN Maintainer PR Review workflow.',
+              '- **Codex Review Bot**: advisory review is tracked separately by the ZYRQUEN Maintainer PR Review workflow; it is not a deterministic CI pass or merge approval.',
               `- **Workflow Run**: [View logs](${runUrl})`,
               '',
               allPassed
