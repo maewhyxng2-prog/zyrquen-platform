@@ -174,7 +174,7 @@ def run_preflight() -> dict[str, Any]:
 def main() -> int:
     try:
         report = run_preflight()
-    except (OSError, ValueError, PreflightError, json.JSONDecodeError) as exc:
+    except (OSError, ImportError, ValueError, PreflightError, json.JSONDecodeError) as exc:
         print(json.dumps({
             "schema": "zyrquen.v11.preflight.v1",
             "status": "BLOCKED",
