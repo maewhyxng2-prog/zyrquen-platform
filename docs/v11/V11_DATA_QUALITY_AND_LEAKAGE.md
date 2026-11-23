@@ -1,7 +1,7 @@
 # ZYRQUEN Ω∞ — V11 Data Quality & Leakage Prevention Specification
 
 - **Document ID:** `V11-DOC-08`
-- **Status:** `BLUEPRINT ONLY — LOCKED UNTIL V10 FINAL GATE PASS`
+- **Status:** `STAGE 1 CODE READINESS APPROVED (V10 CLOSED_FAIL BASELINE POLICY — TRAINING & PROMOTION LOCKED)`
 - **Auditor Inheritance:** ต่อยอดและยกระดับจาก `tools/audit_leakage_v10.py` (Read-Only Pure Stdlib Auditor)
 - **Zero-Tolerance Policy:** หาก Gate ใด Gate หนึ่งล้มเหลว Auditor ต้องคืน Exit Code `1` และ `handle_data_verify_and_audit` ต้องยก `LeakageGateFailedError` (FAIL/BLOCKED ทันที ห้ามฝึกเด็ดขาด)
 

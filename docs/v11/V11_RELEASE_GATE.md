@@ -1,16 +1,16 @@
 # ZYRQUEN Ω∞ — V11 Release Gate Criteria
 
 - **Document ID:** `V11-DOC-19`
-- **Status:** `BLUEPRINT ONLY — LOCKED UNTIL V10 FINAL GATE PASS`
+- **Status:** `STAGE 1 CODE READINESS APPROVED — TRAINING & RELEASE GATES LOCKED`
 - **Rule:** ห้ามประกาศ `V11 COMPLETE` หรือ Promotion ขึ้น `production` หาก Gate ใด Gate หนึ่งยังเป็น `FAIL`, `BLOCKED`, `NOT RUN`, หรือ `NOT VERIFIED`
 
 ---
 
 ## 1. Pre-Start Gate (Gate 0: Before Any V11 Code or Training)
 
-- [ ] **V10 Runtime Closure Gate = `PASS`** (Static/Governance `V10-A..D` ผ่านแล้ว; ต้องรัน PyTorch CPU Training + Evaluation จริงพร้อม Tier-2 HMAC Approval และมี V10 Baseline Checkpoints & Reports จริงก่อนเปิด V11)
-- [ ] **V11 Blueprint Consistency Audit = `PASS`** (เอกสาร 22 ฉบับ + `README.md` สอดคล้องครบทั้ง Stage Exits `1000→3000→5000→7000→9000→10000`, `sft.py` `UN`/`OO` deferral, และ Global vs Experiment accounting)
-- [ ] **Open Decisions Resolved & Change Approval Issued:** ประเด็น `OD-*` รวมถึงการอนุมัติขยาย `_V10_ENTITY_RE` ใน `sft.py` รองรับ `UN`/`OO` ได้รับอนุมัติ **หลัง** V10 Runtime Closure แล้วเท่านั้น
+- [x] **V10 Baseline Closure Decision Recorded (`CLOSED_FAIL` Policy):** ยอมรับผลประเมิน V10 รอบล่าสุด (`FAIL`) เป็น **Immutable Reference Baseline FAIL** โดยไม่ปรับเกณฑ์และไม่ Promote *(การปิด SHA-256 ของรายงาน V10 ต้นทางยังคงแยกตรวจต่างหากก่อนใช้ใน `regression_comparison`)*
+- [x] **V11 Blueprint Consistency Audit = `PASS`** (เอกสาร 22 ฉบับ + `README.md` สอดคล้องครบทั้ง Stage Exits `1000→3000→5000→7000→9000→10000`, `sft.py` `UN`/`OO` superset, และ Global vs Experiment accounting)
+- [x] **Stage 1 Code-Readiness Approval Issued:** อนุมัติปรับโค้ดเตรียมความพร้อม (`sft.py`, `dataset.py`, `registry.py`, `train.py`, `evaluation/engine.py`, `groups.py`) โดย **ยังไม่อนุมัติ Training หรือ Model Promotion**
 
 ---
 

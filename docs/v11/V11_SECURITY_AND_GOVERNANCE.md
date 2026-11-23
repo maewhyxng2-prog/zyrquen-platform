@@ -1,7 +1,7 @@
 # ZYRQUEN Ω∞ — V11 Security & Governance Specification
 
 - **Document ID:** `V11-DOC-16`
-- **Status:** `BLUEPRINT ONLY — LOCKED UNTIL V10 FINAL GATE PASS`
+- **Status:** `STAGE 1 CODE READINESS APPROVED (NO TRAINING / NO AUTO-PROMOTE)`
 - **Governance Modules:**
   - `apps/core/workflow/governance.py` (`WorkflowGovernance`, `TIER2_GATED_ACTIONS`)
   - `apps/core/workflow/audit.py` (`WorkflowAuditLogger`, secret/token redaction)
@@ -28,12 +28,12 @@
 |---|---|
 | `training.execute` | ต้องมี Admin-approved HMAC-SHA256 token ตรงกับ `approval_id\|run_id\|step_key\|action_type\|scope\|expires_at` และถูก Consume แบบ single-use ก่อนรัน `handle_training_execute` |
 | `compute.paid_gpu` | **FORBIDDEN** ใน V11 Tier-0; ปลดล็อกได้เฉพาะเมื่อมี Tier-2 token แยกและเปิด `has_paid_gpu_approval` |
-| `model.stage` *(Required V10-B Closure)* | **Prerequisite ก่อนเปิด V11:** ต้องตรวจและ Consume Token จริงผ่าน `verify_and_consume_by_id` ใน `apps/api/routers/workflows.py` |
-| `model.promote` | ต้องผ่าน `EvaluationEngine` + `enforce_evaluation_gate=True` + Consume HMAC Token จริงผ่าน API และ Workflow Engine |
-| `model.rollback` | ต้องผ่าน `ModelRegistry.verify(target)` + Consume HMAC Token จริง |
+| `model.stage` *(Closed in V10-B)* | ตรวจและ Consume Single-Use HMAC Token จริงผ่าน `engine.stage_model_with_approval` ใน `apps/api/routers/workflows.py` |
+| `model.promote` | ต้องผ่าน `EvaluationEngine` + `enforce_evaluation_gate=True` + Consume HMAC Token จริงผ่าน `engine.promote_model_with_approval` |
+| `model.rollback` | ต้องผ่าน `ModelRegistry.verify(target)` + Consume HMAC Token จริงผ่าน `engine.rollback_model_with_approval` |
 | `architecture.modify`, `data.delete`, `git.push`, `deploy.production` | Tier-2 Gate + ห้าม Autonomous Execution โดย Agent |
 
-> **Critical Security Prerequisite (V10-B Blocker):** ปัจจุบันใน `apps/api/routers/workflows.py` (lines 253–334), endpoint `/v1/models/registry/{version}/stage`, `/promote`, และ `/rollback` ตรวจเพียง `if not body.approval_id` โดยยังไม่เรียก `engine.governance.verify_and_consume_by_id(...)` และยังไม่เขียน `engine.audit.record(...)` — **ข้อบกพร่องนี้ต้องถูกปิดใน V10-B ก่อนอนุญาตให้เปิด V11**
+> **V10-B Governance Status (`CLOSED`):** ใน `apps/api/routers/workflows.py` (lines 263–339), endpoints `/v1/models/registry/{version}/stage`, `/promote`, และ `/rollback` เรียก `engine.stage_model_with_approval`, `engine.promote_model_with_approval`, และ `engine.rollback_model_with_approval` พร้อมตรวจ/consume single-use HMAC token และบันทึก `WorkflowAuditLogger` เรียบร้อยแล้ว
 
 ---
 

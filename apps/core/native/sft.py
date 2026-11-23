@@ -21,7 +21,16 @@ IGNORE_INDEX = -100
 _V10_ENTITY_RE = re.compile(
     r"\b(?:(?:TR|VA|TE)_E[0-9A-Za-z_]+|(?:node|item|step)_(?:tr|va|te)_[0-9A-Za-z_]+|rec_(?:tr|va|te)_e[0-9A-Za-z_]+)\b"
 )
+_V11_ENTITY_RE = re.compile(
+    r"\b(?:(?:TR|VA|TE|UN|OO)_E[0-9A-Za-z_]+|(?:node|item|step)_(?:tr|va|te|un|oo)_[0-9A-Za-z_]+|rec_(?:tr|va|te|un|oo)_e[0-9A-Za-z_]+)\b"
+)
+_ENTITY_RE = _V11_ENTITY_RE
 _SLOT_TOKEN_RE = re.compile(r"<slot_(?:[0-9]|[12][0-9]|3[01])>")
+
+
+def extract_entities(text: str) -> list[str]:
+    """Return all deterministic dataset entity identifiers matched by `_ENTITY_RE` in order."""
+    return _ENTITY_RE.findall(text)
 
 
 @dataclass(frozen=True)
@@ -38,7 +47,7 @@ def bind_ephemeral_slots(
     rng: random.Random | None = None,
     max_slots: int = SLOT_COUNT,
 ) -> tuple[str, str | None, SlotBinding]:
-    """Bind dataset entities (`TR_E*`, `VA_E*`, `TE_E*`) ephemerally to `<slot_0>`..`<slot_31>`.
+    """Bind dataset entities (`TR_E*`, `VA_E*`, `TE_E*`, `UN_E*`, `OO_E*`) ephemerally to `<slot_0>`..`<slot_31>`.
 
     Only entities present in `prompt` (and `target` if passed during training) receive slots;
     no entity surface form ever needs to be stored in the static tokenizer vocabulary.
@@ -53,7 +62,7 @@ def bind_ephemeral_slots(
 
     texts = [prompt] + ([target] if target is not None else [])
     for txt in texts:
-        for ent in _V10_ENTITY_RE.findall(txt):
+        for ent in _ENTITY_RE.findall(txt):
             if ent in surface_to_slot:
                 continue
             if cursor >= max_slots:
@@ -66,8 +75,8 @@ def bind_ephemeral_slots(
     def _sub(match: re.Match[str]) -> str:
         return surface_to_slot.get(match.group(0), match.group(0))
 
-    bound_prompt = _V10_ENTITY_RE.sub(_sub, prompt)
-    bound_target = _V10_ENTITY_RE.sub(_sub, target) if target is not None else None
+    bound_prompt = _ENTITY_RE.sub(_sub, prompt)
+    bound_target = _ENTITY_RE.sub(_sub, target) if target is not None else None
     return bound_prompt, bound_target, SlotBinding(surface_to_slot, slot_to_surface)
 
 

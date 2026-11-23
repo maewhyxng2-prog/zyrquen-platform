@@ -1,7 +1,7 @@
 # ZYRQUEN Ω∞ — V11 Master Plan
 
 - **Document ID:** `V11-DOC-01`
-- **Status:** `BLUEPRINT ONLY — LOCKED UNTIL V10 FINAL GATE PASS`
+- **Status:** `STAGE 1 CODE READINESS APPROVED (V10 CLOSED_FAIL BASELINE POLICY — TRAINING LOCKED)`
 - **Target Horizon:** `10,000` Training Steps across `6` Progressive Stages
 - **Strategy:** Native-Only (`ZyrquenModel` Random Initialization, Zero Pretrained External Weights, Zero External AI APIs)
 
@@ -15,16 +15,17 @@ V11 **ไม่ใช่** โปรเจกต์ Chatbot ทั่วไป, 
 
 ---
 
-## 2. Entry Criteria (Prerequisites Before V11 Source Code Can Open)
+## 2. Entry Criteria (Gate 0 Transition & Stage 1 Prerequisites)
 
-ห้ามเริ่มพัฒนาโค้ด V11 หรือเปิดการฝึก จนกว่าเงื่อนไขต่อไปนี้จะครบ:
+อนุญาตเปิด **Stage 1 Code & Dataset Schema Alignment** (ยังไม่เปิด Training) ภายใต้เงื่อนไขต่อไปนี้:
 
-1. **V10 Runtime Closure Gate = `PASS`:**
-   - Static/Architecture/Governance (`V10-A..D`) ปิดครบแล้ว; ยังต้องรัน **PyTorch CPU Training + Native Evaluation จริงของ V10** (พร้อม Tier-2 HMAC Approval) จนได้ Checkpoint + SHA-256 + Evaluation Baseline Report ที่ตรวจสอบย้อนกลับได้
-   - **ห้ามแก้โค้ด V10 (`sft.py`, `dataset.py`) ระหว่างการปิด V10:** การขยาย `_V10_ENTITY_RE` เพื่อรองรับ `UN`/`OO` จะดำเนินการหลัง V10 Runtime Closure ผ่านและได้รับอนุมัติเปิด V11 เท่านั้น
+1. **V10 Baseline Closure (`CLOSED_PASS` หรือ `CLOSED_FAIL`):**
+   - สถานะการปิด V10 แยกเป็น `CLOSED_PASS` (ผ่าน Gate), `CLOSED_FAIL` (ประเมินจริงแล้วไม่ผ่านโดยมีรายงานและ SHA-256 ตรวจสอบได้), และ `OPEN`
+   - V10 ที่ปิดเป็น `CLOSED_FAIL` ใช้เป็น **Immutable Reference Baseline FAIL** เท่านั้น **ห้ามแก้ไขผลประเมิน, ห้ามลดเกณฑ์, และห้าม Promote**
+   - การขยาย `_V10_ENTITY_RE` ใน `sft.py` เป็น strict superset รองรับ `UN`/`OO` ต้องไม่เปลี่ยนพฤติกรรมของ `TR`/`VA`/`TE` ใน V10
 2. **Baseline Artifacts Preserved:** V7, V8, V9 และ V10 Artifacts/Checkpoints อยู่ในสถานะ Immutable ไม่ถูกแก้ไขหรือลบทับ
 3. **Roadmap Integrity Intact:** `phases/phase11.py`..`phase20.py` และ `docs/PHASE_11_SPEC.md`..`PHASE_20_SPEC.md` คงเดิม ไม่สร้าง Phase 21
-4. **Explicit Approval:** ผู้ดูแลโครงการอนุมัติเปลี่ยนสถานะชุดเอกสาร V11 จาก `BLUEPRINT ONLY` เป็น `APPROVED FOR IMPLEMENTATION`
+4. **Explicit Separate Approvals:** การเปิด Stage 1 Code Readiness ยัง **ไม่ใช่** การอนุมัติ Training หรือ Promotion — ทุก Training Stage และ Model Promotion ยังต้องผ่าน Tier-2 HMAC-SHA256 Approval Token แยกทุกครั้ง
 
 ---
 
@@ -61,5 +62,5 @@ V11 **ไม่ใช่** โปรเจกต์ Chatbot ทั่วไป, 
 - **OD-MP-02:** เกณฑ์ Exact-Match ขั้นต่ำราย Capability ของ V11 Stage 6 ควรตั้งเท่าใดหลังเห็น Baseline จริงของ V10 (ดู [V11_EVALUATION_PLAN.md](./V11_EVALUATION_PLAN.md))
 
 ### NOT VERIFIED
-- V10 Final Gate ยังไม่ถูกปิดสมบูรณ์ใน Source Code (รอการดำเนินการ V10-A..D)
+- การบันทึก V10 `CLOSED_FAIL` ลง Archive อย่างเป็นทางการยังรอการตรวจ SHA-256 ต้นทางของรายงาน V10 (V10 ยังคงสถานะ FAIL และไม่ถูกแก้ไข)
 - ความเร็ว Training จริง (seconds/step) และอัตราการลดของ Loss บน `10,000` steps ยัง **NOT VERIFIED** เนื่องจากยังไม่มี `torch` ในสภาพแวดล้อมปัจจุบัน

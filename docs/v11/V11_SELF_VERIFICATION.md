@@ -1,7 +1,7 @@
 # ZYRQUEN Ω∞ — V11 Self-Verification Specification
 
 - **Document ID:** `V11-DOC-13`
-- **Status:** `BLUEPRINT ONLY — LOCKED UNTIL V10 FINAL GATE PASS`
+- **Status:** `STAGE 1 CODE READINESS APPROVED (V10 CLOSED_FAIL BASELINE POLICY — TRAINING & PROMOTION LOCKED)`
 - **Existing Subsystem Anchors:**
   - `phases/phase16.py` (`ReasoningStep`, `ReasoningPipeline`, `validate_dag`, `verify_step`, `ExecutionSafetyPolicy`)
   - `apps/core/intelligence/contract.py` (`validate_result`, `ContractViolation`)

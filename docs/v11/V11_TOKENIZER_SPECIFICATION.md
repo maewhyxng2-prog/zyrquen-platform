@@ -1,7 +1,7 @@
 # ZYRQUEN Ω∞ — V11 Tokenizer & Vocabulary Specification
 
 - **Document ID:** `V11-DOC-09`
-- **Status:** `BLUEPRINT ONLY — LOCKED UNTIL V10 FINAL GATE PASS`
+- **Status:** `STAGE 1 CODE READINESS APPROVED (V10 CLOSED_FAIL BASELINE POLICY — TRAINING & PROMOTION LOCKED)`
 - **Implementation Module:** `apps/core/native/tokenizer.py` (`ZyrquenTokenizer`, Pure Python Standard Library)
 - **Canonical Schema:** `SCHEMA_V2 = "zyrquen.tokenizer.v2"`
 

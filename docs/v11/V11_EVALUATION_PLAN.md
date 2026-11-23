@@ -1,8 +1,8 @@
 # ZYRQUEN Ω∞ — V11 Evaluation Plan (10,000-Step Objective & 4 Splits)
 
 - **Document ID:** `V11-DOC-10`
-- **Status:** `BLUEPRINT ONLY — LOCKED UNTIL V10 RUNTIME CLOSURE GATE PASS`
-- **V10 Closure Program Pre-Check:** V10 Static/Integration/Governance Contracts (`V10-A`..`V10-D`) passed audit; Runtime PyTorch Training & Evaluation remain **BLOCKED / NOT RUN** (`torch` not installed). All V11 execution stays locked until V10 produces verified real-weight checkpoint and `zyrquen.v10.evaluation_report.v1` PASS evidence.
+- **Status:** `STAGE 1 CODE READINESS APPROVED (V10 CLOSED_FAIL BASELINE POLICY — TRAINING & PROMOTION LOCKED)`
+- **V10 Baseline Closure Note:** V10 Static/Integration/Governance Contracts (`V10-A`..`V10-D`) passed audit, and the latest V10 run closed as `FAIL`. Per Tier-2 Gate Transition Approval, V10 remains an immutable `CLOSED_FAIL` baseline (not mutated or forced to PASS), while V11 Stage 1 evaluation code & schema alignment is enabled without starting training or promotion.
 - **Core Engines Reused:** `apps/core/native/evaluation/engine.py::EvaluationEngine` + `apps/core/workflow/handlers/groups.py::handle_evaluation_gate` + `apps/core/native/registry.py::ModelRegistry`
 - **Report Schema:** `zyrquen.v11.evaluation_report.v1`
 

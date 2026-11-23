@@ -1,7 +1,7 @@
 # ZYRQUEN Ω∞ — V11 Documentation Changelog
 
 - **Document ID:** `V11-DOC-22`
-- **Status:** `BLUEPRINT ONLY — LOCKED UNTIL V10 FINAL GATE PASS`
+- **Status:** `STAGE 1 CODE READINESS APPROVED (NO TRAINING / NO AUTO-PROMOTE)`
 
 ---
 
@@ -12,6 +12,7 @@
 | `v11.0-blueprint.1` | `2026-11-22` | `docs/v11/` (22 Specification/Control Docs + `README.md`) | จัดทำชุดเอกสาร V11 Blueprint Package ครบทั้ง 4 กลุ่มหลัก (Strategic & Architecture, Training & Data, Evaluation & Intelligence, Infrastructure & Governance) และ 6 เอกสารควบคุมเพิ่มเติม พร้อม Document Consistency Alignment กับ Codebase จริงของ V10 และ Roadmap Phases 11–20 | **BLUEPRINT ONLY — NOT APPROVED FOR IMPLEMENTATION**; ยังไม่มีการแก้ Source Code, ยังไม่ปิด V10 Final Gate, และยังไม่มี PyTorch Runtime Execution |
 | `v11.0-blueprint.2` | `2026-11-22` | `V11_DATASET_SPECIFICATION.md`, `V11_EVALUATION_PLAN.md` | ขยายรายละเอียดเชิงลึกของ Dataset สำหรับ `abstract_reasoning` และ `ood_transfer` (พร้อม Matrix แยก `train`/`validation`/`unseen`/`ood`, Solvers, ตัวอย่าง JSONL v2.0) และกำหนด Evaluation Stages สำหรับเป้าหมาย 10,000 Steps ครบทั้ง 6 Stages บน 4 Splits และ Report Schema `zyrquen.v11.evaluation_report.v1` | **BLUEPRINT ONLY — NOT APPROVED FOR IMPLEMENTATION**; รอปิด V10 Final Gate และยืนยัน Open Decisions (`OD-DS-*`, `OD-EP-*`) |
 | `v11.0-blueprint.3` | `2026-11-22` | `V11_MASTER_PLAN`, `V11_TRAINING_PLAN`, `V11_EVALUATION_PLAN`, `V11_DATASET_SPECIFICATION`, `V11_CHECKPOINT_AND_RECOVERY`, `V11_RESOURCE_AND_SCALING`, `V11_RELEASE_GATE`, `V11_SELF_VERIFICATION` | ปิดความไม่สอดคล้องของพิมพ์เขียว V11 ทั้ง 3 จุด: (1) ปรับ Stage 5/6 เป็น `2,000 / 1,000` (จุดสิ้นสุด `1,000 → 3,000 → 5,000 → 7,000 → 9,000 → 10,000`), (2) ล็อกการขยาย `sft.py::_V10_ENTITY_RE` (`UN`/`OO`) ไว้หลัง V10 Runtime Closure และอนุมัติแยก, และ (3) แยกบัญชี Global Steps vs Experiment Steps (`<= 500`/exp, อย่างน้อย `20` experiments) ชัดเจน | **BLUEPRINT ONLY — LOCKED UNTIL V10 RUNTIME CLOSURE GATE PASS** |
+| `v11.0-stage1-readiness.1` | `2026-11-23` | `docs/v11/*`, `apps/core/native/{sft,dataset,registry,train,evaluation/engine}.py`, `apps/core/workflow/handlers/groups.py`, `tests/test_v11_stage1_readiness.py` | เปิด Gate 0 สู่ **Stage 1 Code Readiness** ภายใต้นโยบาย V10 `CLOSED_FAIL` Immutable Baseline + อัปเดตสถานะ `V10-B` ที่ปิดแล้วใน `workflows.py`; เพิ่ม superset `UN`/`OO` slot regex, 4-split dataset verification (`train/validation/unseen/ood`), `TrainConfig.tier0_v11` + segmented global-step resume continuity, และ `zyrquen.v11.evaluation_report.v1` gate พร้อม unit tests (ยังไม่เริ่ม Training, ไม่แก้ V7–V10) | **STAGE 1 CODE READINESS VERIFIED** (PyTorch training/eval still requires Tier-2 approval & `torch` runtime) |
 
 ---
 
@@ -30,10 +31,10 @@
 ## 3. Mandatory Truthfulness Sections
 
 ### ASSUMPTIONS
-- การเปลี่ยนแปลงเอกสารครั้งถัดไป (`v11.0-blueprint.2` หรือ `v11.0-approved`) จะเกิดขึ้นเมื่อปิด V10 Final Gate และตัดสินใจประเด็น `OPEN DECISIONS` (`OD-*`) เรียบร้อยแล้ว
+- การเปลี่ยนแปลงเอกสารครั้งถัดไปก่อนเปิด Training จะต้องตัดสินใจประเด็น `OPEN DECISIONS` (`OD-*`) และบันทึกหลักฐาน SHA-256 ของรายงาน V10 (`CLOSED_FAIL`) ให้ครบถ้วน
 
 ### OPEN DECISIONS
 - **OD-CL-01:** กำหนด Rule ID สำหรับการเปลี่ยนแปลงเอกสาร V11 หลังเปิด Implementation (ทุก PR/การแก้สเปกต้องอัปเดต `V11_CHANGELOG.md` และรัน Document Consistency Audit ซ้ำ)
 
 ### NOT VERIFIED
-- ความสอดคล้องเชิง Runtime ระหว่างเอกสารชุดนี้กับผลการฝึก `10,000` Steps จริง (ยัง **NOT RUN / NOT VERIFIED** เพราะยังไม่อนุมัติเปิด V11 และไม่มี `torch`)
+- การฝึกและประเมิน `ZyrquenModel` บน PyTorch (`10,000` Steps, Resume 20 Segments จริง, และ V11 4-split native inference) ยัง **NOT RUN / NOT VERIFIED** เพราะ `torch` ยังไม่ติดตั้งในสภาพแวดล้อมนี้ และยังไม่ได้รับ Tier-2 Approval สำหรับเริ่ม Training

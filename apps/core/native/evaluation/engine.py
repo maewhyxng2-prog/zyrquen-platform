@@ -18,14 +18,16 @@ from apps.core.native.checkpoint import VersionedCheckpointManager
 from apps.core.native.config import MAX_V10_PARAMETERS, ZyrquenConfig
 from apps.core.native.dataset import (
     SCHEMA as DATASET_SCHEMA,
-    SPLITS as DATASET_SPLITS,
     detect_dataset_format,
     load_sft_split,
+    resolve_dataset_splits,
+    verify_dataset_manifest,
 )
 from apps.core.native.sft import (
     SFT_SEP,
     bind_ephemeral_slots,
     encode_sft_prompt,
+    extract_entities,
     restore_ephemeral_slots,
 )
 from apps.core.native.tokenizer import ZyrquenTokenizer
@@ -237,55 +239,44 @@ class EvaluationEngine:
         if dataset_dir is None or str(dataset_dir).strip() == "":
             raise EvaluationEvidenceError("dataset_dir is required for evaluation")
         root = Path(dataset_dir)
-        if not root.is_dir():
+        if root.is_symlink() or not root.is_dir():
             raise EvaluationEvidenceError(f"dataset directory not found: {root}")
         manifest_path = root / "manifest.json"
-        if not manifest_path.is_file():
+        if manifest_path.is_symlink() or not manifest_path.is_file():
             raise EvaluationEvidenceError(f"dataset manifest.json not found in: {root}")
         try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            raw_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise EvaluationEvidenceError(
                 f"dataset manifest.json is unreadable: {root}"
             ) from exc
 
-        if not isinstance(manifest, dict) or manifest.get("schema") != DATASET_SCHEMA:
+        if not isinstance(raw_manifest, dict) or raw_manifest.get("schema") != DATASET_SCHEMA:
             raise EvaluationEvidenceError("unsupported or invalid dataset manifest schema")
 
-        files = manifest.get("files")
-        if not isinstance(files, dict):
-            raise EvaluationEvidenceError("dataset manifest missing files metadata")
+        try:
+            manifest = verify_dataset_manifest(root)
+        except ValueError as exc:
+            raise EvaluationEvidenceError(f"dataset integrity check failed: {exc}") from exc
 
-        for split in DATASET_SPLITS:
-            filename = f"{split}.jsonl"
-            entry = files.get(filename)
-            split_path = root / filename
-            if (
-                not isinstance(entry, dict)
-                or not isinstance(entry.get("sha256"), str)
-                or not split_path.is_file()
-            ):
-                raise EvaluationEvidenceError(
-                    f"dataset integrity check failed: missing {filename}"
-                )
-            if _sha256_file(split_path) != entry["sha256"]:
-                raise EvaluationEvidenceError(
-                    f"dataset integrity check failed: {filename} checksum mismatch"
-                )
+        resolved_splits = resolve_dataset_splits(manifest)
+        files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
+        splits_map = manifest.get("splits") if isinstance(manifest.get("splits"), dict) else {}
 
-        combined = hashlib.sha256(
-            "".join(files[f"{split}.jsonl"]["sha256"] for split in DATASET_SPLITS).encode("utf-8")
-        ).hexdigest()
-        if combined != manifest.get("content_sha256"):
-            raise EvaluationEvidenceError("dataset content_sha256 does not match manifest")
+        def _split_doc_count(split_name: str) -> int:
+            if f"{split_name}.jsonl" in files and isinstance(files[f"{split_name}.jsonl"], dict):
+                entry = files[f"{split_name}.jsonl"]
+                return int(entry.get("documents", entry.get("count", 0)) or 0)
+            if split_name in splits_map and isinstance(splits_map[split_name], dict):
+                entry = splits_map[split_name]
+                return int(entry.get("documents", entry.get("count", 0)) or 0)
+            return 0
 
-        eval_doc_count = sum(
-            int(files[f"{split}.jsonl"].get("documents", 0))
-            for split in ("validation", "test")
-        )
+        non_train_splits = tuple(s for s in resolved_splits if s != "train")
+        eval_doc_count = sum(_split_doc_count(split) for split in non_train_splits)
         if eval_doc_count <= 0:
             raise EvaluationEvidenceError(
-                "dataset contains no validation or test documents for evaluation"
+                "dataset contains no validation/evaluation documents for evaluation"
             )
 
         if expected_version is not None and manifest.get("version") != expected_version:
@@ -377,7 +368,7 @@ class EvaluationEngine:
         *,
         dataset_dir: str | Path,
         tokenizer_path: str | Path | None = None,
-        splits: tuple[str, ...] = ("validation", "test"),
+        splits: tuple[str, ...] | None = None,
         max_examples: int | None = None,
         max_new_tokens: int = 32,
         use_slots: bool | None = None,
@@ -448,21 +439,37 @@ class EvaluationEngine:
         model.eval()
 
         sep = str(state.get("sep") or SFT_SEP)
-        is_v10 = manifest.get("dataset") == "nagi_v10"
-        resolved_slots = use_slots if use_slots is not None else is_v10
+        manifest_splits = resolve_dataset_splits(manifest)
+        is_v11_dataset = (
+            manifest.get("dataset") == "nagi_v11"
+            or ("unseen" in manifest_splits and "ood" in manifest_splits)
+        )
+        if splits is None:
+            resolved_splits = ("validation", "unseen", "ood") if is_v11_dataset else ("validation", "test")
+        else:
+            resolved_splits = tuple(splits)
+
+        is_slot_dataset = manifest.get("dataset") in {"nagi_v10", "nagi_v11"}
+        resolved_slots = use_slots if use_slots is not None else is_slot_dataset
 
         total_examples = 0
         total_correct = 0
         eos_hits = 0
         split_stats: dict[str, dict[str, Any]] = {}
         cap_stats: dict[str, dict[str, int]] = {}
+        split_cap_stats: dict[str, dict[str, dict[str, int]]] = {}
+        unseen_entity_total = 0
+        unseen_entity_correct = 0
 
-        for split_name in splits:
+        for split_name in resolved_splits:
             records = list(load_sft_split(dataset_dir, split_name))
             if max_examples is not None and max_examples > 0:
                 records = records[:max_examples]
             split_correct = 0
             split_total = 0
+            split_entity_total = 0
+            split_entity_correct = 0
+            split_caps: dict[str, dict[str, int]] = {}
             for row in records:
                 prompt_text = str(row["input"])
                 expected_target = str(row["target"]).strip()
@@ -511,16 +518,53 @@ class EvaluationEngine:
                     total_correct += 1
                     split_correct += 1
 
+                if extract_entities(expected_target):
+                    split_entity_total += 1
+                    if is_match:
+                        split_entity_correct += 1
+                    if split_name in {"unseen", "ood"}:
+                        unseen_entity_total += 1
+                        if is_match:
+                            unseen_entity_correct += 1
+
                 bucket = cap_stats.setdefault(cap, {"correct": 0, "total": 0})
                 bucket["total"] += 1
                 if is_match:
                     bucket["correct"] += 1
 
-            split_stats[split_name] = {
+                sc_bucket = split_caps.setdefault(cap, {"correct": 0, "total": 0})
+                sc_bucket["total"] += 1
+                if is_match:
+                    sc_bucket["correct"] += 1
+
+                cap_by_split = split_cap_stats.setdefault(cap, {}).setdefault(
+                    split_name, {"correct": 0, "total": 0}
+                )
+                cap_by_split["total"] += 1
+                if is_match:
+                    cap_by_split["correct"] += 1
+
+            split_entry: dict[str, Any] = {
                 "total": split_total,
+                "evaluated": split_total,
                 "correct": split_correct,
                 "exact_match": (split_correct / split_total) if split_total else 0.0,
+                "per_capability": {
+                    cap: {
+                        "total": cnt["total"],
+                        "correct": cnt["correct"],
+                        "exact_match": round((cnt["correct"] / cnt["total"]) if cnt["total"] else 0.0, 6),
+                    }
+                    for cap, cnt in sorted(split_caps.items())
+                },
             }
+            if split_name == "train":
+                split_entry["diagnostic_only"] = True
+            if split_entity_total > 0:
+                split_entry["unseen_entity_copy_acc"] = round(
+                    split_entity_correct / split_entity_total, 6
+                )
+            split_stats[split_name] = split_entry
 
         if total_examples == 0:
             raise EvaluationEvidenceError("no evaluation examples executed")
@@ -530,11 +574,22 @@ class EvaluationEngine:
         capability_eval: dict[str, dict[str, Any]] = {}
         for cap, counts in sorted(cap_stats.items()):
             acc = counts["correct"] / counts["total"] if counts["total"] else 0.0
+            per_split_info: dict[str, dict[str, Any]] = {}
+            for sp_name, sp_cnt in split_cap_stats.get(cap, {}).items():
+                sp_acc = sp_cnt["correct"] / sp_cnt["total"] if sp_cnt["total"] else 0.0
+                per_split_info[sp_name] = {
+                    "status": "PASS" if sp_acc >= capability_pass_threshold else "FAIL",
+                    "accuracy": round(sp_acc, 6),
+                    "exact_match": round(sp_acc, 6),
+                    "correct": sp_cnt["correct"],
+                    "total": sp_cnt["total"],
+                }
             capability_eval[cap] = {
                 "status": "PASS" if acc >= capability_pass_threshold else "FAIL",
                 "accuracy": round(acc, 6),
                 "correct": counts["correct"],
                 "total": counts["total"],
+                "splits": per_split_info,
             }
 
         metrics: dict[str, Any] = {
@@ -544,8 +599,22 @@ class EvaluationEngine:
         }
         for split_name, st in split_stats.items():
             metrics[f"{split_name}_exact_match"] = round(st["exact_match"], 6)
+        if "train" in split_stats and "unseen" in split_stats:
+            metrics["overfit_gap"] = round(
+                split_stats["train"]["exact_match"] - split_stats["unseen"]["exact_match"], 6
+            )
+        if "unseen" in split_stats and "ood" in split_stats:
+            metrics["ood_transfer_gap"] = round(
+                split_stats["unseen"]["exact_match"] - split_stats["ood"]["exact_match"], 6
+            )
+        if unseen_entity_total > 0:
+            metrics["unseen_entity_copy_acc"] = round(
+                unseen_entity_correct / unseen_entity_total, 6
+            )
         for cap, info in capability_eval.items():
             metrics[f"cap_{cap}_accuracy"] = info["accuracy"]
+            for sp_name, sp_info in info["splits"].items():
+                metrics[f"cap_{cap}_{sp_name}_accuracy"] = sp_info["accuracy"]
 
         return {
             "schema": "zyrquen.native_inference_evaluation.v1",

@@ -1,7 +1,7 @@
 # ZYRQUEN Ω∞ — V11 Model Specification
 
 - **Document ID:** `V11-DOC-03`
-- **Status:** `BLUEPRINT ONLY — LOCKED UNTIL V10 FINAL GATE PASS`
+- **Status:** `STAGE 1 CODE READINESS APPROVED (V10 CLOSED_FAIL BASELINE POLICY — TRAINING & PROMOTION LOCKED)`
 - **Config Class:** `ZyrquenConfig` (`apps/core/native/config.py`)
 - **Parameter Formula (Exact Code Match):**
   $$\text{params} = V \cdot d + L \cdot (4 d^2 + 3 d \cdot d_{ff} + 2 d) + d$$

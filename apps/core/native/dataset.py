@@ -16,6 +16,7 @@ from typing import Iterable, Iterator
 
 SCHEMA = "zyrquen.dataset-manifest.v1"
 SPLITS = ("train", "validation", "test")
+V11_SPLITS = ("train", "validation", "unseen", "ood")
 
 _ZERO_WIDTH = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff"), None)
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -236,7 +237,44 @@ def prepare_dataset(sources: Iterable[Source], out_dir: str | Path,
     return PrepReport(manifest, dropped)
 
 
-def _verify_and_open_split(dataset_dir: str | Path, split: str) -> Path:
+def resolve_dataset_splits(manifest: dict) -> tuple[str, ...]:
+    """Return canonical split ordering for a dataset manifest (3-split V10 or 4-split V11)."""
+    splits_map = manifest.get("splits")
+    files_map = manifest.get("files")
+    if manifest.get("dataset") == "nagi_v11":
+        return V11_SPLITS
+    if isinstance(splits_map, dict) and all(s in splits_map for s in V11_SPLITS):
+        return V11_SPLITS
+    if isinstance(files_map, dict) and all(f"{s}.jsonl" in files_map for s in V11_SPLITS):
+        return V11_SPLITS
+    return SPLITS
+
+
+def _manifest_split_entry(manifest: dict, split: str) -> tuple[str, str]:
+    """Extract `(relative_filename, expected_sha256)` from either `files` or `splits`."""
+    files = manifest.get("files")
+    if isinstance(files, dict):
+        entry = files.get(f"{split}.jsonl")
+        if isinstance(entry, dict) and isinstance(entry.get("sha256"), str):
+            rel = str(entry.get("path") or f"{split}.jsonl")
+            return rel, str(entry["sha256"])
+
+    splits_map = manifest.get("splits")
+    if isinstance(splits_map, dict):
+        entry = splits_map.get(split)
+        if isinstance(entry, dict) and isinstance(entry.get("sha256"), str):
+            rel = str(entry.get("path") or f"{split}.jsonl")
+            return rel, str(entry["sha256"])
+
+    raise ValueError(f"unknown split: {split}")
+
+
+def _verify_and_open_split(
+    dataset_dir: str | Path,
+    split: str,
+    *,
+    require_schema: bool = True,
+) -> Path:
     if not isinstance(split, str) or not split or "/" in split or "\\" in split or ".." in split:
         raise ValueError(f"invalid split name: {split!r}")
     d = Path(dataset_dir)
@@ -246,22 +284,46 @@ def _verify_and_open_split(dataset_dir: str | Path, split: str) -> Path:
     if manifest_path.is_symlink() or not manifest_path.is_file():
         raise ValueError("dataset manifest.json missing or symlinked")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if not isinstance(manifest, dict) or manifest.get("schema") != SCHEMA:
+    if not isinstance(manifest, dict):
         raise ValueError("invalid dataset manifest schema")
-    files = manifest.get("files")
-    if not isinstance(files, dict):
-        raise ValueError("dataset manifest missing files mapping")
-    name = f"{split}.jsonl"
-    if name not in files or not isinstance(files[name], dict) or "sha256" not in files[name]:
-        raise ValueError(f"unknown split: {split}")
-    split_path = d / name
+    if (require_schema or "schema" in manifest) and manifest.get("schema") != SCHEMA:
+        raise ValueError("invalid dataset manifest schema")
+    rel_name, expected_sha = _manifest_split_entry(manifest, split)
+    rel_path = Path(rel_name)
+    if rel_path.is_absolute() or ".." in rel_path.parts:
+        raise ValueError(f"invalid split relative path: {rel_name}")
+    split_path = d / rel_path
     if split_path.is_symlink() or not split_path.is_file():
-        raise ValueError(f"split file missing or symlinked: {name}")
+        raise ValueError(f"split file missing or symlinked: {rel_name}")
     if not split_path.resolve().is_relative_to(d.resolve()):
-        raise ValueError(f"split path escapes dataset directory: {name}")
-    if _sha256_file(split_path) != files[name]["sha256"]:
-        raise ValueError(f"dataset integrity check failed: {name}")
+        raise ValueError(f"split path escapes dataset directory: {rel_name}")
+    if _sha256_file(split_path) != expected_sha:
+        raise ValueError(f"dataset integrity check failed: {rel_name}")
     return split_path
+
+
+def verify_dataset_manifest(dataset_dir: str | Path, *, require_schema: bool = True) -> dict:
+    """Verify manifest schema, split SHA-256 hashes, path containment, and content_sha256."""
+    d = Path(dataset_dir)
+    if d.is_symlink() or not d.is_dir():
+        raise ValueError("dataset directory missing or symlinked")
+    manifest_path = d / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise ValueError("dataset manifest.json not found or symlinked")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict):
+        raise ValueError("invalid dataset manifest schema")
+    if (require_schema or "schema" in manifest) and manifest.get("schema") != SCHEMA:
+        raise ValueError("invalid dataset manifest schema")
+    split_hashes: list[str] = []
+    for split in resolve_dataset_splits(manifest):
+        _verify_and_open_split(d, split, require_schema=require_schema)
+        _, expected_sha = _manifest_split_entry(manifest, split)
+        split_hashes.append(expected_sha)
+    combined = hashlib.sha256("".join(split_hashes).encode("utf-8")).hexdigest()
+    if combined != manifest.get("content_sha256"):
+        raise ValueError("dataset content hash does not match manifest")
+    return manifest
 
 
 def load_split(dataset_dir: str | Path, split: str) -> Iterator[str]:
@@ -286,7 +348,7 @@ def load_split_records(dataset_dir: str | Path, split: str) -> Iterator[dict]:
 
 
 def load_sft_split(dataset_dir: str | Path, split: str) -> Iterator[dict]:
-    """Reads verified SFT `(input, target)` records from `train`, `validation`, or `test`."""
+    """Reads verified SFT `(input, target)` records from `train`, `validation`, `test`, `unseen`, or `ood`."""
     for row in load_split_records(dataset_dir, split):
         if "input" not in row or "target" not in row:
             raise ValueError(f"SFT record in {split}.jsonl missing 'input' or 'target'")

@@ -1,8 +1,3 @@
-import shutil
-import logging
-import logging
-import json
-import math
 """Phase 3.4 training pipeline for the ZYRQUEN native model.
 
 Pure-Python parts (token stream, batch sampling, LR schedule) are unit-tested without
@@ -32,22 +27,71 @@ class TrainConfig:
     checkpoint_interval: int = 200
     log_interval: int = 10
     seed: int = 1337
+    segment_max_steps: int | None = None
+    lr_total_steps: int | None = None
+    stage_id: int | None = None
+    experiment_index: int | None = None
 
     def __post_init__(self):
         if self.block_size < 2 or self.batch_size < 1 or self.grad_accum_steps < 1 or self.max_steps < 1:
             raise ValueError("invalid training sizes")
-        if not (0 < self.min_lr <= self.lr) or not (0 <= self.warmup_steps < self.max_steps):
+        if self.segment_max_steps is not None and self.segment_max_steps < 1:
+            raise ValueError("segment_max_steps must be >= 1")
+        if self.lr_total_steps is not None and self.lr_total_steps < 1:
+            raise ValueError("lr_total_steps must be >= 1")
+        if self.stage_id is not None and self.stage_id < 1:
+            raise ValueError("stage_id must be >= 1")
+        if self.experiment_index is not None and self.experiment_index < 1:
+            raise ValueError("experiment_index must be >= 1")
+        horizon = self.lr_total_steps if self.lr_total_steps is not None else self.max_steps
+        if not (0 < self.min_lr <= self.lr) or not (0 <= self.warmup_steps < horizon):
             raise ValueError("invalid learning-rate settings")
+
+    @classmethod
+    def tier0_v11(
+        cls,
+        *,
+        max_steps: int = 500,
+        segment_max_steps: int | None = 500,
+        lr_total_steps: int | None = 10_000,
+        stage_id: int | None = None,
+        experiment_index: int | None = None,
+        **overrides,
+    ) -> "TrainConfig":
+        """Canonical V11-Tier0 CPU-safe config (`batch_size <= 4`, `block_size <= 256`, `segment <= 500`)."""
+        params = {
+            "block_size": 256,
+            "batch_size": 4,
+            "grad_accum_steps": 1,
+            "max_steps": max_steps,
+            "lr": 3e-4,
+            "min_lr": 3e-5,
+            "warmup_steps": 100,
+            "weight_decay": 0.1,
+            "grad_clip": 1.0,
+            "eval_interval": 250,
+            "eval_batches": 20,
+            "checkpoint_interval": 250,
+            "log_interval": 10,
+            "seed": 1337,
+            "segment_max_steps": segment_max_steps,
+            "lr_total_steps": lr_total_steps,
+            "stage_id": stage_id,
+            "experiment_index": experiment_index,
+        }
+        params.update(overrides)
+        return cls(**params)
 
 
 # ---- pure-python helpers ----
 def lr_at(step: int, cfg: TrainConfig) -> float:
-    """Linear warm-up then cosine decay to min_lr. `step` is 0-based."""
-    if step < cfg.warmup_steps:
+    """Linear warm-up then cosine decay to min_lr across `lr_total_steps or max_steps`. `step` is 0-based."""
+    total_steps = cfg.lr_total_steps if cfg.lr_total_steps is not None else cfg.max_steps
+    if cfg.warmup_steps > 0 and step < cfg.warmup_steps:
         return cfg.lr * (step + 1) / cfg.warmup_steps
-    if step >= cfg.max_steps:
+    if step >= total_steps:
         return cfg.min_lr
-    progress = (step - cfg.warmup_steps) / max(1, cfg.max_steps - cfg.warmup_steps)
+    progress = (step - cfg.warmup_steps) / max(1, total_steps - cfg.warmup_steps)
     return cfg.min_lr + 0.5 * (1 + math.cos(math.pi * progress)) * (cfg.lr - cfg.min_lr)
 
 
@@ -174,7 +218,9 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
                 return False
         ckpts.save(step, {
             "model": model.state_dict(), "optimizer": optimizer.state_dict(),
-            "step": step, "batch_rng": rng.getstate(), "rng": capture_rng_state(),
+            "step": step, "global_step_start": start_step, "experiment_steps": step - start_step,
+            "stage_id": cfg.stage_id, "experiment_index": cfg.experiment_index,
+            "batch_rng": rng.getstate(), "rng": capture_rng_state(),
             "config": cfg.__dict__, "model_config": model.cfg.to_dict(),
             "tokenizer_sha256": tokenizer_fingerprint, "dataset_version": dataset_version,
         })
@@ -189,7 +235,10 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
     if runtime_guard is not None:
         runtime_guard.start()
     step = start_step
-    while step < cfg.max_steps:
+    executed_steps = 0
+    while step < cfg.max_steps and (
+        cfg.segment_max_steps is None or executed_steps < cfg.segment_max_steps
+    ):
         if cost_controller is not None and cost_controller.should_stop():
             stopped_reason = cost_controller.exceeded()
             break
@@ -206,17 +255,6 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
         for _ in range(cfg.grad_accum_steps):
             x, y = sample_batch(train_ids, cfg.block_size, cfg.batch_size, rng)
             loss = model(to_tensor(x), to_tensor(y))[1] / cfg.grad_accum_steps
-            # --- V9 Minimal Observability ---
-            loss_val = loss.item()
-            if step % cfg.log_interval == 0:
-                log_data = {
-                    "step": step,
-                    "loss": loss_val if math.isfinite(loss_val) else None,
-                    "learning_rate": optimizer.param_groups[0]["lr"],
-                    "is_finite": math.isfinite(loss_val)
-                }
-                logging.info(json.dumps(log_data))
-            # ---------------------------------
             loss.backward()
             total_loss += loss.item()
         if not math.isfinite(total_loss):
@@ -234,35 +272,24 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
                 optimizer.zero_grad(set_to_none=True)
                 stopped_reason = guard_reason
                 break
-        # --- V9 Parameter Delta Observability ---
-        old_weight = next(model.parameters()).detach().clone()
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         optimizer.step()
-        param_delta = (next(model.parameters()) - old_weight).norm().item()
-        if param_delta == 0.0:
-            logging.warning(f'Step {step}: Parameter delta is 0.0!')
-        # ----------------------------------------
         last_train_loss = total_loss
         step += 1
+        executed_steps += 1
+        segment_done = (
+            cfg.segment_max_steps is not None and executed_steps >= cfg.segment_max_steps
+        )
 
-        if step % cfg.log_interval == 0 or step == cfg.max_steps:
+        if step % cfg.log_interval == 0 or step == cfg.max_steps or segment_done:
             tokens = cfg.batch_size * cfg.block_size * cfg.grad_accum_steps * cfg.log_interval
             rec = monitor.log(step, total_loss, lr, tokens=tokens)
             if rec["diverged"]:
                 stopped_reason = "loss_diverged"
                 break
-        if step % cfg.eval_interval == 0 or step == cfg.max_steps:
+        if step % cfg.eval_interval == 0 or step == cfg.max_steps or segment_done:
             last_val = evaluate()
-        if step % cfg.checkpoint_interval == 0 or step == cfg.max_steps:
-            # --- V9 Disk Space Check ---
-            try:
-                _, _, free = shutil.disk_usage('./checkpoints')
-                if free / (1024**3) < 1.0:
-                    logging.error('Disk space critically low. Aborting.')
-                    break
-            except Exception as e:
-                logging.warning(f'Could not check disk: {e}')
-            # ---------------------------
+        if step % cfg.checkpoint_interval == 0 or step == cfg.max_steps or segment_done:
             if not save(step):
                 break
 
@@ -288,6 +315,11 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
     return {
         "steps": step,
         "resumed_from": start_step,
+        "global_step_start": start_step,
+        "global_step_end": step,
+        "experiment_steps": executed_steps,
+        "stage_id": cfg.stage_id,
+        "experiment_index": cfg.experiment_index,
         "stopped_reason": stopped_reason,
         "train_loss": last_train_loss,
         "parameter_changed": parameter_changed,
@@ -427,6 +459,10 @@ def train_sft(
                 "model": model.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "step": step,
+                "global_step_start": start_step,
+                "experiment_steps": step - start_step,
+                "stage_id": cfg.stage_id,
+                "experiment_index": cfg.experiment_index,
                 "batch_rng": rng.getstate(),
                 "rng": capture_rng_state(),
                 "config": cfg.__dict__,
@@ -448,7 +484,10 @@ def train_sft(
     if runtime_guard is not None:
         runtime_guard.start()
     step = start_step
-    while step < cfg.max_steps:
+    executed_steps = 0
+    while step < cfg.max_steps and (
+        cfg.segment_max_steps is None or executed_steps < cfg.segment_max_steps
+    ):
         if cost_controller is not None and cost_controller.should_stop():
             stopped_reason = cost_controller.exceeded()
             break
@@ -467,17 +506,6 @@ def train_sft(
             x, y = sample_sft_batch(train_pairs)
             step_tokens += sum(len(row) for row in x)
             loss = model(to_tensor(x), to_tensor(y))[1] / cfg.grad_accum_steps
-            # --- V9 Minimal Observability ---
-            loss_val = loss.item()
-            if step % cfg.log_interval == 0:
-                log_data = {
-                    "step": step,
-                    "loss": loss_val if math.isfinite(loss_val) else None,
-                    "learning_rate": optimizer.param_groups[0]["lr"],
-                    "is_finite": math.isfinite(loss_val)
-                }
-                logging.info(json.dumps(log_data))
-            # ---------------------------------
             loss.backward()
             total_loss += loss.item()
         if not math.isfinite(total_loss):
@@ -499,15 +527,19 @@ def train_sft(
         optimizer.step()
         last_train_loss = total_loss
         step += 1
+        executed_steps += 1
+        segment_done = (
+            cfg.segment_max_steps is not None and executed_steps >= cfg.segment_max_steps
+        )
 
-        if step % cfg.log_interval == 0 or step == cfg.max_steps:
+        if step % cfg.log_interval == 0 or step == cfg.max_steps or segment_done:
             rec = monitor.log(step, total_loss, lr, tokens=step_tokens)
             if rec["diverged"]:
                 stopped_reason = "loss_diverged"
                 break
-        if step % cfg.eval_interval == 0 or step == cfg.max_steps:
+        if step % cfg.eval_interval == 0 or step == cfg.max_steps or segment_done:
             last_val = evaluate()
-        if step % cfg.checkpoint_interval == 0 or step == cfg.max_steps:
+        if step % cfg.checkpoint_interval == 0 or step == cfg.max_steps or segment_done:
             if not save(step):
                 break
 
@@ -533,6 +565,11 @@ def train_sft(
     return {
         "steps": step,
         "resumed_from": start_step,
+        "global_step_start": start_step,
+        "global_step_end": step,
+        "experiment_steps": executed_steps,
+        "stage_id": cfg.stage_id,
+        "experiment_index": cfg.experiment_index,
         "stopped_reason": stopped_reason,
         "train_loss": last_train_loss,
         "parameter_changed": parameter_changed,

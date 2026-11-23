@@ -48,7 +48,12 @@ V10_MODEL_VERSION_RE = re.compile(
     r"^ZYRQUEN-Native-10\.(0|[1-9]\d*)\.(0|[1-9]\d*)$"
 )
 V10_VERSIONING_CONTRACT_SCHEMA = "zyrquen.v10.versioning_contract.v1"
+V11_MODEL_VERSION_PREFIX = "ZYRQUEN-Native-11."
+V11_MODEL_VERSION_RE = re.compile(
+    r"^ZYRQUEN-Native-11\.(0|[1-9]\d*)\.(0|[1-9]\d*)$"
+)
 SPLITS = ("train", "validation", "test")
+V11_SPLITS = ("train", "validation", "unseen", "ood")
 LIFECYCLE_STATES = (
     "development",
     "registered",
@@ -197,6 +202,11 @@ def is_v10_model_version(version: Any) -> bool:
     return isinstance(version, str) and bool(V10_MODEL_VERSION_RE.match(version))
 
 
+def is_v11_model_version(version: Any) -> bool:
+    """Return True strictly when version matches ZYRQUEN-Native-11.<minor>.<patch>."""
+    return isinstance(version, str) and bool(V11_MODEL_VERSION_RE.match(version))
+
+
 V10_VERSIONING_CONTRACT = CanonicalVersionContract(
     schema=V10_VERSIONING_CONTRACT_SCHEMA,
     target_major=10,
@@ -283,35 +293,28 @@ def _sha256(path: Path) -> str:
 
 
 def _verify_dataset(dataset_dir: Path) -> dict:
-    """Re-verify every split file and the content hash against the dataset manifest."""
+    """Re-verify every split file and the content hash against the dataset manifest (3-split or V11 4-split)."""
+    from apps.core.native.dataset import SCHEMA as DATASET_SCHEMA, verify_dataset_manifest
+
     if dataset_dir.is_symlink() or not dataset_dir.is_dir():
         raise RegistryError("dataset directory missing or symlinked")
-    resolved_root = dataset_dir.resolve()
     mpath = dataset_dir / "manifest.json"
     if mpath.is_symlink() or not mpath.is_file():
         raise RegistryError("dataset manifest.json not found or symlinked")
-    manifest = json.loads(mpath.read_text(encoding="utf-8"))
-    if not isinstance(manifest, dict):
+    try:
+        raw_manifest = json.loads(mpath.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RegistryError(f"dataset manifest unreadable: {exc}") from exc
+    if not isinstance(raw_manifest, dict):
         raise RegistryError("dataset manifest.json must be a JSON object")
-    files = manifest.get("files")
-    if not isinstance(files, dict):
-        raise RegistryError("dataset manifest missing files mapping")
-    for split in SPLITS:
-        entry = files.get(f"{split}.jsonl")
-        path = dataset_dir / f"{split}.jsonl"
-        if (
-            not isinstance(entry, dict)
-            or not isinstance(entry.get("sha256"), str)
-            or path.is_symlink()
-            or not path.resolve().is_relative_to(resolved_root)
-            or not path.is_file()
-            or _sha256(path) != entry["sha256"]
-        ):
-            raise RegistryError(f"dataset integrity check failed: {split}.jsonl")
-    combined = hashlib.sha256("".join(files[f"{s}.jsonl"]["sha256"] for s in SPLITS).encode()).hexdigest()
-    if combined != manifest.get("content_sha256"):
-        raise RegistryError("dataset content hash does not match manifest")
-    return manifest
+    if "schema" in raw_manifest and raw_manifest.get("schema") != DATASET_SCHEMA:
+        raise RegistryError("dataset manifest unsupported schema")
+    if not isinstance(raw_manifest.get("files"), dict) and not isinstance(raw_manifest.get("splits"), dict):
+        raise RegistryError("dataset manifest missing files/splits mapping")
+    try:
+        return verify_dataset_manifest(dataset_dir, require_schema=("schema" in raw_manifest))
+    except ValueError as exc:
+        raise RegistryError(str(exc)) from exc
 
 
 class ModelRegistry:
@@ -1237,7 +1240,7 @@ def resolve_canonical_model_version(
     ) or None
 
     require_v10 = target_major == 10
-    default_minor = 0 if require_v10 else 1
+    default_minor = 0 if target_major in (10, 11) else 1
 
     if registry is not None:
         with registry._registry_lock():

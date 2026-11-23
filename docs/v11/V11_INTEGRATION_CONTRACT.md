@@ -1,7 +1,7 @@
 # ZYRQUEN Ω∞ — V11 Integration Contract (Zero Duplication with V10)
 
 - **Document ID:** `V11-DOC-17`
-- **Status:** `BLUEPRINT ONLY — LOCKED UNTIL V10 FINAL GATE PASS`
+- **Status:** `STAGE 1 CODE READINESS APPROVED (V10 CLOSED_FAIL BASELINE POLICY — TRAINING & PROMOTION LOCKED)`
 - **Core Rule:** ห้ามสร้าง Trainer, Registry, Workflow Engine, Resource Guard, Checkpoint Manager, หรือ Evaluation Engine ชุดใหม่ซ้ำ — ให้ Reuse และ Extend ระบบเดิมผ่าน Contract ชัดเจนเท่านั้น
 
 ---

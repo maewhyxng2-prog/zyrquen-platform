@@ -1,8 +1,8 @@
 # ZYRQUEN Ω∞ — V11 & V10 Compatibility & Baseline Preservation
 
 - **Document ID:** `V11-DOC-21`
-- **Status:** `BLUEPRINT ONLY — LOCKED UNTIL V10 FINAL GATE PASS`
-- **Immutable Baselines:** `v7`, `v8`, `v9`, and closed `v10`
+- **Status:** `STAGE 1 CODE READINESS APPROVED (V10 CLOSED_FAIL IMMUTABLE BASELINE)`
+- **Immutable Baselines:** `v7`, `v8`, `v9`, and closed `v10` (`CLOSED_FAIL` immutable reference)
 
 ---
 
@@ -10,20 +10,20 @@
 
 1. **Zero Modification to Prior Tracks:**
    - ห้ามแก้ไขหรือลบไฟล์/ชุดข้อมูล/รายงาน/Checkpoints ของ `v7`, `v8`, `v9` และ `v10` (`tools/*v7*`, `*v8*`, `*v9*`, `*v10*`, `data/nagi_v10`, `checkpoints/nagi_v10`, `eval/nagi_v10`)
-   - คงรายการ `FROZEN_BASELINE_NAMES = {"v7", "v8", "v9", "ZYRQUEN-v7", "ZYRQUEN-v8", "ZYRQUEN-v9"}` ใน `apps/core/native/registry.py` และเมื่อ V10 ปิดสมบูรณ์แล้ว ให้ปฏิบัติต่อ Checkpoint V10 ใน Registry ด้วยสถานะ Frozen Baseline เช่นเดียวกัน (อ่าน/เปรียบเทียบได้เท่านั้น ห้ามเขียนทับ)
+   - คงรายการ `FROZEN_BASELINE_NAMES = {"v7", "v8", "v9", "ZYRQUEN-v7", "ZYRQUEN-v8", "ZYRQUEN-v9"}` ใน `apps/core/native/registry.py` และปฏิบัติต่อ V10 Checkpoints/Reports (`CLOSED_FAIL`) ด้วยสถานะ Immutable ห้ามแก้/ห้าม Promote
 2. **Separate Namespace for V11 Artifacts:**
    - Dataset: `data/nagi_v11/` (`dataset = "nagi_v11"`, `version = "11.0.0"`)
    - Checkpoints: `checkpoints/nagi_v11/`
    - Reports: `eval/nagi_v11/` (`zyrquen.v11.evaluation_report.v1`)
-   - Registry Versions: จัดสรรผ่าน `ModelRegistry.reserve_next_native_version()` (`ZYRQUEN-Native-MAJOR.MINOR.PATCH`) โดยระบุ `parent` ชี้กลับไปยังเวอร์ชัน V10 ที่ปิด Gate แล้ว (โดย **ไม่แก้ไข** weights หรือ record ของ parent version)
+   - Registry Versions: จัดสรรผ่าน `ModelRegistry.reserve_next_native_version(major=11, ...)` (`ZYRQUEN-Native-11.MINOR.PATCH`) โดย **ไม่แก้ไข** weights หรือ record ของ V10 (หากระบุ `parent` ต้องตรวจว่า V10 artifact นั้นอยู่ใน registry จริงและไม่ถูกแก้ทับ)
 
 ---
 
 ## 2. Training Origin Policy: Random Init vs V10 Weight Continuation
 
 ตามข้อบังคับหลัก:
-- **Default V11 Training Origin:** **Random Initialization (`ZyrquenModel(cfg)`) ตั้งแต่ Step `0 -> 10,000`** โดยใช้ V10 เป็น **Evaluation Comparison Baseline** (เทียบใน `regression_comparison` และ `ModelRegistry.compare_versions`) เพื่อพิสูจน์การเรียนรู้จากศูนย์บน Curriculum 6 Stages โดยปราศจากข้อสงสัยเรื่อง Prior Artifacts
-- **V10 Checkpoints Role:** ทำหน้าที่เป็น **Immutable Reference Baseline** และ Parent Lineage Marker สำหรับเปรียบเทียบความก้าวหน้าในแต่ละ Capability (`abstract_reasoning` .. `knowledge_integration`)
+- **Default V11 Training Origin:** **Random Initialization (`ZyrquenModel(cfg)`) ตั้งแต่ Step `0 -> 10,000`** โดยใช้ V10 (`CLOSED_FAIL`) เป็น **Immutable Evaluation Comparison Baseline** เพื่อพิสูจน์การเรียนรู้จากศูนย์บน Curriculum 6 Stages โดยห้ามอ้าง regression pass หากยังไม่มีรายงาน V10 ที่ตรวจ SHA-256 ครบถ้วน
+- **V10 Checkpoints Role:** ทำหน้าที่เป็น **Immutable Reference Baseline** สำหรับเปรียบเทียบความก้าวหน้าในแต่ละ Capability (`abstract_reasoning` .. `knowledge_integration`) โดยไม่นำไปใช้ initialize หรือ promote แทน V11
 
 ---
 

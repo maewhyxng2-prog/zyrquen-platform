@@ -1,7 +1,7 @@
 # ZYRQUEN Ω∞ — V11 Training Plan (10,000 Steps / 6 Stages)
 
 - **Document ID:** `V11-DOC-05`
-- **Status:** `BLUEPRINT ONLY — LOCKED UNTIL V10 FINAL GATE PASS`
+- **Status:** `STAGE 1 CODE READINESS APPROVED (V10 CLOSED_FAIL BASELINE POLICY — TRAINING & PROMOTION LOCKED)`
 - **Total Training Horizon:** `10,000` optimizer steps across `6` sequential stages
 - **Execution Engine:** `apps/core/native/train.py::train_sft` invoked via `CentralWorkflowOrchestrator` + `handle_training_execute`
 - **Initialization:** Random Initialization (`ZyrquenModel`), strictly CPU-only under Tier-2 HMAC Approval Gate

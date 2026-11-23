@@ -1,7 +1,7 @@
 # ZYRQUEN Ω∞ — V11 Test Strategy (Unit, Integration, Regression & Runtime)
 
 - **Document ID:** `V11-DOC-18`
-- **Status:** `BLUEPRINT ONLY — LOCKED UNTIL V10 FINAL GATE PASS`
+- **Status:** `STAGE 1 CODE READINESS APPROVED (V10 CLOSED_FAIL BASELINE POLICY — TRAINING & PROMOTION LOCKED)`
 - **Test Truth Rule:** ห้ามรายงาน Test PASS หาก Test ถูก Skip (`HAS_TORCH=False`), Mock ที่ข้าม Core Invariant, หรือไม่มี Terminal Output จริงยืนยัน
 
 ---

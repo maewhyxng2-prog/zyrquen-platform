@@ -1,7 +1,7 @@
 # ZYRQUEN Ω∞ — V11 Architecture Specification
 
 - **Document ID:** `V11-DOC-02`
-- **Status:** `BLUEPRINT ONLY — LOCKED UNTIL V10 FINAL GATE PASS`
+- **Status:** `STAGE 1 CODE READINESS APPROVED (V10 CLOSED_FAIL BASELINE POLICY — TRAINING & PROMOTION LOCKED)`
 - **Model Family:** `zyrquen-decoder` (`apps/core/native/model.py`)
 - **Initialization:** Random Initialization (`normal_(0, 0.02)` + residual scaled `0.02 / sqrt(2 * n_layers)`)
 

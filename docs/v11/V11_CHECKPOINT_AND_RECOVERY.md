@@ -1,7 +1,7 @@
 # ZYRQUEN Ω∞ — V11 Checkpoint, Resume & Recovery Specification
 
 - **Document ID:** `V11-DOC-15`
-- **Status:** `BLUEPRINT ONLY — LOCKED UNTIL V10 FINAL GATE PASS`
+- **Status:** `STAGE 1 CODE READINESS APPROVED (V10 CLOSED_FAIL BASELINE POLICY — TRAINING & PROMOTION LOCKED)`
 - **Core Modules:**
   - `apps/core/training_infrastructure/recovery/checkpoint_recovery.py::CheckpointManager`
   - `apps/core/native/checkpoint.py::VersionedCheckpointManager`

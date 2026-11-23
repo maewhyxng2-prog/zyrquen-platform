@@ -1,7 +1,7 @@
 # ZYRQUEN Ω∞ — V11 Memory & Knowledge Integration Specification
 
 - **Document ID:** `V11-DOC-12`
-- **Status:** `BLUEPRINT ONLY — LOCKED UNTIL V10 FINAL GATE PASS`
+- **Status:** `STAGE 1 CODE READINESS APPROVED (V10 CLOSED_FAIL BASELINE POLICY — TRAINING & PROMOTION LOCKED)`
 - **Existing Subsystem Anchors:**
   - `phases/phase17.py` (`MemoryStore`: `short`, `long`, `task` tiers; Grounded Retrieval; `owner_id + workspace_id` multi-tenant isolation; PII block)
   - `apps/core/intelligence/knowledge.py` (`KnowledgeSystem`: entity & directed relation graph)

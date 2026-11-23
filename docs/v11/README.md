@@ -1,9 +1,9 @@
 # ZYRQUEN Ω∞ — V11 Complete Documentation Package (Index)
 
-- **Document Set Version:** `v11.0-blueprint.1`
-- **Status:** `BLUEPRINT ONLY — IMPLEMENTATION LOCKED`
-- **Pre-condition Gate:** **V10 Final Closure Gate ยังไม่ผ่าน** (`V10-A..D` รอดำเนินการ/อนุมัติ และ container ปัจจุบันยังไม่มี `torch` Runtime และยังไม่มี V10 Trained Checkpoint)
-- **Rule:** ห้ามเริ่มเขียน Source Code ของ V11, ห้ามเริ่ม Training/Inference, ห้ามแก้ `v7`/`v8`/`v9`, ห้ามแก้ Roadmap Phase 11–20 หรือสร้าง Phase 21, และห้าม Commit/Push/Merge/Deploy จนกว่า V10 จะผ่าน Final Gate และได้รับอนุมัติแยก
+- **Document Set Version:** `v11.0-stage1-readiness.1`
+- **Status:** `STAGE 1 CODE READINESS APPROVED — TRAINING & PROMOTION STILL TIER-2 LOCKED`
+- **Pre-condition Gate:** **V10 Runtime Closure Policy Updated (`CLOSED_FAIL` Immutable Baseline Permitted):** รอบฝึก/ประเมินจริง V10 (`ZYRQUEN-Native-10.0.0`) ปิดเป็น `FAIL` — อนุมัติเปลี่ยนผ่านสู่ **V11 Stage 1 Code Alignment** บนหลักการไม่แก้ผล V10 และไม่ปลอม PASS (การบันทึก `CLOSED_FAIL` อย่างเป็นทางการยังรอตรวจ SHA-256 ต้นทางของรายงาน V10)
+- **Rule:** ห้ามแก้ `v7`/`v8`/`v9`/`v10`, ห้ามปรับเกณฑ์เพื่อให้ V10 ผ่าน, ห้ามใช้ External Weights/AI APIs, ห้ามแก้ Roadmap Phase 11–20 หรือสร้าง Phase 21, และห้ามเริ่ม Training/Promotion/Merge โดยไม่มี Tier-2 Approval แยก
 
 ---
 

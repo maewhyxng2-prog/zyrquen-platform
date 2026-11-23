@@ -1,7 +1,7 @@
 # ZYRQUEN Ω∞ — V11 Capability Specification
 
 - **Document ID:** `V11-DOC-04`
-- **Status:** `BLUEPRINT ONLY — LOCKED UNTIL V10 FINAL GATE PASS`
+- **Status:** `STAGE 1 CODE READINESS APPROVED (V10 CLOSED_FAIL BASELINE POLICY — TRAINING & PROMOTION LOCKED)`
 - **Capability Foundation:** 6 Core Reasoning Capabilities (ต่อเนื่องจาก V10) + Memory Grounding + Structured Self-Verification
 
 ---

@@ -1,8 +1,8 @@
 # ZYRQUEN Ω∞ — V11 Dataset Specification
 
 - **Document ID:** `V11-DOC-07`
-- **Status:** `BLUEPRINT ONLY — LOCKED UNTIL V10 RUNTIME CLOSURE GATE PASS`
-- **V10 Closure Program Audit Snapshot:** V10 Static, Architecture Contracts (`V10-A`), Security Governance & False-PASS Closure (`V10-B`), Native Hook Wiring (`V10-C`), and CLI Pipeline Audit (`V10-D`) achieved **STATIC / INTEGRATION PASS**; Runtime PyTorch Training & Evaluation remain **BLOCKED / NOT RUN** (`torch` not installed in container). Therefore V11 dataset generation and training stay strictly locked.
+- **Status:** `STAGE 1 CODE READINESS APPROVED (V10 CLOSED_FAIL BASELINE POLICY — TRAINING & PROMOTION LOCKED)`
+- **V10 Baseline & Scope Note:** V10 Static/Architecture/Governance/Hook audits (`V10-A`..`V10-D`) passed, and V10 closed as `FAIL`. Per Tier-2 Gate Transition Approval, V10 remains an immutable `CLOSED_FAIL` baseline while Stage 1 4-split dataset adapter/audit readiness (`dataset.py`, `sft.py`, `registry.py`, `groups.py`) is enabled. No training or promotion is authorized here.
 - **Scope Clarification (V11 vs Existing `phases/phase11.py`):** Existing `phases/phase11.py` implements immutable Workspace Intelligence helpers (no training/DB). This specification governs **ZYRQUEN Native Model v11** (`data/nagi_v11/`, `dataset = "nagi_v11"`, `version = "11.0.0"`) for the 10,000-step NGI objective without modifying `phases/phase11.py`–`phase20.py`.
 - **Manifest Schema:** `zyrquen.dataset-manifest.v1` (`apps/core/native/dataset.py`)
 - **Dataset Origin Policy:** 100% Deterministic Rule-Based & Exhaustive-Solver Verified Generator (Pure Python stdlib); Zero External Unlicensed Corpora, Zero External AI APIs

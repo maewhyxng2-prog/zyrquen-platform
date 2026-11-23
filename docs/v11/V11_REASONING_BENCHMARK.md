@@ -1,7 +1,7 @@
 # ZYRQUEN Ω∞ — V11 Reasoning Benchmark Specification
 
 - **Document ID:** `V11-DOC-11`
-- **Status:** `BLUEPRINT ONLY — LOCKED UNTIL V10 FINAL GATE PASS`
+- **Status:** `STAGE 1 CODE READINESS APPROVED (V10 CLOSED_FAIL BASELINE POLICY — TRAINING & PROMOTION LOCKED)`
 - **Target Dimensions:** Abstract Reasoning, Relational Generalization, OOD Transfer, Multi-Step Planning (พร้อม Principle Probes ต่อยอดจาก V9/V10)
 
 ---

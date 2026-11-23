@@ -1,7 +1,7 @@
 # ZYRQUEN Ω∞ — V11 Training Objective Specification
 
 - **Document ID:** `V11-DOC-06`
-- **Status:** `BLUEPRINT ONLY — LOCKED UNTIL V10 FINAL GATE PASS`
+- **Status:** `STAGE 1 CODE READINESS APPROVED (V10 CLOSED_FAIL BASELINE POLICY — TRAINING & PROMOTION LOCKED)`
 - **Canonical Training Function:** `apps/core/native/train.py::train_sft`
 - **Prompt/Label Contract:** `apps/core/native/sft.py` (`zyrquen.sft.v1`)
 
