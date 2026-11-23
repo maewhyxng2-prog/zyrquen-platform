@@ -3,6 +3,7 @@ name: ZYRQUEN Maintainer PR Review
 on:
   pull_request:
     branches: ["main"]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -25,6 +26,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -41,7 +43,6 @@ jobs:
             exit 0
           fi
           echo "Changed files: ${CHANGED_FILES[*]}"
-          # Automated bot branches must never modify protected V10/gate paths without explicit maintainer review
           if [[ "${{ github.head_ref }}" == bot/* ]]; then
             python tools/maintainer_bot.py --mode policy-check --files "${CHANGED_FILES[@]}"
           else
@@ -49,20 +50,135 @@ jobs:
           fi
 
   codex-advisory-review:
-    name: Layer 2 Codex Advisory Review (Opt-In Only, Never Auto-Merges)
+    name: Real Codex Read-Only PR Review (Opt-In)
     needs: policy-and-root-cause-check
-    if: ${{ vars.ENABLE_CODEX_PR_REVIEW == 'true' && github.event.pull_request.head.repo.full_name == github.repository }}
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
       contents: read
-      pull-requests: write
+    outputs:
+      review_status: ${{ steps.codex-config.outputs.review_status }}
+      final_message: ${{ steps.run_codex.outputs.final-message }}
 
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-
-      - name: Verify Codex configuration
+      - name: Check explicit opt-in and API credential availability
+        id: codex-config
+        shell: bash
+        env:
+          ENABLE_CODEX_PR_REVIEW: ${{ vars.ENABLE_CODEX_PR_REVIEW }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          echo "Codex PR review runs strictly as an advisory reviewer on PRs."
-          echo "Never merges to main, never modifies gate logic, and never acts as ZYRQUEN's native model."
+          if [[ "$ENABLE_CODEX_PR_REVIEW" != "true" ]]; then
+            echo "review_status=disabled" >> "$GITHUB_OUTPUT"
+            echo "Codex review is disabled. Set repository variable ENABLE_CODEX_PR_REVIEW=true to opt in."
+          elif [[ -z "$OPENAI_API_KEY" ]]; then
+            echo "review_status=missing_secret" >> "$GITHUB_OUTPUT"
+            echo "Codex review is enabled but OPENAI_API_KEY is not configured."
+          else
+            echo "review_status=ready" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout PR merge commit without persisting Git credentials
+        if: steps.codex-config.outputs.review_status == 'ready'
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run Codex review in read-only sandbox
+        if: steps.codex-config.outputs.review_status == 'ready'
+        id: run_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: .github/codex/prompts/review.md
+          output-file: codex-review-output.md
+          sandbox: read-only
+          read-only: true
+          safety-strategy: drop-sudo
+
+      - name: Upload Codex review transcript
+        if: always() && steps.codex-config.outputs.review_status == 'ready'
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-pr-review-${{ github.event.pull_request.number }}
+          path: codex-review-output.md
+          if-no-files-found: ignore
+          retention-days: 7
+
+  publish-codex-review-status:
+    name: Publish Codex Review Result
+    needs: codex-advisory-review
+    if: ${{ always() && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Publish truthful Codex review state
+        uses: actions/github-script@v7
+        env:
+          CODEX_JOB_RESULT: ${{ needs.codex-advisory-review.result }}
+          CODEX_REVIEW_STATUS: ${{ needs.codex-advisory-review.outputs.review_status }}
+          CODEX_FINAL_MESSAGE: ${{ needs.codex-advisory-review.outputs.final_message }}
+        with:
+          script: |
+            const jobResult = process.env.CODEX_JOB_RESULT || 'unknown';
+            const reviewStatus = process.env.CODEX_REVIEW_STATUS || 'unknown';
+            const finalMessage = process.env.CODEX_FINAL_MESSAGE || '';
+            const marker = '<!-- zyrquen-real-codex-review -->';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            let statusLine;
+            let detail;
+            if (reviewStatus === 'disabled') {
+              statusLine = 'PENDING — opt-in disabled';
+              detail = 'Set repository variable ENABLE_CODEX_PR_REVIEW=true and add OPENAI_API_KEY as a GitHub Actions secret to enable the paid Codex review run.';
+            } else if (reviewStatus === 'missing_secret') {
+              statusLine = 'BLOCKED — OPENAI_API_KEY missing';
+              detail = 'The opt-in variable is enabled, but the required OPENAI_API_KEY secret is unavailable. No Codex API call was made.';
+            } else if (jobResult === 'success' && finalMessage.trim()) {
+              statusLine = 'COMPLETED — Codex ran';
+              detail = finalMessage;
+            } else {
+              statusLine = 'FAILED — Codex review did not complete';
+              detail = `Workflow job result: ${jobResult}. Inspect the run logs for the cause.`;
+            }
+
+            const body = [
+              marker,
+              '### ZYRQUEN Codex Review',
+              '',
+              `- **Review status**: ${statusLine}`,
+              `- **Workflow**: [View logs](${runUrl})`,
+              '',
+              detail,
+              '',
+              '> Advisory review only. It does not approve or merge the PR, alter protected gates, start training, or activate/deploy a model.',
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find((c) => typeof c.body === 'string' && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
