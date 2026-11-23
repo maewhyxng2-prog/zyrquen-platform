@@ -89,6 +89,7 @@ export default {
         headers,
         body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
         redirect: "manual",
+        duplex: "half",
       });
       const upstream = await fetch(upstreamRequest, { redirect: "manual" });
       const responseHeaders = new Headers(upstream.headers);
