@@ -164,6 +164,7 @@ def get_training_readiness(
     if dataset_configured and tokenizer_configured:
         try:
             manifest = verify_dataset_manifest(dataset_dir)
+            dataset_integrity_verified = True
             dataset_version = manifest.get("version")
             if not isinstance(dataset_version, str) or not dataset_version.strip():
                 raise TrainingUnavailable("Dataset manifest has no valid version.")
@@ -175,7 +176,6 @@ def get_training_readiness(
                 training_values=request.training.model_dump(),
                 model_values=request.model.model_dump(),
             )
-            dataset_integrity_verified = True
             preflight_passed = True
         except (TrainingUnavailable, OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             preflight_error = str(exc)
@@ -184,7 +184,7 @@ def get_training_readiness(
     active_run_id = str(jobs._active_run_id) if jobs._future is not None and not jobs._future.done() and jobs._active_run_id else None
     return {
         "configured": configured,
-        "status": "ready" if configured else "not_configured",
+        "status": "ready" if configured else ("invalid" if dataset_configured and tokenizer_configured and not preflight_passed else "not_configured"),
         "dataset_configured": dataset_configured,
         "dataset_integrity_verified": dataset_integrity_verified,
         "dataset_version": dataset_version,
