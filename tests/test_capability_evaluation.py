@@ -1,6 +1,5 @@
 import copy
-
-import pytest
+import unittest
 
 from apps.core.intelligence.capability_evaluation import (
     CapabilityEvaluationViolation,
@@ -38,109 +37,110 @@ def _evidence(case_id, outcome="passed", reference="tests/test_lookup.py"):
     return {"case_id": case_id, "outcome": outcome, "reference": reference}
 
 
-def test_registry_returns_isolated_sorted_case_metadata():
-    registry = _registry()
-    listed = registry.list_cases("knowledge_lookup")
-    listed[0]["description"] = "changed"
-    assert [case["case_id"] for case in registry.list_cases()] == [
-        "lookup-empty", "lookup-latency", "lookup-positive"
-    ]
-    assert registry.get("lookup-empty")["description"] == (
-        "Reports when no entity is related")
+class TestCapabilityEvaluation(unittest.TestCase):
+    def test_registry_returns_isolated_sorted_case_metadata(self):
+        registry = _registry()
+        listed = registry.list_cases("knowledge_lookup")
+        listed[0]["description"] = "changed"
+        self.assertEqual(
+            [case["case_id"] for case in registry.list_cases()],
+            ["lookup-empty", "lookup-latency", "lookup-positive"],
+        )
+        self.assertEqual(
+            registry.get("lookup-empty")["description"],
+            "Reports when no entity is related",
+        )
 
-
-def test_registry_rejects_duplicate_or_malformed_cases():
-    registry = _registry()
-    with pytest.raises(DuplicateTestCaseError):
-        registry.register({
-            "case_id": "lookup-positive",
+    def test_registry_rejects_duplicate_or_malformed_cases(self):
+        registry = _registry()
+        with self.assertRaises(DuplicateTestCaseError):
+            registry.register({
+                "case_id": "lookup-positive",
+                "capability": "knowledge_lookup",
+                "description": "Duplicate",
+                "required": True,
+            })
+        invalid = {
+            "case_id": "bad id",
             "capability": "knowledge_lookup",
-            "description": "Duplicate",
+            "description": "Invalid id",
             "required": True,
-        })
-    invalid = {
-        "case_id": "bad id",
-        "capability": "knowledge_lookup",
-        "description": "Invalid id",
-        "required": True,
-    }
-    with pytest.raises(CapabilityEvaluationViolation):
-        registry.register(invalid)
+        }
+        with self.assertRaises(CapabilityEvaluationViolation):
+            registry.register(invalid)
 
+    def test_only_all_required_cases_with_reported_evidence_are_supported(self):
+        registry = _registry()
+        partial = evaluate_capability(
+            "knowledge_lookup", [_evidence("lookup-positive")], registry)
+        self.assertEqual(partial["status"], "partially_supported")
+        self.assertEqual(partial["case_results"][1]["outcome"], "not_run")
 
-def test_only_all_required_cases_with_reported_evidence_are_supported():
-    registry = _registry()
-    partial = evaluate_capability(
-        "knowledge_lookup", [_evidence("lookup-positive")], registry)
-    assert partial["status"] == "partially_supported"
-    assert partial["case_results"][1]["outcome"] == "not_run"
-
-    supported = evaluate_capability("knowledge_lookup", [
-        _evidence("lookup-positive"),
-        _evidence("lookup-empty"),
-    ], registry)
-    assert supported["status"] == "supported_by_reported_evidence"
-    assert supported["evidence_origin"] == "caller_reported"
-    assert supported["model_inference"] is False
-
-
-@pytest.mark.parametrize(
-    ("evidence", "status"),
-    [
-        ([], "not_evaluated"),
-        ([_evidence("lookup-positive", "blocked", "policy report")], "blocked"),
-        ([_evidence("lookup-positive", "failed", "test failure")], "not_supported"),
-        ([_evidence("lookup-positive", "not_run", None)], "not_evaluated"),
-    ],
-)
-def test_failure_blocking_and_missing_evidence_are_not_overstated(evidence, status):
-    result = evaluate_capability("knowledge_lookup", evidence, _registry())
-    assert result["status"] == status
-
-
-def test_evaluator_rejects_unregistered_duplicate_and_unreferenced_evidence():
-    registry = _registry()
-    with pytest.raises(CapabilityEvaluationViolation, match="unregistered"):
-        evaluate_capability(
-            "knowledge_lookup", [_evidence("other-case")], registry)
-    with pytest.raises(CapabilityEvaluationViolation, match="duplicate"):
-        evaluate_capability("knowledge_lookup", [
+        supported = evaluate_capability("knowledge_lookup", [
             _evidence("lookup-positive"),
-            _evidence("lookup-positive"),
+            _evidence("lookup-empty"),
         ], registry)
-    with pytest.raises(CapabilityEvaluationViolation, match="requires"):
-        evaluate_capability("knowledge_lookup", [
-            _evidence("lookup-positive", "passed", ""),
-        ], registry)
+        self.assertEqual(supported["status"], "supported_by_reported_evidence")
+        self.assertEqual(supported["evidence_origin"], "caller_reported")
+        self.assertIs(supported["model_inference"], False)
+
+    def test_failure_blocking_and_missing_evidence_are_not_overstated(self):
+        cases = [
+            ([], "not_evaluated"),
+            ([_evidence("lookup-positive", "blocked", "policy report")], "blocked"),
+            ([_evidence("lookup-positive", "failed", "test failure")], "not_supported"),
+            ([_evidence("lookup-positive", "not_run", None)], "not_evaluated"),
+        ]
+        for evidence, status in cases:
+            with self.subTest(status=status):
+                result = evaluate_capability("knowledge_lookup", evidence, _registry())
+                self.assertEqual(result["status"], status)
+
+    def test_evaluator_rejects_unregistered_duplicate_and_unreferenced_evidence(self):
+        registry = _registry()
+        with self.assertRaisesRegex(CapabilityEvaluationViolation, "unregistered"):
+            evaluate_capability(
+                "knowledge_lookup", [_evidence("other-case")], registry)
+        with self.assertRaisesRegex(CapabilityEvaluationViolation, "duplicate"):
+            evaluate_capability("knowledge_lookup", [
+                _evidence("lookup-positive"),
+                _evidence("lookup-positive"),
+            ], registry)
+        with self.assertRaisesRegex(CapabilityEvaluationViolation, "requires"):
+            evaluate_capability("knowledge_lookup", [
+                _evidence("lookup-positive", "passed", ""),
+            ], registry)
+
+    def test_result_contract_recomputes_status_and_rejects_inflated_claims(self):
+        registry = _registry()
+        result = evaluate_capability(
+            "knowledge_lookup", [_evidence("lookup-positive")], registry)
+        inflated = copy.deepcopy(result)
+        inflated["status"] = "supported_by_reported_evidence"
+        with self.assertRaisesRegex(CapabilityEvaluationViolation, "status must match"):
+            validate_evaluation_result(inflated, registry)
+
+        false_model_claim = copy.deepcopy(result)
+        false_model_claim["model_inference"] = True
+        with self.assertRaisesRegex(CapabilityEvaluationViolation, "model inference"):
+            validate_evaluation_result(false_model_claim, registry)
+
+    def test_result_contract_requires_closed_shape_and_reported_evidence_origin(self):
+        registry = _registry()
+        result = evaluate_capability(
+            "knowledge_lookup",
+            [_evidence("lookup-positive"), _evidence("lookup-empty")],
+            registry,
+        )
+        extra_key = copy.deepcopy(result)
+        extra_key["accuracy"] = 1.0
+        with self.assertRaisesRegex(CapabilityEvaluationViolation, "exactly"):
+            validate_evaluation_result(extra_key, registry)
+        unreported = copy.deepcopy(result)
+        unreported["evidence_origin"] = "verified"
+        with self.assertRaisesRegex(CapabilityEvaluationViolation, "caller_reported"):
+            validate_evaluation_result(unreported, registry)
 
 
-def test_result_contract_recomputes_status_and_rejects_inflated_claims():
-    registry = _registry()
-    result = evaluate_capability(
-        "knowledge_lookup", [_evidence("lookup-positive")], registry)
-    inflated = copy.deepcopy(result)
-    inflated["status"] = "supported_by_reported_evidence"
-    with pytest.raises(CapabilityEvaluationViolation, match="status must match"):
-        validate_evaluation_result(inflated, registry)
-
-    false_model_claim = copy.deepcopy(result)
-    false_model_claim["model_inference"] = True
-    with pytest.raises(CapabilityEvaluationViolation, match="model inference"):
-        validate_evaluation_result(false_model_claim, registry)
-
-
-def test_result_contract_requires_closed_shape_and_reported_evidence_origin():
-    registry = _registry()
-    result = evaluate_capability(
-        "knowledge_lookup",
-        [_evidence("lookup-positive"), _evidence("lookup-empty")],
-        registry,
-    )
-    extra_key = copy.deepcopy(result)
-    extra_key["accuracy"] = 1.0
-    with pytest.raises(CapabilityEvaluationViolation, match="exactly"):
-        validate_evaluation_result(extra_key, registry)
-    unreported = copy.deepcopy(result)
-    unreported["evidence_origin"] = "verified"
-    with pytest.raises(CapabilityEvaluationViolation, match="caller_reported"):
-        validate_evaluation_result(unreported, registry)
+if __name__ == "__main__":
+    unittest.main()
