@@ -87,26 +87,44 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Run Codex review in read-only sandbox
+      - name: Checkout trusted review policy from PR base
+        if: steps.codex-config.outputs.review_status == 'ready'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted-policy
+          fetch-depth: 1
+          persist-credentials: false
+
+      # The action's Linux drop-sudo guard is skipped when a prompt is supplied.
+      # Invoke it once without a prompt so it irreversibly drops sudo first.
+      - name: Drop runner sudo before exposing PR content to Codex
+        if: steps.codex-config.outputs.review_status == 'ready'
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          safety-strategy: drop-sudo
+
+      - name: Verify runner sudo is unavailable
+        if: steps.codex-config.outputs.review_status == 'ready'
+        shell: bash
+        run: |
+          if sudo -n true 2>/dev/null; then
+            echo "Security check failed: sudo is still available." >&2
+            exit 1
+          fi
+          echo "Confirmed: runner sudo is unavailable."
+
+      - name: Run Codex review using trusted base prompt
         if: steps.codex-config.outputs.review_status == 'ready'
         id: run_codex
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          prompt-file: .github/codex/prompts/review.md
-          output-file: codex-review-output.md
+          prompt-file: trusted-policy/.github/codex/prompts/review.md
           sandbox: read-only
           read-only: true
           safety-strategy: drop-sudo
-
-      - name: Upload Codex review transcript
-        if: always() && steps.codex-config.outputs.review_status == 'ready'
-        uses: actions/upload-artifact@v4
-        with:
-          name: codex-pr-review-${{ github.event.pull_request.number }}
-          path: codex-review-output.md
-          if-no-files-found: ignore
-          retention-days: 7
 
   publish-codex-review-status:
     name: Publish Codex Review Result
