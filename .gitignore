@@ -52,3 +52,5 @@ pilot1_result.json
 run_config.final.json
 run_pilot1.py
 zyrquen_RUN_*.zip
+public/assets/aistudio/*.jpg
+public/assets/aistudio/*.png
