@@ -611,6 +611,57 @@ class TestModelRegistryLifecycleAndEvaluationGate(unittest.TestCase):
             with self.assertRaises(RegistryError):
                 registry.promote(v2, enforce_evaluation_gate=True, approval_id="app-blocked")
 
+    def test_startup_recovery_respects_zyrquen_workflow_recovery_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "wf_recovery.db"
+            orch = CentralWorkflowOrchestrator(
+                db_path=db_path,
+                work_dir=tmp,
+                approval_secret="unit-test-secret-key-at-least-32-bytes",
+            )
+            run, created = orch.store.create_run(
+                workflow_key="system_ops.health_check",
+                workflow_version="1.0.0",
+                trigger_type="manual",
+                trigger_payload={},
+                steps=[{"step_key": "check_health", "handler_key": "system_ops.check_health", "status": "RUNNING", "attempt": 1, "max_attempts": 2}],
+                requested_by_user_id="user-1",
+            )
+            self.assertTrue(created)
+            orch.store.update_run(run["id"], status="RUNNING")
+            orch.shutdown(wait=True)
+
+            # With ZYRQUEN_WORKFLOW_RECOVERY=0, start() must not reconcile or requeue orphaned runs
+            prev = os.environ.get("ZYRQUEN_WORKFLOW_RECOVERY")
+            os.environ["ZYRQUEN_WORKFLOW_RECOVERY"] = "0"
+            try:
+                orch_guarded = CentralWorkflowOrchestrator(
+                    db_path=db_path,
+                    work_dir=tmp,
+                    approval_secret="unit-test-secret-key-at-least-32-bytes",
+                )
+                recovered_disabled = orch_guarded.start(enable_scheduler=False)
+                self.assertEqual(recovered_disabled, [])
+                persisted = orch_guarded.store.get_run(run["id"])
+                self.assertIsNotNone(persisted)
+                self.assertEqual(persisted["status"], "RUNNING")
+                orch_guarded.shutdown(wait=True)
+            finally:
+                if prev is None:
+                    os.environ.pop("ZYRQUEN_WORKFLOW_RECOVERY", None)
+                else:
+                    os.environ["ZYRQUEN_WORKFLOW_RECOVERY"] = prev
+
+            # With recovery enabled (default), orphaned RUNNING run is reconciled
+            orch_default = CentralWorkflowOrchestrator(
+                db_path=db_path,
+                work_dir=tmp,
+                approval_secret="unit-test-secret-key-at-least-32-bytes",
+            )
+            recovered_enabled = orch_default.start(enable_scheduler=False)
+            self.assertEqual(recovered_enabled, [run["id"]])
+            orch_default.shutdown(wait=True)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -124,7 +124,10 @@ async def lifespan(app: FastAPI):
         )
 
     workflow_engine = get_workflow_engine()
-    workflow_engine.start(enable_scheduler=os.getenv("ZYRQUEN_WORKFLOW_SCHEDULER", "1") != "0")
+    workflow_engine.start(
+        enable_scheduler=os.getenv("ZYRQUEN_WORKFLOW_SCHEDULER", "1").strip() != "0",
+        enable_recovery=os.getenv("ZYRQUEN_WORKFLOW_RECOVERY", "1").strip() != "0",
+    )
 
     yield
 

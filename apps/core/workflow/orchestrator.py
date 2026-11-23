@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 import time
 from typing import Any
@@ -55,12 +56,24 @@ class CentralWorkflowOrchestrator:
                 defn.is_active,
             )
 
-    def start(self, *, enable_scheduler: bool = True) -> list[str]:
-        recovered = self.recovery.reconcile_orphaned_runs(self.queue)
-        for run_id in recovered:
-            run = self.store.get_run(run_id)
-            if run and run["status"] == "PENDING":
-                self._schedule_run_execution(run_id)
+    def start(
+        self,
+        *,
+        enable_scheduler: bool = True,
+        enable_recovery: bool | None = None,
+    ) -> list[str]:
+        recovery_enabled = (
+            enable_recovery
+            if enable_recovery is not None
+            else os.getenv("ZYRQUEN_WORKFLOW_RECOVERY", "1").strip() != "0"
+        )
+        recovered: list[str] = []
+        if recovery_enabled:
+            recovered = self.recovery.reconcile_orphaned_runs(self.queue)
+            for run_id in recovered:
+                run = self.store.get_run(run_id)
+                if run and run["status"] == "PENDING":
+                    self._schedule_run_execution(run_id)
         if enable_scheduler:
             self.scheduler.start()
         return recovered
