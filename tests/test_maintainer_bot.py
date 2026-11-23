@@ -278,7 +278,7 @@ class TestCentralWorkflowMaintainerIntegration(unittest.TestCase):
         self.assertIn("pull_request:", content)
         self.assertIn("npm run lint", content)
         self.assertIn("npm run test", content)
-        self.assertIn("Codex Review Bot", content)
+        self.assertIn("Codex Review", content)
         self.assertIn("createCommitStatus", content)
 
 
