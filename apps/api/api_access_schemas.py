@@ -77,6 +77,14 @@ class ApiKeyRevoked(BaseModel):
     revoked: bool
 
 
+class ApiKeyDailyUsagePoint(BaseModel):
+    date: str
+    successful_requests: int
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+
+
 class ApiKeyUsageSummary(BaseModel):
     key_id: UUID
     successful_requests: int
@@ -84,6 +92,7 @@ class ApiKeyUsageSummary(BaseModel):
     output_tokens: int
     total_tokens: int
     updated_at: datetime | None
+    daily_usage: list[ApiKeyDailyUsagePoint] = Field(default_factory=list)
 
 
 class AdminUserSummary(BaseModel):

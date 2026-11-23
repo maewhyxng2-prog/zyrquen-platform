@@ -14,6 +14,7 @@ from apps.api.api_access_schemas import (
     ApiKeyAutoRotateRequest,
     ApiKeyCreateRequest,
     ApiKeyCreated,
+    ApiKeyDailyUsagePoint,
     ApiKeyMetadata,
     ApiKeyRevoked,
     ApiKeyUsageSummary,
@@ -332,6 +333,59 @@ def get_api_key_usage(
         )
         input_tokens = int(usage[1])
         output_tokens = int(usage[2])
+
+        today_utc = datetime.now(timezone.utc).date()
+        start_date = today_utc - timedelta(days=6)
+        window_start = datetime(
+            start_date.year,
+            start_date.month,
+            start_date.day,
+            tzinfo=timezone.utc,
+        )
+        buckets: dict[str, dict[str, int]] = {
+            (start_date + timedelta(days=offset)).isoformat(): {
+                "successful_requests": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+            }
+            for offset in range(7)
+        }
+        recent_rows = (
+            db.query(
+                InferenceUsage.completed_at,
+                InferenceUsage.created_at,
+                InferenceUsage.input_tokens,
+                InferenceUsage.output_tokens,
+            )
+            .filter(
+                InferenceUsage.api_key_id == key.id,
+                InferenceUsage.status == "completed",
+                InferenceUsage.created_at >= window_start,
+            )
+            .all()
+        )
+        for completed_at, created_at, in_tok, out_tok in recent_rows:
+            ts = _as_utc(completed_at or created_at)
+            day_key = ts.date().isoformat()
+            if day_key in buckets:
+                in_val = int(in_tok or 0)
+                out_val = int(out_tok or 0)
+                buckets[day_key]["successful_requests"] += 1
+                buckets[day_key]["input_tokens"] += in_val
+                buckets[day_key]["output_tokens"] += out_val
+                buckets[day_key]["total_tokens"] += in_val + out_val
+
+        daily_usage = [
+            ApiKeyDailyUsagePoint(
+                date=day_key,
+                successful_requests=vals["successful_requests"],
+                input_tokens=vals["input_tokens"],
+                output_tokens=vals["output_tokens"],
+                total_tokens=vals["total_tokens"],
+            )
+            for day_key, vals in buckets.items()
+        ]
         return ApiKeyUsageSummary(
             key_id=key.id,
             successful_requests=int(usage[0]),
@@ -339,6 +393,7 @@ def get_api_key_usage(
             output_tokens=output_tokens,
             total_tokens=input_tokens + output_tokens,
             updated_at=usage[3],
+            daily_usage=daily_usage,
         )
     except HTTPException:
         raise

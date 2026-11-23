@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { validateAutoRotateInterval } from "./api-access";
+import {
+  normalizeLast7DaysUsage,
+  validateAutoRotateInterval,
+} from "./api-access";
 import { handleInMemoryBackendRequest } from "./in-memory-backend";
 
 async function registerAndLogin(email: string): Promise<{ token: string }> {
@@ -37,12 +40,50 @@ describe("API key auto-rotate validation", () => {
   });
 });
 
-describe("API key auto-rotate backend lifecycle", () => {
+describe("API key 7-day usage normalization", () => {
+  it("fills missing days across a 7-day UTC window while preserving real totals", () => {
+    const ref = new Date("2026-11-22T15:00:00.000Z");
+    const result = normalizeLast7DaysUsage(
+      [
+        {
+          date: "2026-11-20",
+          successfulRequests: 2,
+          inputTokens: 40,
+          outputTokens: 60,
+          totalTokens: 100,
+        },
+        {
+          date: "2026-11-22",
+          successfulRequests: 1,
+          inputTokens: 10,
+          outputTokens: 15,
+          totalTokens: 25,
+        },
+      ],
+      ref,
+    );
+    expect(result).toHaveLength(7);
+    expect(result.map((d) => d.date)).toEqual([
+      "2026-11-16",
+      "2026-11-17",
+      "2026-11-18",
+      "2026-11-19",
+      "2026-11-20",
+      "2026-11-21",
+      "2026-11-22",
+    ]);
+    expect(result[0]?.totalTokens).toBe(0);
+    expect(result[4]?.totalTokens).toBe(100);
+    expect(result[6]?.totalTokens).toBe(25);
+  });
+});
+
+describe("API key auto-rotate & 7-day usage backend lifecycle", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  it("creates, schedules, rotates due keys automatically, enforces ownership, and blocks revoked keys", async () => {
+  it("creates, schedules, attributes API key inference into 7-day usage, auto-rotates, and blocks revoked keys", async () => {
     vi.useFakeTimers();
     const baseTime = new Date("2026-11-22T12:00:00.000Z");
     vi.setSystemTime(baseTime);
@@ -81,6 +122,38 @@ describe("API key auto-rotate backend lifecycle", () => {
     expect(created.next_rotation_at).toBe(
       new Date(baseTime.getTime() + 30 * 86_400_000).toISOString(),
     );
+
+    // Call inference with the API key secret to verify 7-day usage attribution
+    const inferRes = await handleInMemoryBackendRequest({
+      method: "POST",
+      path: "v1/native-ai/infer",
+      authorizationHeader: `Bearer ${created.key}`,
+      rawBody: JSON.stringify({ prompt: "user: ทดสอบการใช้งาน API Key\nassistant:" }),
+    });
+    expect(inferRes.status).toBe(200);
+
+    const usageRes = await handleInMemoryBackendRequest({
+      method: "GET",
+      path: `users/me/api-keys/${created.id}/usage`,
+      authorizationHeader: ownerAuth,
+    });
+    expect(usageRes.status).toBe(200);
+    const usageBody = usageRes.body as {
+      successful_requests: number;
+      total_tokens: number;
+      daily_usage: Array<{
+        date: string;
+        successful_requests: number;
+        total_tokens: number;
+      }>;
+    };
+    expect(usageBody.successful_requests).toBe(1);
+    expect(usageBody.total_tokens).toBeGreaterThan(0);
+    expect(usageBody.daily_usage).toHaveLength(7);
+    expect(usageBody.daily_usage[6]).toMatchObject({
+      date: "2026-11-22",
+      successful_requests: 1,
+    });
 
     const crossSchedule = await handleInMemoryBackendRequest({
       method: "PATCH",

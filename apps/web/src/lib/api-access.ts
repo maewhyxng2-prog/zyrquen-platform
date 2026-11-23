@@ -1,5 +1,10 @@
 import { apiRequest } from "./api";
-import type { ApiKeyMetadata, ApiKeyUsage, CreatedApiKey } from "./types";
+import type {
+  ApiKeyDailyUsagePoint,
+  ApiKeyMetadata,
+  ApiKeyUsage,
+  CreatedApiKey,
+} from "./types";
 
 export const AUTO_ROTATE_PRESETS = [7, 30, 60, 90] as const;
 export const MIN_AUTO_ROTATE_DAYS = 1;
@@ -138,6 +143,46 @@ export async function revokeApiKey(
   );
 }
 
+export function normalizeLast7DaysUsage(
+  points: ApiKeyDailyUsagePoint[] | undefined,
+  referenceDate: Date = new Date(),
+): ApiKeyDailyUsagePoint[] {
+  const byDate = new Map<string, ApiKeyDailyUsagePoint>();
+  for (const point of points ?? []) {
+    if (!point || typeof point.date !== "string") continue;
+    byDate.set(point.date, {
+      date: point.date,
+      successfulRequests: Math.max(0, Number(point.successfulRequests) || 0),
+      inputTokens: Math.max(0, Number(point.inputTokens) || 0),
+      outputTokens: Math.max(0, Number(point.outputTokens) || 0),
+      totalTokens: Math.max(0, Number(point.totalTokens) || 0),
+    });
+  }
+
+  const endUtc = Date.UTC(
+    referenceDate.getUTCFullYear(),
+    referenceDate.getUTCMonth(),
+    referenceDate.getUTCDate(),
+  );
+  const days: ApiKeyDailyUsagePoint[] = [];
+  for (let offset = 6; offset >= 0; offset -= 1) {
+    const dayDate = new Date(endUtc - offset * 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    const existing = byDate.get(dayDate);
+    days.push(
+      existing ?? {
+        date: dayDate,
+        successfulRequests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+      },
+    );
+  }
+  return days;
+}
+
 export async function getApiKeyUsage(
   userId: string,
   keyId: string,
@@ -149,9 +194,25 @@ export async function getApiKeyUsage(
     output_tokens: number;
     total_tokens: number;
     updated_at: string | null;
+    daily_usage?: Array<{
+      date: string;
+      successful_requests: number;
+      input_tokens: number;
+      output_tokens: number;
+      total_tokens: number;
+    }>;
   }>(`users/me/api-keys/${keyId}/usage`, {
     headers: identityHeaders(userId),
   });
+  const mappedDaily: ApiKeyDailyUsagePoint[] = (usage.daily_usage ?? []).map(
+    (entry) => ({
+      date: entry.date,
+      successfulRequests: entry.successful_requests,
+      inputTokens: entry.input_tokens,
+      outputTokens: entry.output_tokens,
+      totalTokens: entry.total_tokens,
+    }),
+  );
   return {
     keyId: usage.key_id,
     successfulRequests: usage.successful_requests,
@@ -159,5 +220,6 @@ export async function getApiKeyUsage(
     outputTokens: usage.output_tokens,
     totalTokens: usage.total_tokens,
     updatedAt: usage.updated_at,
+    dailyUsage: normalizeLast7DaysUsage(mappedDaily),
   };
 }

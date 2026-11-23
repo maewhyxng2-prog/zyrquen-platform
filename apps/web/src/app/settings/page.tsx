@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Panel } from "@/components/Panel";
 import { Icon } from "@/components/Icon";
 import { StatusBadge } from "@/components/StatusBadge";
+import { ApiKeyUsageChart } from "@/components/ApiKeyUsageChart";
 import { readSession } from "@/lib/api";
 import {
   AUTO_ROTATE_PRESETS,
@@ -137,6 +138,7 @@ export default function SettingsPage() {
     Record<string, { enabled: boolean; preset: string; customDays: string }>
   >({});
   const [apiKeyUsage, setApiKeyUsage] = useState<ApiKeyUsage | null>(null);
+  const [selectedUsageKeyId, setSelectedUsageKeyId] = useState<string | null>(null);
   const [apiKeyUsageOwnerId, setApiKeyUsageOwnerId] = useState<string | null>(null);
   const [apiKeyUsageLoadingId, setApiKeyUsageLoadingId] = useState<string | null>(null);
   const [apiKeyUsageError, setApiKeyUsageError] = useState("");
@@ -155,6 +157,7 @@ export default function SettingsPage() {
             setApiKeysNotice("");
             setRotateDrafts({});
             setApiKeyUsage(null);
+            setSelectedUsageKeyId(null);
             setApiKeyUsageOwnerId(null);
             setApiKeyUsageError("");
           }
@@ -172,6 +175,7 @@ export default function SettingsPage() {
           setApiKeysNotice("");
           setRotateDrafts({});
           setApiKeyUsage(null);
+          setSelectedUsageKeyId(null);
           setApiKeyUsageOwnerId(null);
           const unavailableSession = {
             authenticated: false,
@@ -264,6 +268,33 @@ export default function SettingsPage() {
         setApiKeys(keys);
         setRotateDrafts(buildRotateDraftMap(keys));
         setApiKeysError("");
+        const initialKey = keys.find((k) => !k.revokedAt) ?? keys[0] ?? null;
+        if (initialKey) {
+          setSelectedUsageKeyId(initialKey.id);
+          setApiKeyUsageLoadingId(initialKey.id);
+          void getApiKeyUsage(ownerId, initialKey.id)
+            .then((initialUsage) => {
+              if (!isCurrentOwner()) return;
+              setApiKeyUsage(initialUsage);
+              setApiKeyUsageOwnerId(ownerId);
+              setApiKeyUsageError("");
+            })
+            .catch((reason: unknown) => {
+              if (!isCurrentOwner()) return;
+              setApiKeyUsageError(
+                reason instanceof Error
+                  ? reason.message
+                  : "ไม่สามารถโหลด Usage ของ API Key ได้",
+              );
+            })
+            .finally(() => {
+              if (!isCurrentOwner()) return;
+              setApiKeyUsageLoadingId(null);
+            });
+        } else {
+          setSelectedUsageKeyId(null);
+          setApiKeyUsage(null);
+        }
       })
       .catch((reason: unknown) => {
         if (!isCurrentOwner()) return;
@@ -493,6 +524,7 @@ export default function SettingsPage() {
       setApiKeysError("ไม่สามารถยืนยันบัญชีผู้ใช้ปัจจุบันได้");
       return;
     }
+    setSelectedUsageKeyId(keyId);
     setApiKeyUsageLoadingId(keyId);
     setApiKeyUsageError("");
     setApiKeyUsage(null);
@@ -1030,7 +1062,7 @@ export default function SettingsPage() {
                             disabled={apiKeyUsageLoadingId === key.id}
                             onClick={() => void loadApiKeyUsage(key.id)}
                           >
-                            {apiKeyUsageLoadingId === key.id ? "กำลังโหลด Usage..." : "ดู Usage"}
+                            {apiKeyUsageLoadingId === key.id ? "กำลังโหลดกราฟ..." : "ดู Usage 7 วัน"}
                           </button>
                           {!key.revokedAt && (
                             <button
@@ -1048,18 +1080,39 @@ export default function SettingsPage() {
                   })}
                 </div>
               )}
-              {apiKeyUsage && belongsToAccount(apiKeyUsageOwnerId, session.userId) && (
-                <div className="settings-info">
-                  <strong>Usage ที่ Backend บันทึกของ API Key</strong>
-                  <p>
-                    {apiKeyUsage.successfulRequests.toLocaleString("th-TH")} Requests ·
-                    Input {apiKeyUsage.inputTokens.toLocaleString("th-TH")} ·
-                    Output {apiKeyUsage.outputTokens.toLocaleString("th-TH")} ·
-                    รวม {apiKeyUsage.totalTokens.toLocaleString("th-TH")} Tokens
-                  </p>
-                  {apiKeyUsage.updatedAt && (
-                    <p>อัปเดตล่าสุด {new Date(apiKeyUsage.updatedAt).toLocaleString("th-TH")}</p>
-                  )}
+              {apiKeys.length > 0 && (
+                <div className="settings-usage-section">
+                  <div className="settings-usage-toolbar">
+                    <label htmlFor="api-key-usage-select">
+                      กราฟประสิทธิภาพ API Key (7 วันล่าสุด)
+                    </label>
+                    <select
+                      id="api-key-usage-select"
+                      className="settings-select"
+                      value={selectedUsageKeyId ?? apiKeys[0]?.id ?? ""}
+                      disabled={apiKeyUsageLoadingId !== null}
+                      onChange={(event) => void loadApiKeyUsage(event.target.value)}
+                    >
+                      {apiKeys.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name} ({item.keyPrefix}…)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <ApiKeyUsageChart
+                    selectedKey={
+                      apiKeys.find((item) => item.id === selectedUsageKeyId) ??
+                      apiKeys[0] ??
+                      null
+                    }
+                    usage={
+                      belongsToAccount(apiKeyUsageOwnerId, session.userId)
+                        ? apiKeyUsage
+                        : null
+                    }
+                    loading={apiKeyUsageLoadingId !== null}
+                  />
                 </div>
               )}
               {apiKeyUsageError && <p className="form-alert form-alert-error" role="alert">{apiKeyUsageError}</p>}

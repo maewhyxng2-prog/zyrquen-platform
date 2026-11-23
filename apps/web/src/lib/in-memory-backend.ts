@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import type {
   NativeHealth,
   V10ClosureAudit,
@@ -37,6 +37,7 @@ type StoredConversation = {
 type StoredUsageRecord = {
   requestId: string;
   userId: string;
+  apiKeyId?: string | null;
   status: string;
   inputTokens: number;
   outputTokens: number;
@@ -51,6 +52,7 @@ type StoredApiKey = {
   userId: string;
   name: string;
   keyPrefix: string;
+  keyHash?: string;
   scope: string;
   createdAt: string;
   expiresAt: string;
@@ -639,12 +641,36 @@ function getClosureAudit(): V10ClosureAudit {
   };
 }
 
-function authenticateBearer(authorizationHeader: string | null): StoredUser | null {
+function hashApiKeySecret(secret: string): string {
+  return createHash("sha256").update(secret, "utf8").digest("hex");
+}
+
+function authenticateInferenceCaller(
+  authorizationHeader: string | null,
+): { user: StoredUser; apiKeyId: string | null } | null {
   if (!authorizationHeader) return null;
   const match = authorizationHeader.match(/^Bearer\s+(.+)$/i);
   if (!match) return null;
   const token = match[1].trim();
   const store = getStore();
+
+  if (token.startsWith("zq_live_") || token.startsWith("zyr_")) {
+    const digest = hashApiKeySecret(token);
+    const nowMs = Date.now();
+    for (const key of store.apiKeys.values()) {
+      if (
+        key.keyHash === digest &&
+        key.revokedAt === null &&
+        Date.parse(key.expiresAt) > nowMs
+      ) {
+        const user = store.usersById.get(key.userId);
+        if (!user || !user.isActive) return null;
+        return { user, apiKeyId: key.id };
+      }
+    }
+    return null;
+  }
+
   const entry = store.tokens.get(token);
   if (!entry) return null;
   if (entry.expiresAt < Date.now()) {
@@ -653,7 +679,7 @@ function authenticateBearer(authorizationHeader: string | null): StoredUser | nu
   }
   const user = store.usersById.get(entry.userId);
   if (!user || !user.isActive) return null;
-  return user;
+  return { user, apiKeyId: null };
 }
 
 function parseJsonBody(rawBody?: string): Record<string, unknown> {
@@ -775,6 +801,7 @@ function rotateStoredApiKey(
   const nowIso = new Date(nowMs).toISOString();
   const secret = `zq_live_${randomBytes(18).toString("hex")}`;
   entry.keyPrefix = secret.slice(0, 12);
+  entry.keyHash = hashApiKeySecret(secret);
   entry.lastRotatedAt = nowIso;
   entry.rotationCount = (entry.rotationCount ?? 0) + 1;
 
@@ -958,7 +985,14 @@ export async function handleInMemoryBackendRequest(options: {
     };
   }
 
-  const currentUser = authenticateBearer(options.authorizationHeader);
+  const caller = authenticateInferenceCaller(options.authorizationHeader);
+  const isInferRoute =
+    method === "POST" &&
+    (path === "v1/native-ai/infer" || path === "v1/native-ai/infer/stream");
+  const currentUser = caller && (isInferRoute || caller.apiKeyId === null)
+    ? caller.user
+    : null;
+  const callerApiKeyId = caller?.apiKeyId ?? null;
   if (!currentUser) {
     return { status: 401, body: { detail: "Not authenticated" } };
   }
@@ -1094,6 +1128,7 @@ export async function handleInMemoryBackendRequest(options: {
         userId: currentUser.id,
         name,
         keyPrefix: secret.slice(0, 12),
+        keyHash: hashApiKeySecret(secret),
         scope: "inference:read_write",
         createdAt,
         expiresAt: new Date(expiryMs).toISOString(),
@@ -1193,15 +1228,62 @@ export async function handleInMemoryBackendRequest(options: {
     if (!key || key.userId !== currentUser.id) {
       return { status: 404, body: { detail: "ไม่พบ API Key" } };
     }
-    return {
-      status: 200,
-      body: {
-        key_id: key.id,
+    const matchingRecords = store.usageRecords.filter(
+      (r) =>
+        r.userId === currentUser.id &&
+        r.apiKeyId === key.id &&
+        r.status === "completed",
+    );
+    const inputTokens = matchingRecords.reduce((acc, r) => acc + r.inputTokens, 0);
+    const outputTokens = matchingRecords.reduce((acc, r) => acc + r.outputTokens, 0);
+    const updatedAt = matchingRecords[0]?.completedAt ?? matchingRecords[0]?.createdAt ?? null;
+
+    const nowDate = new Date();
+    const endUtc = Date.UTC(
+      nowDate.getUTCFullYear(),
+      nowDate.getUTCMonth(),
+      nowDate.getUTCDate(),
+    );
+    const dayBuckets = new Map<
+      string,
+      {
+        date: string;
+        successful_requests: number;
+        input_tokens: number;
+        output_tokens: number;
+        total_tokens: number;
+      }
+    >();
+    for (let offset = 6; offset >= 0; offset -= 1) {
+      const dateStr = new Date(endUtc - offset * DAY_MS).toISOString().slice(0, 10);
+      dayBuckets.set(dateStr, {
+        date: dateStr,
         successful_requests: 0,
         input_tokens: 0,
         output_tokens: 0,
         total_tokens: 0,
-        updated_at: null,
+      });
+    }
+    for (const record of matchingRecords) {
+      const dayStr = (record.completedAt ?? record.createdAt).slice(0, 10);
+      const bucket = dayBuckets.get(dayStr);
+      if (!bucket) continue;
+      bucket.successful_requests += 1;
+      bucket.input_tokens += record.inputTokens;
+      bucket.output_tokens += record.outputTokens;
+      bucket.total_tokens += record.totalTokens;
+    }
+
+    return {
+      status: 200,
+      body: {
+        key_id: key.id,
+        successful_requests: matchingRecords.length,
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        total_tokens: inputTokens + outputTokens,
+        updated_at: updatedAt,
+        daily_usage: [...dayBuckets.values()],
       },
     };
   }
@@ -1378,6 +1460,7 @@ export async function handleInMemoryBackendRequest(options: {
     store.usageRecords.unshift({
       requestId,
       userId: currentUser.id,
+      apiKeyId: callerApiKeyId,
       status: "completed",
       inputTokens,
       outputTokens,

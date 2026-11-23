@@ -109,6 +109,14 @@ export type ApiKeyMetadata = {
 
 export type CreatedApiKey = ApiKeyMetadata & { key: string };
 
+export type ApiKeyDailyUsagePoint = {
+  date: string;
+  successfulRequests: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+};
+
 export type ApiKeyUsage = {
   keyId: string;
   successfulRequests: number;
@@ -116,6 +124,7 @@ export type ApiKeyUsage = {
   outputTokens: number;
   totalTokens: number;
   updatedAt: string | null;
+  dailyUsage: ApiKeyDailyUsagePoint[];
 };
 
 export type ConversationMessage = {
