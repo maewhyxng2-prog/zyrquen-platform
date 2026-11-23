@@ -1,3 +1,6 @@
+import logging
+import json
+import math
 """Phase 3.4 training pipeline for the ZYRQUEN native model.
 
 Pure-Python parts (token stream, batch sampling, LR schedule) are unit-tested without
@@ -201,6 +204,17 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
         for _ in range(cfg.grad_accum_steps):
             x, y = sample_batch(train_ids, cfg.block_size, cfg.batch_size, rng)
             loss = model(to_tensor(x), to_tensor(y))[1] / cfg.grad_accum_steps
+            # --- V9 Minimal Observability ---
+            loss_val = loss.item()
+            if step % cfg.log_interval == 0:
+                log_data = {
+                    "step": step,
+                    "loss": loss_val if math.isfinite(loss_val) else None,
+                    "learning_rate": optimizer.param_groups[0]["lr"],
+                    "is_finite": math.isfinite(loss_val)
+                }
+                logging.info(json.dumps(log_data))
+            # ---------------------------------
             loss.backward()
             total_loss += loss.item()
         if not math.isfinite(total_loss):
@@ -436,6 +450,17 @@ def train_sft(
             x, y = sample_sft_batch(train_pairs)
             step_tokens += sum(len(row) for row in x)
             loss = model(to_tensor(x), to_tensor(y))[1] / cfg.grad_accum_steps
+            # --- V9 Minimal Observability ---
+            loss_val = loss.item()
+            if step % cfg.log_interval == 0:
+                log_data = {
+                    "step": step,
+                    "loss": loss_val if math.isfinite(loss_val) else None,
+                    "learning_rate": optimizer.param_groups[0]["lr"],
+                    "is_finite": math.isfinite(loss_val)
+                }
+                logging.info(json.dumps(log_data))
+            # ---------------------------------
             loss.backward()
             total_loss += loss.item()
         if not math.isfinite(total_loss):
