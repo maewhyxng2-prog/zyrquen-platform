@@ -45,7 +45,7 @@ jobs:
             tests/test_v9_static_contracts.py \
             tests/native/test_checkpoint_resume.py \
             -v
-          python tools/maintainer_bot.py --mode audit --run-tests --json --out maintainer-audit-report.json
+          ZYRQUEN_ENV=unit_test DATABASE_URL=sqlite:///./unit_test.db python tools/maintainer_bot.py --mode audit --run-tests --json --out maintainer-audit-report.json
 
       - name: Upload Maintainer Audit Report
         if: always()
