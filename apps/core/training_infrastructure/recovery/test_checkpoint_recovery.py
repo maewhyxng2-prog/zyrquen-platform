@@ -77,24 +77,29 @@ def test_checkpoint_defaults_to_weights_only_true_and_rejects_symlinks(tmp_path)
     assert called == []
 
 
-def test_rng_state_capture_and_restore_supports_resume_formats():
+def test_rng_state_capture_and_restore_uses_weights_only_safe_primitives():
     import random
     from apps.core.training_infrastructure.recovery.checkpoint_recovery import (
         capture_rng_state,
         restore_rng_state,
+        serialize_python_rng_state,
+        restore_python_rng_state,
     )
 
+    rng = random.Random(1337)
+    expected = rng.random()
+    saved_batch_state = serialize_python_rng_state(rng.getstate())
+    assert isinstance(saved_batch_state, list)
+    assert isinstance(saved_batch_state[1], list)
+    restore_python_rng_state(rng, saved_batch_state)
+    assert rng.random() == expected
+
     state = capture_rng_state()
-    expected = random.random()
-
-    # Tuple format (direct pickle / torch.load)
+    assert isinstance(state["python"], list)
+    assert isinstance(state["python"][1], list)
+    expected_global = random.random()
     restore_rng_state(state)
-    assert random.random() == expected
-
-    # List-serialized Python RNG tuple format
-    v, internal, gauss = state["python"]
-    restore_rng_state({"python": [v, list(internal), gauss]})
-    assert random.random() == expected
+    assert random.random() == expected_global
 
 
 def test_unsafe_pickle_fallback_is_permanently_disabled(tmp_path):
