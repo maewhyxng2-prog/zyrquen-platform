@@ -180,7 +180,8 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
 
     from apps.core.training_infrastructure.monitoring.training_monitor import TrainingMonitor
     from apps.core.training_infrastructure.recovery.checkpoint_recovery import (
-        CheckpointManager, capture_rng_state, restore_rng_state)
+        CheckpointManager, capture_rng_state, restore_rng_state,
+        serialize_python_rng_state, restore_python_rng_state)
     from apps.core.workflow.resource_guard import (
         MAX_CPU_THREADS, check_disk_reserve, enforce_cpu_thread_cap)
 
@@ -210,7 +211,7 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
         start_step, state = resumed
         model.load_state_dict(state["model"])
         optimizer.load_state_dict(state["optimizer"])
-        rng.setstate(state["batch_rng"])
+        restore_python_rng_state(rng, state["batch_rng"])
         restore_rng_state(state["rng"])
 
     initial_parameters = {
@@ -258,7 +259,7 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
             "model": model.state_dict(), "optimizer": optimizer.state_dict(),
             "step": step, "global_step_start": start_step, "experiment_steps": step - start_step,
             "stage_id": cfg.stage_id, "experiment_index": cfg.experiment_index,
-            "batch_rng": rng.getstate(), "rng": capture_rng_state(),
+            "batch_rng": serialize_python_rng_state(rng.getstate()), "rng": capture_rng_state(),
             "config": cfg.__dict__, "model_config": model.cfg.to_dict(),
             "tokenizer_sha256": tokenizer_fingerprint, "dataset_version": dataset_version,
         })
@@ -404,6 +405,8 @@ def train_sft(
         CheckpointManager,
         capture_rng_state,
         restore_rng_state,
+        serialize_python_rng_state,
+        restore_python_rng_state,
     )
     from apps.core.workflow.resource_guard import (
         MAX_CPU_THREADS,
@@ -448,7 +451,7 @@ def train_sft(
         start_step, state = resumed
         model.load_state_dict(state["model"])
         optimizer.load_state_dict(state["optimizer"])
-        rng.setstate(state["batch_rng"])
+        restore_python_rng_state(rng, state["batch_rng"])
         restore_rng_state(state["rng"])
 
     initial_parameters = {
@@ -509,7 +512,7 @@ def train_sft(
                 "experiment_steps": step - start_step,
                 "stage_id": cfg.stage_id,
                 "experiment_index": cfg.experiment_index,
-                "batch_rng": rng.getstate(),
+                "batch_rng": serialize_python_rng_state(rng.getstate()),
                 "rng": capture_rng_state(),
                 "config": cfg.__dict__,
                 "model_config": model.cfg.to_dict(),
