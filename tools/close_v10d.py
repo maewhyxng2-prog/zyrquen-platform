@@ -318,7 +318,7 @@ def run_v10d_closure(
                 "checked_at": datetime.now(timezone.utc).isoformat(),
                 "overall_status": "BLOCKED",
                 "reason": "PyTorch CPU runtime is not installed (TORCH_NOT_INSTALLED); V10-D cannot execute real training/inference.",
-                "blockers": list(audit.get("blockers") or ["TORCH_NOT_INSTALLED"]),
+                "blockers": list(dict.fromkeys([*list(audit.get("blockers") or []), "TORCH_NOT_INSTALLED"])),
                 "torch_runtime": torch_probe,
                 "v11_unlocked": False,
                 "v11_gate": audit["v11_gate"],
