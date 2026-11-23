@@ -1,3 +1,5 @@
+import shutil
+import logging
 import logging
 import json
 import math
@@ -232,8 +234,14 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
                 optimizer.zero_grad(set_to_none=True)
                 stopped_reason = guard_reason
                 break
+        # --- V9 Parameter Delta Observability ---
+        old_weight = next(model.parameters()).detach().clone()
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         optimizer.step()
+        param_delta = (next(model.parameters()) - old_weight).norm().item()
+        if param_delta == 0.0:
+            logging.warning(f'Step {step}: Parameter delta is 0.0!')
+        # ----------------------------------------
         last_train_loss = total_loss
         step += 1
 
@@ -246,6 +254,15 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
         if step % cfg.eval_interval == 0 or step == cfg.max_steps:
             last_val = evaluate()
         if step % cfg.checkpoint_interval == 0 or step == cfg.max_steps:
+            # --- V9 Disk Space Check ---
+            try:
+                _, _, free = shutil.disk_usage('./checkpoints')
+                if free / (1024**3) < 1.0:
+                    logging.error('Disk space critically low. Aborting.')
+                    break
+            except Exception as e:
+                logging.warning(f'Could not check disk: {e}')
+            # ---------------------------
             if not save(step):
                 break
 
