@@ -192,3 +192,52 @@ def test_training_start_enforces_tier2_approval_when_artifacts_configured(api_cl
     )
     assert forged_approval.status_code == 403
     assert "Tier-2 training approval rejected" in forged_approval.json()["detail"]
+
+
+
+def test_training_readiness_runs_read_only_preflight(api_client, monkeypatch):
+    client, _, _, tmp_path = api_client
+    ds = _build_valid_dataset(tmp_path / "preflight-dataset", version="preflight-v1")
+    tok = tmp_path / "native-tokenizer.json"
+    tok.write_text('{"test": true}', encoding="utf-8")
+    monkeypatch.setattr(training_router.jobs._orchestrator, "dataset_dir", ds)
+    monkeypatch.setattr(training_router.jobs._orchestrator, "tokenizer_path", tok)
+
+    calls = []
+    def fake_prepare(**kwargs):
+        calls.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(training_router.jobs._orchestrator, "prepare", fake_prepare)
+    response = client.get("/training/readiness")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["configured"] is True
+    assert payload["dataset_integrity_verified"] is True
+    assert payload["training_preflight_passed"] is True
+    assert payload["dataset_version"] == "preflight-v1"
+    assert payload["tier2_approval_required"] is True
+    assert len(calls) == 1
+
+
+def test_training_readiness_fails_closed_when_preflight_fails(api_client, monkeypatch):
+    client, _, _, tmp_path = api_client
+    ds = _build_valid_dataset(tmp_path / "preflight-invalid-dataset", version="preflight-v1")
+    tok = tmp_path / "native-tokenizer-invalid.json"
+    tok.write_text('{"test": true}', encoding="utf-8")
+    monkeypatch.setattr(training_router.jobs._orchestrator, "dataset_dir", ds)
+    monkeypatch.setattr(training_router.jobs._orchestrator, "tokenizer_path", tok)
+
+    def fail_prepare(**kwargs):
+        raise training_router.TrainingUnavailable("Native tokenizer failed validation.")
+
+    monkeypatch.setattr(training_router.jobs._orchestrator, "prepare", fail_prepare)
+    response = client.get("/training/readiness")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["configured"] is False
+    assert payload["dataset_integrity_verified"] is False
+    assert payload["training_preflight_passed"] is False
+    assert payload["preflight_error"] == "Native tokenizer failed validation."
