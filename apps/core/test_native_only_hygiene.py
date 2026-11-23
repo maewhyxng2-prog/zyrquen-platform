@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_ROOTS = ("apps/core", "apps/api", "tools", "phases")
 FORBIDDEN_IMPORTS = {"huggingface_hub", "transformers", "tokenizers"}
-FORBIDDEN_MODEL_MARKERS = ("Q" + "wen/", "meta-" + "llama/", "mistralai/", "google/" + "gemma")
+FORBIDDEN_MODEL_MARKERS = ("Q" + "wen/", "meta-" + "llama/", "mistralai/", "google/" + "gemma", "snapshot_" + "download(", "hf_hub_" + "download(", "from_" + "pretrained(")
 
 
 def test_no_external_model_provisioner_remains():
