@@ -119,7 +119,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Publish truthful Codex review state
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           CODEX_JOB_RESULT: ${{ needs.codex-advisory-review.result }}
           CODEX_REVIEW_STATUS: ${{ needs.codex-advisory-review.outputs.review_status }}
