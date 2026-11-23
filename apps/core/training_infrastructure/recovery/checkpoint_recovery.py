@@ -1,14 +1,11 @@
 import hashlib
 import json
-import logging
 import os
-import pickle
 import random
 from pathlib import Path
 from typing import Any, Callable
 
 SCHEMA = "zyrquen.checkpoint-manifest.v1"
-logger = logging.getLogger(__name__)
 
 
 def _sha256(path: Path) -> str:
@@ -29,11 +26,6 @@ def _safe_torch_load(path: str) -> Any:
     return torch.load(path, map_location="cpu", weights_only=True)
 
 
-def _unsafe_torch_load(path: str) -> Any:
-    import torch
-    return torch.load(path, map_location="cpu", weights_only=False)
-
-
 def _torch_load(path: str) -> Any:
     """Default checkpoint loader enforces weights_only=True."""
     return _safe_torch_load(path)
@@ -48,8 +40,19 @@ def _normalize_python_rng_state(raw_state: Any) -> tuple:
     return (version, tuple(internal_state), gauss_next)
 
 
+def serialize_python_rng_state(raw_state: Any) -> list:
+    """Convert Python RNG tuples to weights_only-safe primitive lists."""
+    version, internal_state, gauss_next = _normalize_python_rng_state(raw_state)
+    return [version, list(internal_state), gauss_next]
+
+
+def restore_python_rng_state(rng: random.Random, raw_state: Any) -> None:
+    """Restore a serialized Python RNG state without pickle globals."""
+    rng.setstate(_normalize_python_rng_state(raw_state))
+
+
 def capture_rng_state() -> dict:
-    state = {"python": random.getstate()}
+    state = {"python": serialize_python_rng_state(random.getstate())}
     try:
         import torch
         state["torch"] = torch.get_rng_state()
@@ -72,15 +75,11 @@ def restore_rng_state(state: dict) -> None:
 
 
 class CheckpointManager:
-    """Atomic checkpoints + SHA-256 manifest. The caller supplies the state dict
-    (model, optimizer, scheduler, step, rng ...). Corrupt checkpoints are skipped.
+    """Atomic checkpoints with SHA-256 manifests and safe-only deserialization.
 
-    Security boundary:
-    - Loads with ``weights_only=True`` by default after verifying path containment,
-      non-symlink status, file size, and SHA-256 against ``manifest.json``.
-    - ``allow_unsafe_pickle=True`` is strictly opt-in for trusted local training
-      resume of legacy checkpoints that fail ``weights_only=True`` unpickling, and
-      still requires SHA-256 + non-symlink verification first.
+    Checkpoints are loaded exclusively with torch.load(weights_only=True).
+    Legacy pickle fallback is intentionally unsupported: a matching SHA-256
+    proves file consistency, not that a pickle payload is trusted.
     """
 
     def __init__(self, directory: str | Path, keep_last: int = 3,
@@ -89,11 +88,13 @@ class CheckpointManager:
                  *, allow_unsafe_pickle: bool = False):
         if keep_last < 1:
             raise ValueError("keep_last must be >= 1")
+        if allow_unsafe_pickle:
+            raise ValueError("allow_unsafe_pickle is disabled; legacy pickle loading is prohibited")
         self.dir = Path(directory)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.keep_last = keep_last
         self._save, self._load = save_fn, load_fn
-        self._allow_unsafe_pickle = bool(allow_unsafe_pickle)
+        self._allow_unsafe_pickle = False
 
     @property
     def manifest_path(self) -> Path:
@@ -167,17 +168,4 @@ class CheckpointManager:
         p = self._safe_checkpoint_path(entry["file"])
         if p is None:
             return None
-        try:
-            return entry["step"], self._load(str(p))
-        except (pickle.UnpicklingError, RuntimeError) as exc:
-            if not self._allow_unsafe_pickle or self._load is not _safe_torch_load:
-                raise
-            if "weights_only" not in str(exc) and "Weights only load failed" not in str(exc) and not isinstance(exc, pickle.UnpicklingError):
-                raise
-            if not self.verify(entry):
-                raise RuntimeError("checkpoint integrity verification failed before resume fallback") from exc
-            logger.warning(
-                "Checkpoint %s requires weights_only=False legacy resume fallback after SHA-256 verification",
-                entry["file"],
-            )
-            return entry["step"], _unsafe_torch_load(str(p))
+        return entry["step"], self._load(str(p))

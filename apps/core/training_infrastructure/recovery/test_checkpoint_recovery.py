@@ -77,45 +77,33 @@ def test_checkpoint_defaults_to_weights_only_true_and_rejects_symlinks(tmp_path)
     assert called == []
 
 
-def test_rng_state_capture_and_restore_supports_resume_formats():
+def test_rng_state_capture_and_restore_uses_weights_only_safe_primitives():
     import random
     from apps.core.training_infrastructure.recovery.checkpoint_recovery import (
         capture_rng_state,
         restore_rng_state,
+        serialize_python_rng_state,
+        restore_python_rng_state,
     )
 
+    rng = random.Random(1337)
+    saved_batch_state = serialize_python_rng_state(rng.getstate())
+    expected = rng.random()
+    assert isinstance(saved_batch_state, list)
+    assert isinstance(saved_batch_state[1], list)
+    restore_python_rng_state(rng, saved_batch_state)
+    assert rng.random() == expected
+
     state = capture_rng_state()
-    expected = random.random()
-
-    # Tuple format (direct pickle / torch.load)
+    assert isinstance(state["python"], list)
+    assert isinstance(state["python"][1], list)
+    expected_global = random.random()
     restore_rng_state(state)
-    assert random.random() == expected
-
-    # List-serialized Python RNG tuple format
-    v, internal, gauss = state["python"]
-    restore_rng_state({"python": [v, list(internal), gauss]})
-    assert random.random() == expected
+    assert random.random() == expected_global
 
 
-def test_unsafe_pickle_fallback_requires_opt_in_and_valid_sha256(tmp_path):
-    import pickle
-    import re
+def test_unsafe_pickle_fallback_is_permanently_disabled(tmp_path):
     import pytest
-    pytest.importorskip("torch")
 
-    mgr_save = CheckpointManager(tmp_path)
-    ckpt_path = mgr_save.save(1, {"legacy": re.compile("resume-ok")})
-
-    # Default CheckpointManager must reject non-weights-only payload.
-    strict_mgr = CheckpointManager(tmp_path)
-    with pytest.raises((pickle.UnpicklingError, RuntimeError)):
-        strict_mgr.load_latest()
-
-    # Opt-in allow_unsafe_pickle loads verified legacy payload only when SHA-256 matches.
-    resume_mgr = CheckpointManager(tmp_path, allow_unsafe_pickle=True)
-    step, loaded = resume_mgr.load_latest()
-    assert step == 1 and loaded["legacy"].pattern == "resume-ok"
-
-    # Tampered SHA-256 is rejected even with allow_unsafe_pickle=True.
-    ckpt_path.write_bytes(ckpt_path.read_bytes() + b"tamper")
-    assert resume_mgr.load_latest() is None
+    with pytest.raises(ValueError, match="legacy pickle loading is prohibited"):
+        CheckpointManager(tmp_path, allow_unsafe_pickle=True)

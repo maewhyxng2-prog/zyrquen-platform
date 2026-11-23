@@ -651,7 +651,8 @@ def test_18_train_checkpoint_payload_loads_with_weights_only_true(tmp_path: Path
     from apps.core.native.model import ZyrquenModel
     from apps.core.native.registry import ModelRegistry
     from apps.core.native.train import TrainConfig
-    from apps.core.training_infrastructure.recovery.checkpoint_recovery import capture_rng_state
+    from apps.core.training_infrastructure.recovery.checkpoint_recovery import (
+        capture_rng_state, serialize_python_rng_state)
 
     src = tmp_path / "corpus.jsonl"
     docs = [{"text": f"hello world zyrquen checkpoint payload {i}"} for i in range(40)]
@@ -675,7 +676,7 @@ def test_18_train_checkpoint_payload_loads_with_weights_only_true(tmp_path: Path
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "step": 1,
-            "batch_rng": rng.getstate(),
+            "batch_rng": serialize_python_rng_state(rng.getstate()),
             "rng": capture_rng_state(),
             "config": tcfg.__dict__,
             "model_config": model.cfg.to_dict(),
