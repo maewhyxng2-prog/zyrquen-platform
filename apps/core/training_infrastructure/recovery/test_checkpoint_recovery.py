@@ -87,8 +87,8 @@ def test_rng_state_capture_and_restore_uses_weights_only_safe_primitives():
     )
 
     rng = random.Random(1337)
-    expected = rng.random()
     saved_batch_state = serialize_python_rng_state(rng.getstate())
+    expected = rng.random()
     assert isinstance(saved_batch_state, list)
     assert isinstance(saved_batch_state[1], list)
     restore_python_rng_state(rng, saved_batch_state)
