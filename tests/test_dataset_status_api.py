@@ -14,6 +14,7 @@ from apps.core.native.dataset_status import (
     get_dataset_version_status,
     get_datasets_pipeline_status,
     inspect_dataset_directory,
+    inspect_v11_training_dataset_readiness,
     validate_dataset_version,
 )
 
@@ -165,6 +166,62 @@ class DatasetStatusApiTests(unittest.TestCase):
             link.symlink_to(outside)
             with self.assertRaises(ValueError):
                 inspect_dataset_directory(link, allowed_root=root)
+
+    def test_v11_training_readiness_enforces_four_split_and_leakage_detection(self) -> None:
+        unconfigured = inspect_v11_training_dataset_readiness(None)
+        self.assertFalse(unconfigured["configured"])
+        self.assertFalse(unconfigured["verified"])
+        self.assertTrue(unconfigured["four_split_enforced"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ds_v10 = _write_dataset_dir(
+                Path(tmp) / "v10",
+                version="0.1.0",
+                split_rows={
+                    "train": [{"input": "hello TR_E1", "target": "ok TR_E1"}],
+                    "validation": [{"input": "val VA_E1", "target": "ok VA_E1"}],
+                    "test": [{"input": "test TE_E1", "target": "ok TE_E1"}],
+                },
+            )
+            res_v10 = inspect_v11_training_dataset_readiness(ds_v10)
+            self.assertTrue(res_v10["configured"])
+            self.assertFalse(res_v10["four_split_present"])
+            self.assertFalse(res_v10["verified"])
+            self.assertTrue(any("4-split" in r for r in res_v10["reasons"]))
+
+            ds_leaked = _write_dataset_dir(
+                Path(tmp) / "v11_leak",
+                version="nagi_v11",
+                dataset_name="nagi_v11",
+                split_rows={
+                    "train": [{"input": "rule TR_E77", "target": "TR_E77", "split": "train"}],
+                    "validation": [{"input": "rule VA_E2", "target": "VA_E2", "split": "validation"}],
+                    "unseen": [{"input": "rule TR_E77", "target": "TR_E77", "split": "unseen"}],
+                    "ood": [{"input": "rule OO_E4", "target": "OO_E4", "split": "ood"}],
+                },
+            )
+            res_leak = inspect_v11_training_dataset_readiness(ds_leaked)
+            self.assertTrue(res_leak["four_split_present"])
+            self.assertFalse(res_leak["verified"])
+            self.assertFalse(res_leak["leakage_check"]["passed"])
+
+            ds_clean = _write_dataset_dir(
+                Path(tmp) / "v11_clean",
+                version="nagi_v11",
+                dataset_name="nagi_v11",
+                split_rows={
+                    "train": [{"input": "rule TR_E101", "target": "TR_E101 ok", "split": "train"}],
+                    "validation": [{"input": "rule VA_E202", "target": "VA_E202 ok", "split": "validation"}],
+                    "unseen": [{"input": "rule UN_E303", "target": "UN_E303 ok", "split": "unseen"}],
+                    "ood": [{"input": "rule OO_E404", "target": "OO_E404 ok", "split": "ood"}],
+                },
+            )
+            res_clean = inspect_v11_training_dataset_readiness(ds_clean)
+            self.assertTrue(res_clean["configured"])
+            self.assertTrue(res_clean["four_split_present"])
+            self.assertTrue(res_clean["verified"])
+            self.assertTrue(res_clean["leakage_check"]["passed"])
+            self.assertEqual(res_clean["reasons"], [])
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ function toneForRunStatus(status: string): "good" | "warn" | "bad" | "info" | "n
     case "running":
       return "info";
     case "not_configured":
+    case "not_ready":
     case "missing":
       return "warn";
     case "failed":
@@ -309,19 +310,47 @@ export function TrainingPipelinePanel() {
             <div className="settings-key-list">
               <div className="settings-key-card">
                 <div className="settings-key-head">
-                  <strong>{readiness.configured ? "พร้อมรับคำสั่ง (ต้องมี Tier-2)" : "ยังไม่พร้อมเริ่มฝึก"}</strong>
+                  <strong>
+                    {readiness.status === "ready"
+                      ? "พร้อมรับคำสั่ง (ต้องมี Tier-2)"
+                      : "ยังไม่พร้อมเริ่มฝึก"}
+                  </strong>
                   <StatusBadge tone={toneForRunStatus(readiness.status)}>
                     {readiness.status}
                   </StatusBadge>
                 </div>
                 <p className="settings-key-meta">
-                  Dataset: {readiness.dataset_configured ? "พร้อม" : "ยังไม่ตั้งค่า"} · Tokenizer:{" "}
-                  {readiness.tokenizer_configured ? "พร้อม" : "ยังไม่ตั้งค่า"}
+                  Dataset V11 (4-split):{" "}
+                  {readiness.dataset_verified
+                    ? "ผ่านครบ 4-split + Leakage PASS"
+                    : readiness.dataset_configured
+                      ? readiness.four_split_present
+                        ? `Leakage: ${readiness.dataset?.leakage_check?.status ?? "FAIL"}`
+                        : "ไม่ครบ 4-split (train/validation/unseen/ood)"
+                      : "ยังไม่ตั้งค่า"}{" "}
+                  · Tokenizer: {readiness.tokenizer_configured ? "พร้อม" : "ยังไม่ตั้งค่า"}
                 </p>
                 <p className="settings-key-meta">
-                  Admin Allowlist: {readiness.admin_allowlist_configured ? "ตั้งค่าแล้ว" : "ยังไม่ตั้งค่า"} ·{" "}
-                  Tier-2 Approval: บังคับเสมอ
+                  Runtime (PyTorch):{" "}
+                  {readiness.torch_available ? "พร้อม" : "ยังไม่พบ torch"} · Storage:{" "}
+                  {readiness.training_root_ready ? "เขียนได้" : "ไม่พร้อม"}
                 </p>
+                <p className="settings-key-meta">
+                  Worker:{" "}
+                  {readiness.worker_busy
+                    ? "กำลังทำงาน"
+                    : readiness.worker_ready
+                      ? "พร้อมรับงาน"
+                      : "ไม่พร้อม"}{" "}
+                  · Approval Tokens:{" "}
+                  {readiness.approved_training_approvals ?? 0} อนุมัติแล้ว /{" "}
+                  {readiness.pending_training_approvals ?? 0} รออนุมัติ
+                </p>
+                {readiness.reasons && readiness.reasons.length > 0 ? (
+                  <p className="settings-key-meta">
+                    เหตุผลที่ยังไม่พร้อม: {readiness.reasons.join(" · ")}
+                  </p>
+                ) : null}
               </div>
             </div>
           ) : (

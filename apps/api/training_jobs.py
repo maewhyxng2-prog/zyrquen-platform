@@ -66,6 +66,10 @@ class TrainingJobService:
         self._future: Future | None = None
         self._active_run_id: UUID | None = None
 
+    def is_busy(self) -> bool:
+        with self._lock:
+            return self._future is not None and not self._future.done()
+
     def submit(
         self,
         db: Session,
@@ -84,31 +88,72 @@ class TrainingJobService:
                 training_values=training_config,
                 model_values=model_config,
             )
-            run = TrainingRun(
+            return self._enqueue_prepared_locked(
+                db,
                 owner_id=owner_id,
-                status="queued",
                 dataset_version=dataset_version,
                 training_config=training_config,
                 model_config=model_config,
+                prepared=prepared,
             )
-            db.add(run)
+
+    def submit_prepared(
+        self,
+        db: Session,
+        *,
+        owner_id,
+        dataset_version: str,
+        training_config: dict,
+        model_config: dict,
+        prepared: PreparedTraining,
+    ) -> TrainingRun:
+        with self._lock:
+            if self._future is not None and not self._future.done():
+                raise TrainingJobBusy("A training job is already active.")
+            return self._enqueue_prepared_locked(
+                db,
+                owner_id=owner_id,
+                dataset_version=dataset_version,
+                training_config=training_config,
+                model_config=model_config,
+                prepared=prepared,
+            )
+
+    def _enqueue_prepared_locked(
+        self,
+        db: Session,
+        *,
+        owner_id,
+        dataset_version: str,
+        training_config: dict,
+        model_config: dict,
+        prepared: PreparedTraining,
+    ) -> TrainingRun:
+        run = TrainingRun(
+            owner_id=owner_id,
+            status="queued",
+            dataset_version=dataset_version,
+            training_config=training_config,
+            model_config=model_config,
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        try:
+            self._active_run_id = run.id
+            self._future = self._executor.submit(
+                self._execute, run.id, prepared
+            )
+        except RuntimeError as exc:
+            self._active_run_id = None
+            run.status = "failed"
+            run.error_message = "Training worker is unavailable."
+            run.finished_at = datetime.now(timezone.utc)
             db.commit()
-            db.refresh(run)
-            try:
-                self._active_run_id = run.id
-                self._future = self._executor.submit(
-                    self._execute, run.id, prepared
-                )
-            except RuntimeError as exc:
-                self._active_run_id = None
-                run.status = "failed"
-                run.error_message = "Training worker is unavailable."
-                run.finished_at = datetime.now(timezone.utc)
-                db.commit()
-                raise TrainingUnavailable(
-                    "Training worker is unavailable."
-                ) from exc
-            return run
+            raise TrainingUnavailable(
+                "Training worker is unavailable."
+            ) from exc
+        return run
 
     def is_active(self, run_id: UUID) -> bool:
         with self._lock:

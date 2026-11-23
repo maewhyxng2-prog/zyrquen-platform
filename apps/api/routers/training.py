@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import math
 import os
@@ -9,6 +10,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
+from apps.core.native.dataset_status import (
+    inspect_v11_training_dataset_readiness,
+)
 from apps.core.training_infrastructure.monitoring.training_monitor import (
     TrainingMonitor,
 )
@@ -109,6 +113,18 @@ def start_training(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Tier-2 workflow approval_id is required to execute native training.",
                 )
+            if jobs.is_busy():
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="A training job is already active.",
+                )
+            training_cfg = request.training.model_dump()
+            model_cfg = request.model.model_dump()
+            prepared = jobs._orchestrator.prepare(
+                dataset_version=request.dataset_version,
+                training_values=training_cfg,
+                model_values=model_cfg,
+            )
             engine = get_workflow_engine()
             try:
                 engine.governance.verify_and_consume_by_id(
@@ -120,6 +136,15 @@ def start_training(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Tier-2 training approval rejected: {exc}",
                 ) from exc
+
+            return jobs.submit_prepared(
+                db,
+                owner_id=current_user.id,
+                dataset_version=request.dataset_version,
+                training_config=training_cfg,
+                model_config=model_cfg,
+                prepared=prepared,
+            )
 
         return jobs.submit(
             db,
@@ -144,27 +169,153 @@ def start_training(
 def get_training_readiness(
     current_user: User = Depends(get_current_user),
 ):
-    """Report honest readiness of the Native Training Pipeline without fabricating configuration."""
+    """Report structured readiness of Dataset (enforcing V11 4-split + leakage detection), Tokenizer, Runtime, Worker, and Tier-2 Approval without starting training."""
+    reasons: list[str] = []
+
     dataset_env = os.getenv("ZYRQUEN_DATASET_DIR", "").strip()
     tokenizer_env = os.getenv("ZYRQUEN_TOKENIZER_PATH", "").strip()
     dataset_dir = jobs._orchestrator.dataset_dir or (Path(dataset_env).resolve() if dataset_env else None)
     tokenizer_path = jobs._orchestrator.tokenizer_path or (Path(tokenizer_env).resolve() if tokenizer_env else None)
-    dataset_configured = bool(dataset_dir is not None and not dataset_dir.is_symlink() and dataset_dir.is_dir())
+    ds_report = inspect_v11_training_dataset_readiness(dataset_dir)
+    dataset_configured = bool(ds_report["configured"])
+    dataset_verified = bool(ds_report["verified"])
+    four_split_present = bool(ds_report["four_split_present"])
+    reasons.extend(ds_report["reasons"])
+
     tokenizer_configured = bool(tokenizer_path is not None and not tokenizer_path.is_symlink() and tokenizer_path.is_file())
+    tokenizer_valid = False
+    tokenizer_detail = "ZYRQUEN_TOKENIZER_PATH is not configured or missing."
+    if tokenizer_configured and tokenizer_path is not None:
+        try:
+            tok_data = json.loads(tokenizer_path.read_text(encoding="utf-8"))
+            if isinstance(tok_data, dict):
+                tokenizer_valid = True
+                tokenizer_detail = f"Loaded tokenizer file ({tok_data.get('schema', 'json')})."
+            else:
+                tokenizer_detail = "Tokenizer JSON root must be an object."
+                reasons.append(tokenizer_detail)
+        except (OSError, json.JSONDecodeError) as exc:
+            tokenizer_detail = f"Tokenizer file is unreadable: {exc}"
+            reasons.append(tokenizer_detail)
+    else:
+        reasons.append(tokenizer_detail)
+
+    torch_available = importlib.util.find_spec("torch") is not None
+    if not torch_available:
+        reasons.append("PyTorch runtime (torch) is not installed in the backend environment.")
+
+    training_root = jobs._orchestrator.training_root
+    training_root_ready = False
+    try:
+        if training_root.is_dir() and not training_root.is_symlink():
+            training_root_ready = os.access(training_root, os.W_OK)
+        elif not training_root.exists() and training_root.parent.is_dir():
+            training_root_ready = os.access(training_root.parent, os.W_OK)
+    except OSError:
+        training_root_ready = False
+    if not training_root_ready:
+        reasons.append("ZYRQUEN_TRAINING_ROOT directory is not writable or unavailable.")
+
+    runtime_ready = torch_available and training_root_ready
+
+    worker_busy = jobs.is_busy()
+    worker_ready = not getattr(jobs._executor, "_shutdown", False)
+    active_run_id = (
+        str(jobs._active_run_id)
+        if worker_busy and jobs._active_run_id is not None
+        else None
+    )
+    if worker_busy:
+        reasons.append(f"Training worker is currently busy with run {active_run_id}.")
+    if not worker_ready:
+        reasons.append("Training worker executor is shut down.")
+
     admins = training_admin_emails()
     admin_configured = bool(admins)
     is_training_admin = current_user.email.strip().lower() in admins
+    if not admin_configured:
+        reasons.append("ZYRQUEN_TRAINING_ADMIN_EMAILS allowlist is not configured.")
+    elif not is_training_admin:
+        reasons.append("Current user email is not in ZYRQUEN_TRAINING_ADMIN_EMAILS.")
+
+    approval_secret_configured = bool(os.getenv("ZYRQUEN_APPROVAL_SECRET", "").strip())
+    approved_training_approvals = 0
+    pending_training_approvals = 0
+    try:
+        engine = get_workflow_engine()
+        approved_list = engine.governance.store.list_approvals(status="approved", limit=100)
+        pending_list = engine.governance.store.list_approvals(status="pending", limit=100)
+        now = datetime.now(timezone.utc)
+        approved_training_approvals = sum(
+            1
+            for item in approved_list
+            if item.get("action_type") == "training.execute"
+            and datetime.fromisoformat(item["expires_at"]) > now
+        )
+        pending_training_approvals = sum(
+            1
+            for item in pending_list
+            if item.get("action_type") == "training.execute"
+            and datetime.fromisoformat(item["expires_at"]) > now
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+
+    if approved_training_approvals == 0:
+        reasons.append("No active signed Tier-2 approval token for training.execute (required before dispatch).")
+
     configured = dataset_configured and tokenizer_configured and admin_configured
-    active_run_id = str(jobs._active_run_id) if jobs._future is not None and not jobs._future.done() and jobs._active_run_id else None
+    all_ready = (
+        dataset_verified
+        and four_split_present
+        and tokenizer_valid
+        and runtime_ready
+        and worker_ready
+        and not worker_busy
+        and admin_configured
+    )
+    status_value = (
+        "ready"
+        if all_ready
+        else ("not_configured" if not configured else "not_ready")
+    )
+
     return {
         "configured": configured,
-        "status": "ready" if configured else "not_configured",
+        "status": status_value,
         "dataset_configured": dataset_configured,
-        "tokenizer_configured": tokenizer_configured,
+        "dataset_verified": dataset_verified,
+        "four_split_present": four_split_present,
+        "tokenizer_configured": tokenizer_valid,
+        "runtime_ready": runtime_ready,
+        "torch_available": torch_available,
+        "training_root_ready": training_root_ready,
+        "worker_ready": worker_ready,
+        "worker_busy": worker_busy,
         "admin_allowlist_configured": admin_configured,
         "is_training_admin": is_training_admin,
         "tier2_approval_required": True,
+        "approval_secret_configured": approval_secret_configured,
+        "approved_training_approvals": approved_training_approvals,
+        "pending_training_approvals": pending_training_approvals,
         "active_run_id": active_run_id,
+        "dataset": {
+            key: value for key, value in ds_report.items() if key != "reasons"
+        },
+        "tokenizer": {
+            "configured": tokenizer_configured,
+            "valid": tokenizer_valid,
+            "detail": tokenizer_detail,
+        },
+        "runtime": {
+            "ready": runtime_ready,
+            "torch_available": torch_available,
+            "training_root_ready": training_root_ready,
+            "worker_ready": worker_ready,
+            "worker_busy": worker_busy,
+            "active_run_id": active_run_id,
+        },
+        "reasons": reasons,
     }
 
 

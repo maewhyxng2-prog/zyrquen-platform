@@ -265,13 +265,52 @@ export type DatasetPipelineStatus = {
 
 export type TrainingReadinessStatus = {
   configured: boolean;
-  status: "ready" | "not_configured";
+  status: "ready" | "not_ready" | "not_configured";
   dataset_configured: boolean;
+  dataset_verified?: boolean;
+  four_split_present?: boolean;
   tokenizer_configured: boolean;
+  runtime_ready?: boolean;
+  torch_available?: boolean;
+  training_root_ready?: boolean;
+  worker_ready?: boolean;
+  worker_busy?: boolean;
   admin_allowlist_configured: boolean;
   is_training_admin: boolean;
   tier2_approval_required: boolean;
+  approval_secret_configured?: boolean;
+  approved_training_approvals?: number;
+  pending_training_approvals?: number;
   active_run_id: string | null;
+  dataset?: {
+    configured: boolean;
+    verified: boolean;
+    format?: string | null;
+    four_split_enforced: boolean;
+    required_splits: string[];
+    splits: string[];
+    four_split_present: boolean;
+    split_counts: Record<string, number>;
+    leakage_check: {
+      status: string;
+      passed: boolean;
+      violations: string[];
+    };
+  };
+  tokenizer?: {
+    configured: boolean;
+    valid: boolean;
+    detail: string;
+  };
+  runtime?: {
+    ready: boolean;
+    torch_available: boolean;
+    training_root_ready: boolean;
+    worker_ready: boolean;
+    worker_busy: boolean;
+    active_run_id: string | null;
+  };
+  reasons?: string[];
 };
 
 export type TrainingRunSummary = {

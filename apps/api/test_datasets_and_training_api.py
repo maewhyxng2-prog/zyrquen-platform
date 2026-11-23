@@ -154,9 +154,15 @@ def test_training_readiness_and_runs_list(api_client, monkeypatch):
 
     readiness = client.get("/training/readiness")
     assert readiness.status_code == 200
-    assert readiness.json()["configured"] is False
-    assert readiness.json()["tier2_approval_required"] is True
-    assert readiness.json()["is_training_admin"] is True
+    body = readiness.json()
+    assert body["configured"] is False
+    assert body["status"] == "not_configured"
+    assert body["dataset_verified"] is False
+    assert "runtime_ready" in body
+    assert "worker_ready" in body
+    assert body["tier2_approval_required"] is True
+    assert body["is_training_admin"] is True
+    assert len(body["reasons"]) >= 1
 
     runs_resp = client.get("/training/runs")
     assert runs_resp.status_code == 200
@@ -192,3 +198,73 @@ def test_training_start_enforces_tier2_approval_when_artifacts_configured(api_cl
     )
     assert forged_approval.status_code == 403
     assert "Tier-2 training approval rejected" in forged_approval.json()["detail"]
+
+
+def _build_v11_dataset(target_dir: Path, *, leak: bool = False) -> Path:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    splits = {
+        "train": json.dumps({"input": "rule TR_E11", "target": "ok TR_E11", "split": "train"}) + "\n",
+        "validation": json.dumps({"input": "rule VA_E22", "target": "ok VA_E22", "split": "validation"}) + "\n",
+        "unseen": json.dumps(
+            {
+                "input": f"rule {'TR_E11' if leak else 'UN_E33'}",
+                "target": f"ok {'TR_E11' if leak else 'UN_E33'}",
+                "split": "unseen",
+            }
+        )
+        + "\n",
+        "ood": json.dumps({"input": "rule OO_E44", "target": "ok OO_E44", "split": "ood"}) + "\n",
+    }
+    files = {}
+    hashes = []
+    for name, body in splits.items():
+        data = body.encode("utf-8")
+        (target_dir / f"{name}.jsonl").write_bytes(data)
+        sha = hashlib.sha256(data).hexdigest()
+        files[f"{name}.jsonl"] = {"documents": 1, "sha256": sha}
+        hashes.append(sha)
+    content_sha = hashlib.sha256("".join(hashes).encode("utf-8")).hexdigest()
+    manifest = {
+        "schema": SCHEMA,
+        "dataset": "nagi_v11",
+        "version": "nagi_v11",
+        "content_sha256": content_sha,
+        "sources": {"unit": {"license": "CC-BY-4.0", "sha256": content_sha}},
+        "files": files,
+    }
+    (target_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return target_dir
+
+
+def test_training_readiness_enforces_v11_four_split_and_leakage_detection(api_client, monkeypatch):
+    client, _, _, tmp_path = api_client
+    tok = tmp_path / "tokenizer.json"
+    tok.write_text('{"schema": "zyrquen.tokenizer.v2"}', encoding="utf-8")
+    monkeypatch.setenv("ZYRQUEN_TOKENIZER_PATH", str(tok))
+
+    # 1. 3-split dataset is rejected by /training/readiness V11 4-split gate
+    ds_v10 = _build_valid_dataset(tmp_path / "ds_v10", version="0.1.0")
+    monkeypatch.setenv("ZYRQUEN_DATASET_DIR", str(ds_v10))
+    res_3split = client.get("/training/readiness").json()
+    assert res_3split["dataset_configured"] is True
+    assert res_3split["four_split_present"] is False
+    assert res_3split["dataset_verified"] is False
+    assert res_3split["dataset"]["four_split_enforced"] is True
+    assert any("4-split" in r for r in res_3split["reasons"])
+
+    # 2. Leaked 4-split dataset fails DataAdapter.detect_leakage
+    ds_leaked = _build_v11_dataset(tmp_path / "ds_v11_leaked", leak=True)
+    monkeypatch.setenv("ZYRQUEN_DATASET_DIR", str(ds_leaked))
+    res_leaked = client.get("/training/readiness").json()
+    assert res_leaked["four_split_present"] is True
+    assert res_leaked["dataset_verified"] is False
+    assert res_leaked["dataset"]["leakage_check"]["passed"] is False
+
+    # 3. Clean V11 4-split dataset passes DataAdapter verification & leakage check
+    ds_clean = _build_v11_dataset(tmp_path / "ds_v11_clean", leak=False)
+    monkeypatch.setenv("ZYRQUEN_DATASET_DIR", str(ds_clean))
+    res_clean = client.get("/training/readiness").json()
+    assert res_clean["four_split_present"] is True
+    assert res_clean["dataset_verified"] is True
+    assert res_clean["dataset"]["leakage_check"]["passed"] is True
+    assert res_clean["tokenizer"]["valid"] is True

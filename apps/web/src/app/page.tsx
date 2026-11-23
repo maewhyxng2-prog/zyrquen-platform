@@ -209,7 +209,13 @@ export default function DashboardPage() {
             <span className="metric-label">ไปป์ไลน์ชุดข้อมูล</span>
           </div>
           <div className="metric-value metric-value-small">
-            {datasetStatus?.configured ? "พร้อมใช้งาน" : "เชื่อมต่อ API แล้ว"}
+            {datasetStatus?.status === "ready"
+              ? "ยืนยัน Manifest แล้ว"
+              : datasetStatus?.status === "invalid"
+                ? "Manifest ไม่ผ่าน"
+                : datasetStatus?.configured
+                  ? "ตรวจสอบแล้ว"
+                  : "เชื่อมต่อ API แล้ว"}
           </div>
           <div className="metric-foot">
             <StatusBadge
@@ -222,7 +228,7 @@ export default function DashboardPage() {
               }
             >
               {datasetStatus?.status === "ready"
-                ? "ตรวจพบ Manifest ที่ยืนยันแล้ว"
+                ? `SHA-256 PASS (${datasetStatus.active_dataset?.splits?.length ?? 0} splits)`
                 : datasetStatus?.status === "invalid"
                   ? "Manifest ไม่สมบูรณ์"
                   : session?.authenticated
@@ -231,8 +237,8 @@ export default function DashboardPage() {
             </StatusBadge>
             <span className="metric-caption">
               {datasetStatus?.active_dataset?.version
-                ? `เวอร์ชัน ${datasetStatus.active_dataset.version}`
-                : "ตรวจสอบสถานะชุดข้อมูลแบบ Read-only"}
+                ? `เวอร์ชัน ${datasetStatus.active_dataset.version} · ${datasetStatus.active_dataset.v11_leakage_check?.status ?? "N/A"}`
+                : "ตรวจสอบ Manifest, Split และ SHA-256 ผ่าน API จริง"}
             </span>
           </div>
         </Panel>
@@ -243,20 +249,33 @@ export default function DashboardPage() {
             <span className="metric-label">ไปป์ไลน์การฝึกโมเดล</span>
           </div>
           <div className="metric-value metric-value-small">
-            {trainingReadiness?.configured ? "พร้อมรับคำสั่ง (Tier-2)" : "เชื่อมต่อ API แล้ว"}
+            {trainingReadiness?.status === "ready"
+              ? "พร้อมรับคำสั่ง (Tier-2)"
+              : trainingReadiness?.status === "not_ready"
+                ? "ยังไม่พร้อมเริ่มฝึก"
+                : "เชื่อมต่อ API แล้ว"}
           </div>
           <div className="metric-foot">
             <StatusBadge
-              tone={trainingReadiness?.configured ? "good" : "info"}
+              tone={
+                trainingReadiness?.status === "ready"
+                  ? "good"
+                  : trainingReadiness?.status === "not_ready"
+                    ? "warn"
+                    : "info"
+              }
             >
-              {trainingReadiness?.configured
-                ? "บังคับ Tier-2 Approval"
-                : session?.authenticated
-                  ? "ยังไม่ตั้งค่า Dataset/Tokenizer"
-                  : "POST /training/runs"}
+              {trainingReadiness?.status === "ready"
+                ? "V11 4-Split & Runtime PASS"
+                : trainingReadiness?.status === "not_ready"
+                  ? `ติดเงื่อนไข (${trainingReadiness.reasons?.length ?? 1})`
+                  : session?.authenticated
+                    ? "ยังไม่ตั้งค่า Dataset/Tokenizer"
+                    : "GET /training/readiness"}
             </StatusBadge>
             <span className="metric-caption">
-              สั่งงานและติดตามผลผ่านพื้นที่ทำงานการฝึกอบรม
+              {trainingReadiness?.reasons?.[0] ||
+                "ตรวจความพร้อม V11 4-split, Runtime และ Tier-2 Approval"}
             </span>
           </div>
         </Panel>

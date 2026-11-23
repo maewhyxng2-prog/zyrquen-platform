@@ -202,3 +202,89 @@ def get_dataset_version_status(
             return item
 
     raise LookupError(f"Dataset version not found: {clean_version}")
+
+
+def inspect_v11_training_dataset_readiness(dataset_dir: str | Path | None) -> dict[str, Any]:
+    """Enforce V11 4-split requirement and DataAdapter leakage detection for /training/readiness."""
+    from apps.core.native.dataset_v11 import DatasetLeakageError
+
+    reasons: list[str] = []
+    if dataset_dir is None:
+        reasons.append("ZYRQUEN_DATASET_DIR is not configured or missing.")
+        return {
+            "configured": False,
+            "verified": False,
+            "format": None,
+            "four_split_enforced": True,
+            "required_splits": list(V11_SPLITS),
+            "splits": [],
+            "four_split_present": False,
+            "split_counts": {},
+            "leakage_check": {"status": "NOT RUN", "passed": False, "violations": []},
+            "reasons": reasons,
+        }
+
+    raw_dir = Path(dataset_dir)
+    if raw_dir.is_symlink() or not raw_dir.is_dir():
+        reasons.append("ZYRQUEN_DATASET_DIR is not configured or missing.")
+        return {
+            "configured": False,
+            "verified": False,
+            "format": None,
+            "four_split_enforced": True,
+            "required_splits": list(V11_SPLITS),
+            "splits": [],
+            "four_split_present": False,
+            "split_counts": {},
+            "leakage_check": {"status": "NOT RUN", "passed": False, "violations": []},
+            "reasons": reasons,
+        }
+
+    resolved_dir = raw_dir.resolve()
+    verified = False
+    four_split_present = False
+    dataset_splits: list[str] = []
+    dataset_format: str | None = None
+    split_counts: dict[str, int] = {}
+    leakage_report_dict: dict[str, Any] = {
+        "status": "NOT RUN",
+        "passed": False,
+        "violations": [],
+    }
+
+    try:
+        manifest = verify_dataset_manifest(resolved_dir)
+        splits = resolve_dataset_splits(manifest)
+        dataset_splits = list(splits)
+        dataset_format = detect_dataset_format(resolved_dir)
+        four_split_present = tuple(splits) == V11_SPLITS
+        if not four_split_present:
+            reasons.append(
+                f"Dataset does not satisfy V11 4-split requirement {list(V11_SPLITS)}; found {dataset_splits}."
+            )
+        else:
+            adapter = DataAdapter(resolved_dir, verify_on_init=True)
+            leak_report = adapter.detect_leakage(raise_on_leakage=False)
+            leakage_report_dict = leak_report.to_dict()
+            split_counts = dict(leak_report.split_counts)
+            if leak_report.passed:
+                verified = True
+            else:
+                reasons.append(
+                    f"V11 leakage detection failed: {', '.join(leak_report.violations)}."
+                )
+    except (DatasetLeakageError, OSError, ValueError, KeyError, TypeError) as exc:
+        reasons.append(f"V11 dataset verification failed: {exc}")
+
+    return {
+        "configured": True,
+        "verified": verified,
+        "format": dataset_format,
+        "four_split_enforced": True,
+        "required_splits": list(V11_SPLITS),
+        "splits": dataset_splits,
+        "four_split_present": four_split_present,
+        "split_counts": split_counts,
+        "leakage_check": leakage_report_dict,
+        "reasons": reasons,
+    }
