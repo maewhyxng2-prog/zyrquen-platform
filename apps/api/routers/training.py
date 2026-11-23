@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from apps.core.training_infrastructure.monitoring.training_monitor import (
@@ -137,6 +137,22 @@ def start_training(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
+
+
+@router.get("/runs")
+def list_training_runs(
+    limit: int = Query(default=20, ge=1, le=100),
+    current_user: User = Depends(require_training_admin),
+    db: Session = Depends(get_db),
+):
+    runs = (
+        db.query(TrainingRun)
+        .filter(TrainingRun.owner_id == current_user.id)
+        .order_by(TrainingRun.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return {"items": [_run_response(run) for run in runs], "total": len(runs), "limit": limit}
 
 
 @router.get("/runs/{run_id}", response_model=TrainingRunResponse)

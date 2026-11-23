@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from apps.api.routers.auth import router as auth_router
 from apps.api.routers.inference import router as inference_router
 from apps.api.routers.training import router as training_router
+from apps.api.routers.datasets import router as datasets_router
 from apps.api.routers.evaluation import router as evaluation_router
 from apps.api.routers.conversations import router as conversations_router
 from apps.api.routers.users import router as users_router
@@ -162,6 +163,7 @@ install_exception_logging(app)
 app.include_router(auth_router)
 app.include_router(inference_router)
 app.include_router(training_router)
+app.include_router(datasets_router)
 app.include_router(evaluation_router)
 app.include_router(conversations_router)
 app.include_router(users_router)
