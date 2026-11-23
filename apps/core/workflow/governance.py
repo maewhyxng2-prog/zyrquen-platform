@@ -23,6 +23,7 @@ TIER2_GATED_ACTIONS = frozenset(
         "architecture.modify",
         "data.delete",
         "git.push",
+        "git.merge_main",
         "deploy.production",
     }
 )

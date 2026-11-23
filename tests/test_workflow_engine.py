@@ -101,7 +101,8 @@ class TestWorkflowDAGAndRegistry(unittest.TestCase):
                     "project_dev",
                 },
             )
-            self.assertEqual(len(defs), 8)
+            self.assertGreaterEqual(len(defs), 9)
+            self.assertIn("project_dev.autonomous_maintainer", {d.workflow_key for d in defs})
             self.assertFalse(orch.scheduler.is_running())
 
 

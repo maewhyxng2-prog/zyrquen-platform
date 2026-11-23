@@ -8,6 +8,9 @@ from apps.core.workflow.handlers.groups import (
     handle_evaluation_verify,
     handle_improvement_analyze,
     handle_knowledge_validate,
+    handle_project_dev_maintainer_audit,
+    handle_project_dev_maintainer_merge,
+    handle_project_dev_maintainer_propose,
     handle_project_dev_sync,
     handle_security_audit,
     handle_system_ops_health,
@@ -31,6 +34,9 @@ def register_builtin_workflows(registry: WorkflowRegistry) -> list[WorkflowDefin
     registry.register_handler("improvement.analyze", handle_improvement_analyze)
     registry.register_handler("security.audit", handle_security_audit)
     registry.register_handler("project_dev.sync", handle_project_dev_sync)
+    registry.register_handler("project_dev.maintainer_audit", handle_project_dev_maintainer_audit)
+    registry.register_handler("project_dev.maintainer_propose", handle_project_dev_maintainer_propose)
+    registry.register_handler("project_dev.maintainer_merge", handle_project_dev_maintainer_merge)
 
     definitions = [
         WorkflowDefinition(
@@ -200,6 +206,47 @@ def register_builtin_workflows(registry: WorkflowRegistry) -> list[WorkflowDefin
                     description="Check presence of roadmap phase modules and experiment scripts.",
                     lane="control_ops",
                     tier="tier1_auto",
+                ),
+            ),
+        ),
+        WorkflowDefinition(
+            workflow_key="project_dev.autonomous_maintainer",
+            version="1.0.0",
+            group_name="project_dev",
+            title="Autonomous Repository Maintainer (Audit -> PR Proposal -> Tier-2 Merge Gate)",
+            description=(
+                "Tier-1 auto-audits code/security/dependencies and prepares sandbox-verified remediation PR drafts "
+                "on isolated branches; merging into main strictly requires Tier-2 human approval."
+            ),
+            default_tier="tier2_approval",
+            event_triggers=("ci.failure", "security.alert"),
+            steps=(
+                WorkflowStepSpec(
+                    step_key="audit_repo",
+                    handler_key="project_dev.maintainer_audit",
+                    description="Read-only repository structure, AST bug, security, Native-Only, and CI audit.",
+                    lane="control_ops",
+                    tier="tier1_auto",
+                    action_type="read_only",
+                ),
+                WorkflowStepSpec(
+                    step_key="propose_remediation",
+                    handler_key="project_dev.maintainer_propose",
+                    description="Analyze root causes, validate non-protected safe patches in sandbox, and draft PR evidence.",
+                    depends_on=("audit_repo",),
+                    lane="control_ops",
+                    tier="tier1_auto",
+                    action_type="pr.propose",
+                ),
+                WorkflowStepSpec(
+                    step_key="merge_to_main",
+                    handler_key="project_dev.maintainer_merge",
+                    description="Tier-2 human approval gate required before any maintainer branch merges into main.",
+                    depends_on=("propose_remediation",),
+                    lane="control_ops",
+                    tier="tier2_approval",
+                    action_type="git.merge_main",
+                    max_attempts=1,
                 ),
             ),
         ),

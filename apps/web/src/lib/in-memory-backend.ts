@@ -244,6 +244,17 @@ const WORKFLOW_DEFINITIONS = [
     schedule_interval_sec: null,
     event_triggers: [],
   },
+  {
+    workflow_key: "project_dev.autonomous_maintainer",
+    version: "1.0.0",
+    group_name: "project_dev",
+    title: "Autonomous Repository Maintainer (Audit -> PR Proposal -> Tier-2 Merge Gate)",
+    description:
+      "Tier-1 auto-audits code/security/dependencies and prepares verified PR drafts on isolated branches; merging into main strictly requires Tier-2 human approval.",
+    default_tier: "tier2_approval",
+    schedule_interval_sec: null,
+    event_triggers: ["ci.failure", "security.alert"],
+  },
 ];
 
 function hashPassword(password: string): string {
@@ -1642,6 +1653,71 @@ export async function handleInMemoryBackendRequest(options: {
         return { status: 202, body: run };
       }
 
+      if (workflowKey === "project_dev.autonomous_maintainer") {
+        const approvalId = randomUUID();
+        const approval: WorkflowApprovalRecord = {
+          id: approvalId,
+          run_id: runId,
+          step_key: "merge_to_main",
+          action_type: "git.merge_main",
+          scope: "project_dev.autonomous_maintainer:merge_to_main",
+          status: "pending",
+          reason: "Merging maintainer branch into main requires Tier-2 human approval",
+          expires_at: new Date(Date.now() + 7200_000).toISOString(),
+        };
+        store.workflowApprovals.unshift(approval);
+
+        const run: WorkflowRunRecord = {
+          id: runId,
+          workflow_key: defn.workflow_key,
+          workflow_version: defn.version,
+          trigger_type: "manual",
+          status: "WAITING_APPROVAL",
+          started_at: startedAt,
+          finished_at: null,
+          error_message: null,
+          requested_by_user_id: currentUser.id,
+          steps: [
+            {
+              step_key: "audit_repo",
+              status: "COMPLETED",
+              attempt: 1,
+              started_at: startedAt,
+              finished_at: startedAt,
+              evidence: { verdict: "PASS", summary: "Read-only AST, security, and Native-Only audit completed" },
+              output: { native_only_compliance: "PASS", audit_mode: "read_only" },
+            },
+            {
+              step_key: "propose_remediation",
+              status: "COMPLETED",
+              attempt: 1,
+              started_at: startedAt,
+              finished_at: startedAt,
+              evidence: { verdict: "PASS", summary: "PR branch & anti-tamper policy validation completed" },
+              output: { target_base_branch: "main", tier2_required_before_merge: true },
+            },
+            {
+              step_key: "merge_to_main",
+              status: "WAITING_APPROVAL",
+              attempt: 0,
+              started_at: null,
+              finished_at: null,
+              evidence: null,
+              output: null,
+            },
+          ],
+        };
+        store.workflowRuns.unshift(run);
+        store.auditLogs.unshift({
+          id: randomUUID(),
+          actor_user_id: currentUser.id,
+          action: `workflow.waiting_approval:${workflowKey}`,
+          resource_id: runId,
+          created_at: startedAt,
+        });
+        return { status: 202, body: run };
+      }
+
       const finishedAt = new Date(Date.now() + 50).toISOString();
       const run: WorkflowRunRecord = {
         id: runId,
@@ -1736,13 +1812,20 @@ export async function handleInMemoryBackendRequest(options: {
           step.started_at = now;
           step.finished_at = now;
           step.evidence = { verdict: "PASS", summary: "Approved & executed in sandbox" };
-          step.output = {
-            steps: 5000,
-            train_loss: 0.348,
-            val_loss: 0.402,
-            perplexity: 1.49,
-            ram_peak_gb: 1.5,
-          };
+          step.output =
+            approval.action_type === "git.merge_main"
+              ? {
+                  authorized: true,
+                  action: "git.merge_main",
+                  target_base_branch: "main",
+                }
+              : {
+                  steps: 5000,
+                  train_loss: 0.348,
+                  val_loss: 0.402,
+                  perplexity: 1.49,
+                  ram_peak_gb: 1.5,
+                };
         }
       } else {
         run.status = "BLOCKED";

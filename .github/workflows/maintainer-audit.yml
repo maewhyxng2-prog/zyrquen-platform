@@ -1,0 +1,56 @@
+name: ZYRQUEN Maintainer Audit
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: maintainer-audit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  read-only-audit:
+    name: Read-Only Repository & Native Policy Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/apps/api
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run ZYRQUEN Maintainer Audit + Stdlib Verification Suite
+        run: |
+          python -m compileall -q apps tools tests phases
+          python -m unittest \
+            tests/test_maintainer_bot.py \
+            tests/test_workflow_engine.py \
+            tests/test_v10d_closure_runner.py \
+            tests/test_v11_stage1_readiness.py \
+            tests/test_v9_static_contracts.py \
+            tests/native/test_checkpoint_resume.py \
+            -v
+          python tools/maintainer_bot.py --mode audit --json --out maintainer-audit-report.json
+
+      - name: Upload Maintainer Audit Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maintainer-audit-report
+          path: maintainer-audit-report.json
+          retention-days: 14

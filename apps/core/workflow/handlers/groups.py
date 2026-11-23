@@ -32,6 +32,12 @@ from apps.core.workflow.models import (
     StepExecutionResult,
 )
 from apps.core.workflow.resource_guard import WorkflowResourceGuard
+from apps.core.maintainer import (
+    AuditFinding,
+    AuditReport,
+    MaintainerPolicyError,
+    ZyrquenMaintainerBot,
+)
 
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -1963,4 +1969,139 @@ def handle_project_dev_sync(ctx: dict[str, Any], payload: dict[str, Any]) -> Ste
             "push_or_deploy_blocked_without_approval": True,
         },
         evidence={"verdict": "PASS", "phases_count": len(phases_present)},
+    )
+
+
+def handle_project_dev_maintainer_audit(ctx: dict[str, Any], payload: dict[str, Any]) -> StepExecutionResult:
+    repo_root = Path(str(payload.get("repo_root") or _repo_root())).resolve()
+    run_tests = bool(payload.get("run_tests", False))
+    test_pattern = str(payload.get("test_pattern") or "test_*.py")
+    bot = ZyrquenMaintainerBot(repo_root)
+    report = bot.run_audit(run_tests=run_tests, test_pattern=test_pattern)
+    report_dict = report.to_dict()
+
+    if report.checks.get("native_only_compliance") != "PASS":
+        return StepExecutionResult(
+            verdict="BLOCKED",
+            summary="Maintainer audit blocked: Native-Only policy violation detected.",
+            output={"audit_report": report_dict, "audit_verdict": report.overall_verdict},
+            evidence={"verdict": "BLOCKED", "finding_count": len(report.findings)},
+            error_code="native_only_violation",
+        )
+
+    return StepExecutionResult(
+        verdict="PASS",
+        summary=(
+            f"Repository audit complete ({report.files_scanned} files scanned, "
+            f"{len(report.findings)} finding(s), audit_verdict={report.overall_verdict})."
+        ),
+        output={
+            "repo_root": str(repo_root),
+            "audit_verdict": report.overall_verdict,
+            "finding_count": len(report.findings),
+            "audit_report": report_dict,
+        },
+        evidence={
+            "verdict": "PASS",
+            "audit_verdict": report.overall_verdict,
+            "finding_count": len(report.findings),
+        },
+    )
+
+
+def handle_project_dev_maintainer_propose(ctx: dict[str, Any], payload: dict[str, Any]) -> StepExecutionResult:
+    prev = (ctx.get("previous_outputs") or {}).get("audit_repo") or {}
+    repo_root = Path(str(prev.get("repo_root") or payload.get("repo_root") or _repo_root())).resolve()
+    bot = ZyrquenMaintainerBot(repo_root)
+
+    raw_report = prev.get("audit_report")
+    if isinstance(raw_report, dict):
+        findings = [
+            AuditFinding(**item)
+            for item in raw_report.get("findings", [])
+            if isinstance(item, dict)
+        ]
+        report = AuditReport(
+            schema=str(raw_report.get("schema", "zyrquen.maintainer.audit.v1")),
+            generated_at=str(raw_report.get("generated_at", "")),
+            repo_root=str(repo_root),
+            overall_verdict=str(raw_report.get("overall_verdict", "PASS")),
+            files_scanned=int(raw_report.get("files_scanned", 0)),
+            findings=findings,
+            checks=dict(raw_report.get("checks", {})),
+        )
+    else:
+        report = bot.run_audit(run_tests=False)
+
+    branch_name = payload.get("branch_name")
+    try:
+        plan = bot.propose_remediation(
+            report,
+            branch_name=str(branch_name) if branch_name else None,
+            verify_in_sandbox=bool(payload.get("verify_in_sandbox", True)),
+        )
+    except MaintainerPolicyError as exc:
+        return StepExecutionResult(
+            verdict="BLOCKED",
+            summary=f"Maintainer remediation blocked by policy: {exc}",
+            output={"policy_error": str(exc)},
+            evidence={"verdict": "BLOCKED", "reason": "maintainer_policy_violation"},
+            error_code="maintainer_policy_violation",
+        )
+
+    plan_dict = plan.to_dict()
+    return StepExecutionResult(
+        verdict="PASS",
+        summary=(
+            f"Prepared remediation bundle on branch {plan.branch_name}: "
+            f"{len(plan.proposals)} safe patch(es), {len(plan.unresolved_findings)} item(s) requiring human review."
+        ),
+        output={
+            "remediation_plan": plan_dict,
+            "branch_name": plan.branch_name,
+            "proposal_count": len(plan.proposals),
+            "unresolved_count": len(plan.unresolved_findings),
+            "tier2_required_before_merge": True,
+        },
+        evidence={
+            "verdict": "PASS",
+            "proposal_count": len(plan.proposals),
+            "verification_verdict": plan.verification.get("verdict", "NOT RUN"),
+        },
+    )
+
+
+def handle_project_dev_maintainer_merge(ctx: dict[str, Any], payload: dict[str, Any]) -> StepExecutionResult:
+    consumed_approval = ctx.get("consumed_approval")
+    if not consumed_approval:
+        return StepExecutionResult(
+            verdict="BLOCKED",
+            summary="Merge to main blocked: verified Tier-2 admin approval is required.",
+            output={"merged": False},
+            evidence={"verdict": "BLOCKED", "reason": "missing_tier2_approval"},
+            error_code="approval_violation",
+        )
+
+    prev_propose = (ctx.get("previous_outputs") or {}).get("propose_remediation") or {}
+    branch_name = str(prev_propose.get("branch_name") or payload.get("branch_name") or "")
+    repo_root = Path(str(payload.get("repo_root") or _repo_root())).resolve()
+    bot = ZyrquenMaintainerBot(repo_root)
+    gate_result = bot.merge_to_main(has_tier2_approval=True)
+    return StepExecutionResult(
+        verdict="PASS",
+        summary=(
+            f"Tier-2 approval ({consumed_approval.get('id')}) verified for merging branch "
+            f"{branch_name or '<unspecified>'} into main."
+        ),
+        output={
+            **gate_result,
+            "approval_id": consumed_approval.get("id"),
+            "branch_name": branch_name,
+            "target_base_branch": "main",
+        },
+        evidence={
+            "verdict": "PASS",
+            "approval_id": consumed_approval.get("id"),
+            "branch_name": branch_name,
+        },
     )

@@ -1,0 +1,68 @@
+name: ZYRQUEN Maintainer PR Review
+
+on:
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: maintainer-pr-review-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  policy-and-root-cause-check:
+    name: Gate Integrity, V10 Protection & Deterministic Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/apps/api
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Inspect changed PR files against gate-tamper and Native-Only rules
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          mapfile -t CHANGED_FILES < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          if [ "${#CHANGED_FILES[@]}" -eq 0 ]; then
+            echo "No changed files detected."
+            exit 0
+          fi
+          echo "Changed files: ${CHANGED_FILES[*]}"
+          # Automated bot branches must never modify protected V10/gate paths without explicit maintainer review
+          if [[ "${{ github.head_ref }}" == bot/* ]]; then
+            python tools/maintainer_bot.py --mode policy-check --files "${CHANGED_FILES[@]}"
+          else
+            python tools/maintainer_bot.py --mode audit
+          fi
+
+  codex-advisory-review:
+    name: Layer 2 Codex Advisory Review (Opt-In Only, Never Auto-Merges)
+    needs: policy-and-root-cause-check
+    if: ${{ vars.ENABLE_CODEX_PR_REVIEW == 'true' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Verify Codex configuration
+        run: |
+          echo "Codex PR review runs strictly as an advisory reviewer on PRs."
+          echo "Never merges to main, never modifies gate logic, and never acts as ZYRQUEN's native model."
