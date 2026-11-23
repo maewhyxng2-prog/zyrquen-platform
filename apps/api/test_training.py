@@ -186,3 +186,33 @@ def test_status_and_telemetry_return_persisted_records(api_client, tmp_path, mon
     assert payload["metrics"][0]["loss"] == 2.25
     assert payload["checkpoints"][0]["step"] == 5
     assert payload["epochs_completed"] is None
+
+
+def test_training_run_list_is_admin_scoped_and_read_only(api_client):
+    client, session_factory, user = api_client
+    other_id = uuid.uuid4()
+    with session_factory() as db:
+        db.add_all([
+            TrainingRun(
+                owner_id=user.id,
+                status="completed",
+                dataset_version="owned-1",
+                training_config={"max_steps": 1},
+                model_config={"n_layers": 1},
+            ),
+            TrainingRun(
+                owner_id=other_id,
+                status="completed",
+                dataset_version="other-1",
+                training_config={"max_steps": 1},
+                model_config={"n_layers": 1},
+            ),
+        ])
+        db.commit()
+
+    response = client.get("/training/runs?limit=10")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["dataset_version"] == "owned-1"
