@@ -245,7 +245,12 @@ export type DatasetRecordStatus = {
   format?: string | null;
   content_sha256?: string | null;
   splits?: string[];
+  total_documents?: number;
   split_counts?: Record<string, { documents?: number | null; sha256?: string | null }>;
+  required_four_splits?: string[];
+  four_split_compliant?: boolean;
+  missing_four_splits?: string[];
+  split_distribution?: Record<string, { present: boolean; documents: number; ratio: number }>;
   licensed_sources_count?: number;
   v11_leakage_check?: {
     status: string;
@@ -258,6 +263,7 @@ export type DatasetRecordStatus = {
 export type DatasetPipelineStatus = {
   configured: boolean;
   status: "ready" | "invalid" | "not_configured";
+  four_split_compliant?: boolean;
   detail: string;
   active_dataset: DatasetRecordStatus | null;
   datasets: DatasetRecordStatus[];
@@ -301,6 +307,13 @@ export type TrainingReadinessStatus = {
     configured: boolean;
     valid: boolean;
     detail: string;
+  };
+  preflight?: {
+    passed: boolean;
+    detail: string;
+    storage_writable: boolean;
+    resource_limits_checked: boolean;
+    max_cpu_parameters: number;
   };
   runtime?: {
     ready: boolean;

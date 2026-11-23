@@ -1,3 +1,4 @@
+import hmac
 import importlib.util
 import json
 import math
@@ -11,6 +12,7 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from apps.core.native.dataset_status import (
+    inspect_training_preflight_readiness,
     inspect_v11_training_dataset_readiness,
 )
 from apps.core.training_infrastructure.monitoring.training_monitor import (
@@ -90,6 +92,43 @@ def require_training_admin(
     return current_user
 
 
+def _verify_training_approval_readonly(engine, approval_id: str) -> dict:
+    """Verify Tier-2 approval status, action binding, expiry, and HMAC signature without consuming."""
+    approval = engine.governance.store.get_approval(approval_id)
+    if approval is None:
+        raise ApprovalViolationError(f"Approval request not found: {approval_id}")
+    if approval.get("action_type") != "training.execute":
+        raise ApprovalViolationError(
+            f"Approval {approval_id} action_type={approval.get('action_type')!r} "
+            "does not match required 'training.execute'."
+        )
+    if approval.get("status") != "approved":
+        raise ApprovalViolationError(
+            f"Approval {approval_id} is not in 'approved' state (status={approval.get('status')!r})."
+        )
+    try:
+        expires_at = datetime.fromisoformat(str(approval["expires_at"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ApprovalViolationError(
+            f"Approval {approval_id} has invalid expiration timestamp."
+        ) from exc
+    if expires_at <= datetime.now(timezone.utc):
+        raise ApprovalViolationError(f"Approval {approval_id} has expired.")
+
+    expected_sig = engine.governance._compute_signature(
+        approval_id=approval["id"],
+        run_id=approval["run_id"],
+        step_key=approval["step_key"],
+        action_type=approval["action_type"],
+        scope=approval["scope"],
+        expires_at=approval["expires_at"],
+    )
+    provided_sig = str(approval.get("signature_hmac") or "")
+    if not provided_sig or not hmac.compare_digest(expected_sig, provided_sig):
+        raise ApprovalViolationError(f"Approval HMAC signature invalid for {approval_id}.")
+    return approval
+
+
 @router.post(
     "/runs",
     response_model=TrainingRunResponse,
@@ -113,6 +152,15 @@ def start_training(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Tier-2 workflow approval_id is required to execute native training.",
                 )
+            engine = get_workflow_engine()
+            try:
+                _verify_training_approval_readonly(engine, approval_id)
+            except ApprovalViolationError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Tier-2 training approval rejected: {exc}",
+                ) from exc
+
             if jobs.is_busy():
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
@@ -125,26 +173,25 @@ def start_training(
                 training_values=training_cfg,
                 model_values=model_cfg,
             )
-            engine = get_workflow_engine()
+
             try:
-                engine.governance.verify_and_consume_by_id(
-                    approval_id,
-                    expected_action_type="training.execute",
+                return jobs.submit_prepared(
+                    db,
+                    owner_id=current_user.id,
+                    dataset_version=request.dataset_version,
+                    training_config=training_cfg,
+                    model_config=model_cfg,
+                    prepared=prepared,
+                    before_enqueue=lambda: engine.governance.verify_and_consume_by_id(
+                        approval_id,
+                        expected_action_type="training.execute",
+                    ),
                 )
             except ApprovalViolationError as exc:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Tier-2 training approval rejected: {exc}",
                 ) from exc
-
-            return jobs.submit_prepared(
-                db,
-                owner_id=current_user.id,
-                dataset_version=request.dataset_version,
-                training_config=training_cfg,
-                model_config=model_cfg,
-                prepared=prepared,
-            )
 
         return jobs.submit(
             db,
@@ -182,39 +229,22 @@ def get_training_readiness(
     four_split_present = bool(ds_report["four_split_present"])
     reasons.extend(ds_report["reasons"])
 
-    tokenizer_configured = bool(tokenizer_path is not None and not tokenizer_path.is_symlink() and tokenizer_path.is_file())
-    tokenizer_valid = False
-    tokenizer_detail = "ZYRQUEN_TOKENIZER_PATH is not configured or missing."
-    if tokenizer_configured and tokenizer_path is not None:
-        try:
-            tok_data = json.loads(tokenizer_path.read_text(encoding="utf-8"))
-            if isinstance(tok_data, dict):
-                tokenizer_valid = True
-                tokenizer_detail = f"Loaded tokenizer file ({tok_data.get('schema', 'json')})."
-            else:
-                tokenizer_detail = "Tokenizer JSON root must be an object."
-                reasons.append(tokenizer_detail)
-        except (OSError, json.JSONDecodeError) as exc:
-            tokenizer_detail = f"Tokenizer file is unreadable: {exc}"
-            reasons.append(tokenizer_detail)
-    else:
-        reasons.append(tokenizer_detail)
+    preflight = inspect_training_preflight_readiness(
+        dataset_dir=dataset_dir,
+        tokenizer_path=tokenizer_path,
+        training_root=jobs._orchestrator.training_root,
+    )
+    tokenizer_configured = bool(preflight["tokenizer_configured"])
+    tokenizer_valid = bool(preflight["tokenizer_valid"])
+    tokenizer_detail = str(preflight["tokenizer_detail"])
+    training_root_ready = bool(preflight["storage_writable"])
+    for pre_reason in preflight["reasons"]:
+        if pre_reason not in reasons:
+            reasons.append(pre_reason)
 
     torch_available = importlib.util.find_spec("torch") is not None
     if not torch_available:
         reasons.append("PyTorch runtime (torch) is not installed in the backend environment.")
-
-    training_root = jobs._orchestrator.training_root
-    training_root_ready = False
-    try:
-        if training_root.is_dir() and not training_root.is_symlink():
-            training_root_ready = os.access(training_root, os.W_OK)
-        elif not training_root.exists() and training_root.parent.is_dir():
-            training_root_ready = os.access(training_root.parent, os.W_OK)
-    except OSError:
-        training_root_ready = False
-    if not training_root_ready:
-        reasons.append("ZYRQUEN_TRAINING_ROOT directory is not writable or unavailable.")
 
     runtime_ready = torch_available and training_root_ready
 
@@ -269,6 +299,7 @@ def get_training_readiness(
         dataset_verified
         and four_split_present
         and tokenizer_valid
+        and bool(preflight["passed"])
         and runtime_ready
         and worker_ready
         and not worker_busy
@@ -306,6 +337,9 @@ def get_training_readiness(
             "configured": tokenizer_configured,
             "valid": tokenizer_valid,
             "detail": tokenizer_detail,
+        },
+        "preflight": {
+            key: value for key, value in preflight.items() if key != "reasons"
         },
         "runtime": {
             "ready": runtime_ready,

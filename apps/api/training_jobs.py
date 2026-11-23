@@ -1,8 +1,10 @@
 import logging
 import os
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from threading import Lock
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -106,10 +108,13 @@ class TrainingJobService:
         training_config: dict,
         model_config: dict,
         prepared: PreparedTraining,
+        before_enqueue: Callable[[], Any] | None = None,
     ) -> TrainingRun:
         with self._lock:
             if self._future is not None and not self._future.done():
                 raise TrainingJobBusy("A training job is already active.")
+            if before_enqueue is not None:
+                before_enqueue()
             return self._enqueue_prepared_locked(
                 db,
                 owner_id=owner_id,

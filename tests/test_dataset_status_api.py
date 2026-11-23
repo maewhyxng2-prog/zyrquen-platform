@@ -14,9 +14,11 @@ from apps.core.native.dataset_status import (
     get_dataset_version_status,
     get_datasets_pipeline_status,
     inspect_dataset_directory,
+    inspect_training_preflight_readiness,
     inspect_v11_training_dataset_readiness,
     validate_dataset_version,
 )
+from apps.core.native.tokenizer import BASE_VOCAB, ZyrquenTokenizer
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -93,6 +95,11 @@ class DatasetStatusApiTests(unittest.TestCase):
             self.assertEqual(active["status"], "verified")
             self.assertEqual(active["format"], "sft")
             self.assertEqual(active["splits"], ["train", "validation", "test"])
+            self.assertFalse(active["four_split_compliant"])
+            self.assertEqual(active["missing_four_splits"], ["unseen", "ood"])
+            self.assertEqual(active["total_documents"], 3)
+            self.assertAlmostEqual(active["split_distribution"]["train"]["ratio"], 1 / 3, places=5)
+            self.assertFalse(active["split_distribution"]["unseen"]["present"])
             self.assertEqual(active["v11_leakage_check"]["status"], "NOT RUN")
 
     def test_valid_v11_four_split_manifest_passes_leakage_check(self) -> None:
@@ -113,6 +120,10 @@ class DatasetStatusApiTests(unittest.TestCase):
             self.assertTrue(ver["verified"])
             self.assertEqual(ver["status"], "verified")
             self.assertEqual(ver["splits"], ["train", "validation", "unseen", "ood"])
+            self.assertTrue(ver["four_split_compliant"])
+            self.assertEqual(ver["missing_four_splits"], [])
+            self.assertEqual(ver["total_documents"], 4)
+            self.assertAlmostEqual(ver["split_distribution"]["ood"]["ratio"], 0.25, places=5)
             self.assertEqual(ver["v11_leakage_check"]["status"], "PASS")
 
     def test_corrupted_split_file_fails_integrity_verification(self) -> None:
@@ -223,6 +234,96 @@ class DatasetStatusApiTests(unittest.TestCase):
             self.assertTrue(res_clean["leakage_check"]["passed"])
             self.assertEqual(res_clean["reasons"], [])
 
+            tok_path = Path(tmp) / "tokenizer.json"
+            ZyrquenTokenizer.train(["rule TR_E101 ok " * 10], vocab_size=BASE_VOCAB + 8).save(tok_path)
+            preflight_ok = inspect_training_preflight_readiness(
+                dataset_dir=ds_clean,
+                tokenizer_path=tok_path,
+                training_root=Path(tmp) / "runs",
+            )
+            self.assertTrue(preflight_ok["passed"])
+            self.assertTrue(preflight_ok["tokenizer_valid"])
+            self.assertTrue(preflight_ok["resource_limits_checked"])
+            self.assertEqual(preflight_ok["reasons"], [])
+
+            bad_tok = Path(tmp) / "bad_tok.json"
+            bad_tok.write_text('{"invalid": true}', encoding="utf-8")
+            preflight_bad = inspect_training_preflight_readiness(
+                dataset_dir=ds_clean,
+                tokenizer_path=bad_tok,
+                training_root=Path(tmp) / "runs",
+            )
+            self.assertFalse(preflight_bad["passed"])
+            self.assertFalse(preflight_bad["tokenizer_valid"])
+            self.assertTrue(preflight_bad["reasons"])
+
+    def test_malformed_tokenizer_blocks_prepare_without_consuming_tier2_approval(self) -> None:
+        from apps.core.training.orchestrator import TrainingOrchestrator, TrainingUnavailable
+        from apps.core.workflow import CentralWorkflowOrchestrator, WorkflowStepSpec
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ds_dir = _write_dataset_dir(
+                tmp_path / "ds",
+                version="0.1.0",
+                split_rows={
+                    "train": [{"input": "alpha TR_E1", "target": "ok TR_E1"}],
+                    "validation": [{"input": "beta VA_E2", "target": "ok VA_E2"}],
+                    "test": [{"input": "gamma TE_E3", "target": "ok TE_E3"}],
+                },
+            )
+            bad_tok = tmp_path / "bad_tok.json"
+            bad_tok.write_text('{"schema": "zyrquen.tokenizer.v2"}', encoding="utf-8")
+
+            orch = CentralWorkflowOrchestrator(
+                db_path=tmp_path / "wf.db",
+                work_dir=tmp_path / "work",
+                approval_secret="unit-test-approval-secret-minimum-32-chars",
+            )
+            try:
+                wf_run, _ = orch.store.create_run(
+                    workflow_key="training.native_controlled_run",
+                    workflow_version="1.0.0",
+                    trigger_type="manual",
+                    trigger_payload={},
+                    steps=[{"step_key": "execute_training", "handler_key": "training.execute"}],
+                    requested_by_user_id="admin-1",
+                )
+                pending = orch.governance.ensure_pending_approval(
+                    run_id=wf_run["id"],
+                    step=WorkflowStepSpec(
+                        step_key="execute_training",
+                        handler_key="training.execute",
+                        description="Execute training",
+                        tier="tier2_approval",
+                        action_type="training.execute",
+                    ),
+                    requested_by_user_id="admin-1",
+                    scope="dataset:0.1.0",
+                )
+                approved = orch.governance.decide_approval(
+                    pending["id"],
+                    approve=True,
+                    approver_user_id="admin-1",
+                    approver_role="admin",
+                    reason="Readiness test",
+                )
+                trainer = TrainingOrchestrator(
+                    dataset_dir=ds_dir,
+                    tokenizer_path=bad_tok,
+                    training_root=tmp_path / "runs",
+                )
+                with self.assertRaises(TrainingUnavailable):
+                    trainer.prepare(
+                        dataset_version="0.1.0",
+                        training_values={"block_size": 128, "batch_size": 1, "max_steps": 10},
+                        model_values={"max_seq_len": 256, "n_layers": 1, "n_heads": 2, "d_model": 64, "d_ff": 128},
+                    )
+                self.assertEqual(orch.store.get_approval(approved["id"])["status"], "approved")
+            finally:
+                orch.shutdown(wait=True)
+
 
 if __name__ == "__main__":
     unittest.main()
+

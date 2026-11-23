@@ -2059,6 +2059,7 @@ export async function handleInMemoryBackendRequest(options: {
       body: {
         configured: false,
         status: "not_configured",
+        four_split_compliant: false,
         detail: "ZYRQUEN_DATASET_DIR and ZYRQUEN_DATASET_ROOT are not configured in preview backend.",
         active_dataset: null,
         datasets: [],
@@ -2111,6 +2112,13 @@ export async function handleInMemoryBackendRequest(options: {
           configured: false,
           valid: false,
           detail: "ZYRQUEN_TOKENIZER_PATH is not configured in preview mode.",
+        },
+        preflight: {
+          passed: false,
+          detail: "Training preflight unavailable in preview mode.",
+          storage_writable: false,
+          resource_limits_checked: false,
+          max_cpu_parameters: 5000000,
         },
         runtime: {
           ready: false,

@@ -275,7 +275,7 @@ export function TrainingPipelinePanel() {
                 </p>
                 {activeDataset.split_counts ? (
                   <p className="settings-key-meta">
-                    Splits:{" "}
+                    Splits ({activeDataset.four_split_compliant ? "4-split ครบ" : "ไม่ครบ 4-split"}):{" "}
                     {Object.entries(activeDataset.split_counts)
                       .map(([sp, info]) => `${sp}=${info.documents ?? "?"}`)
                       .join(", ")}
@@ -331,7 +331,8 @@ export function TrainingPipelinePanel() {
                   · Tokenizer: {readiness.tokenizer_configured ? "พร้อม" : "ยังไม่ตั้งค่า"}
                 </p>
                 <p className="settings-key-meta">
-                  Runtime (PyTorch):{" "}
+                  Preflight (prepare):{" "}
+                  {readiness.preflight?.passed ? "ผ่าน" : "ยังไม่ผ่าน"} · Runtime (PyTorch):{" "}
                   {readiness.torch_available ? "พร้อม" : "ยังไม่พบ torch"} · Storage:{" "}
                   {readiness.training_root_ready ? "เขียนได้" : "ไม่พร้อม"}
                 </p>

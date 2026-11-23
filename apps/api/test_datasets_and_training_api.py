@@ -17,6 +17,7 @@ from apps.api.routers import training as training_router
 from apps.api.security import get_current_user
 from apps.api.training_models import TrainingRun
 from apps.core.native.dataset import SCHEMA
+from apps.core.native.tokenizer import BASE_VOCAB, ZyrquenTokenizer
 
 
 def _build_valid_dataset(target_dir: Path, version: str = "0.1.0") -> Path:
@@ -177,13 +178,17 @@ def test_training_readiness_and_runs_list(api_client, monkeypatch):
 
 
 def test_training_start_enforces_tier2_approval_when_artifacts_configured(api_client, monkeypatch):
-    client, _, _, tmp_path = api_client
+    client, _, user, tmp_path = api_client
     ds = _build_valid_dataset(tmp_path / "ds", version="0.1.0")
     tok = tmp_path / "tokenizer.json"
-    tok.write_text('{"schema": "zyrquen.tokenizer.v2"}', encoding="utf-8")
+    ZyrquenTokenizer.train(
+        ["alpha TR_E1 ok beta VA_E2 ok " * 8],
+        vocab_size=BASE_VOCAB + 8,
+    ).save(tok)
 
     monkeypatch.setattr(training_router.jobs._orchestrator, "dataset_dir", ds)
     monkeypatch.setattr(training_router.jobs._orchestrator, "tokenizer_path", tok)
+    monkeypatch.setattr(training_router.jobs._orchestrator, "training_root", tmp_path / "runs")
 
     missing_approval = client.post(
         "/training/runs",
@@ -198,6 +203,77 @@ def test_training_start_enforces_tier2_approval_when_artifacts_configured(api_cl
     )
     assert forged_approval.status_code == 403
     assert "Tier-2 training approval rejected" in forged_approval.json()["detail"]
+
+    # Even if tokenizer/dataset prepare() would fail with 503, forged approval must still return 403
+    bad_tok = tmp_path / "bad_tokenizer.json"
+    bad_tok.write_text('{"schema": "zyrquen.tokenizer.v2"}', encoding="utf-8")
+    monkeypatch.setattr(training_router.jobs._orchestrator, "tokenizer_path", bad_tok)
+    forged_over_bad_tok = client.post(
+        "/training/runs",
+        json={"dataset_version": "0.1.0", "approval_id": "forged-id"},
+    )
+    assert forged_over_bad_tok.status_code == 403
+    assert "Tier-2 training approval rejected" in forged_over_bad_tok.json()["detail"]
+
+    # Valid Tier-2 approval must NOT be consumed when worker is busy (409) or prepare() fails (503)
+    from apps.core.workflow import CentralWorkflowOrchestrator, WorkflowStepSpec
+    from apps.api.routers import workflows as workflows_router
+
+    isolated_engine = CentralWorkflowOrchestrator(
+        db_path=tmp_path / "wf-gate.db",
+        work_dir=tmp_path / "wf-work",
+        approval_secret="unit-test-approval-secret-minimum-32-chars",
+    )
+    monkeypatch.setattr(workflows_router, "_ENGINE", isolated_engine)
+    monkeypatch.setattr(training_router, "get_workflow_engine", lambda: isolated_engine)
+    try:
+        wf_run, _ = isolated_engine.store.create_run(
+            workflow_key="training.native_controlled_run",
+            workflow_version="1.0.0",
+            trigger_type="manual",
+            trigger_payload={},
+            steps=[{"step_key": "execute_training", "handler_key": "training.execute"}],
+            requested_by_user_id=str(user.id),
+        )
+        pending = isolated_engine.governance.ensure_pending_approval(
+            run_id=wf_run["id"],
+            step=WorkflowStepSpec(
+                step_key="execute_training",
+                handler_key="training.execute",
+                description="Execute training",
+                tier="tier2_approval",
+                action_type="training.execute",
+            ),
+            requested_by_user_id=str(user.id),
+            scope="dataset:0.1.0",
+        )
+        approved = isolated_engine.governance.decide_approval(
+            pending["id"],
+            approve=True,
+            approver_user_id=str(user.id),
+            approver_role="admin",
+            reason="API gate test",
+        )
+
+        # 503 during prepare() preserves approved status without burning single-use token
+        resp_503 = client.post(
+            "/training/runs",
+            json={"dataset_version": "0.1.0", "approval_id": approved["id"]},
+        )
+        assert resp_503.status_code == 503
+        assert isolated_engine.store.get_approval(approved["id"])["status"] == "approved"
+
+        # 409 busy preserves approved status without burning single-use token
+        monkeypatch.setattr(training_router.jobs._orchestrator, "tokenizer_path", tok)
+        monkeypatch.setattr(training_router.jobs, "is_busy", lambda: True)
+        resp_409 = client.post(
+            "/training/runs",
+            json={"dataset_version": "0.1.0", "approval_id": approved["id"]},
+        )
+        assert resp_409.status_code == 409
+        assert isolated_engine.store.get_approval(approved["id"])["status"] == "approved"
+    finally:
+        isolated_engine.shutdown(wait=True)
 
 
 def _build_v11_dataset(target_dir: Path, *, leak: bool = False) -> Path:
@@ -239,8 +315,9 @@ def _build_v11_dataset(target_dir: Path, *, leak: bool = False) -> Path:
 def test_training_readiness_enforces_v11_four_split_and_leakage_detection(api_client, monkeypatch):
     client, _, _, tmp_path = api_client
     tok = tmp_path / "tokenizer.json"
-    tok.write_text('{"schema": "zyrquen.tokenizer.v2"}', encoding="utf-8")
+    ZyrquenTokenizer.train(["rule TR_E11 ok " * 10], vocab_size=BASE_VOCAB + 8).save(tok)
     monkeypatch.setenv("ZYRQUEN_TOKENIZER_PATH", str(tok))
+    monkeypatch.setattr(training_router.jobs._orchestrator, "training_root", tmp_path / "runs")
 
     # 1. 3-split dataset is rejected by /training/readiness V11 4-split gate
     ds_v10 = _build_valid_dataset(tmp_path / "ds_v10", version="0.1.0")
@@ -260,7 +337,7 @@ def test_training_readiness_enforces_v11_four_split_and_leakage_detection(api_cl
     assert res_leaked["dataset_verified"] is False
     assert res_leaked["dataset"]["leakage_check"]["passed"] is False
 
-    # 3. Clean V11 4-split dataset passes DataAdapter verification & leakage check
+    # 3. Clean V11 4-split dataset passes DataAdapter verification, leakage check, and orchestrator preflight
     ds_clean = _build_v11_dataset(tmp_path / "ds_v11_clean", leak=False)
     monkeypatch.setenv("ZYRQUEN_DATASET_DIR", str(ds_clean))
     res_clean = client.get("/training/readiness").json()
@@ -268,3 +345,5 @@ def test_training_readiness_enforces_v11_four_split_and_leakage_detection(api_cl
     assert res_clean["dataset_verified"] is True
     assert res_clean["dataset"]["leakage_check"]["passed"] is True
     assert res_clean["tokenizer"]["valid"] is True
+    assert res_clean["preflight"]["passed"] is True
+    assert res_clean["preflight"]["resource_limits_checked"] is True
