@@ -28,6 +28,7 @@ from apps.api.training_jobs import (
     training_admin_emails,
 )
 from apps.api.training_models import TrainingRun
+from apps.core.native.dataset import verify_dataset_manifest
 from apps.api.training_schemas import (
     TrainingRunRequest,
     TrainingRunResponse,
@@ -144,7 +145,7 @@ def start_training(
 def get_training_readiness(
     current_user: User = Depends(get_current_user),
 ):
-    """Report honest readiness of the Native Training Pipeline without fabricating configuration."""
+    """Run a read-only preflight of native training inputs; never submits a training job."""
     dataset_env = os.getenv("ZYRQUEN_DATASET_DIR", "").strip()
     tokenizer_env = os.getenv("ZYRQUEN_TOKENIZER_PATH", "").strip()
     dataset_dir = jobs._orchestrator.dataset_dir or (Path(dataset_env).resolve() if dataset_env else None)
@@ -154,15 +155,44 @@ def get_training_readiness(
     admins = training_admin_emails()
     admin_configured = bool(admins)
     is_training_admin = current_user.email.strip().lower() in admins
-    configured = dataset_configured and tokenizer_configured and admin_configured
+
+    dataset_integrity_verified = False
+    preflight_passed = False
+    dataset_version = None
+    preflight_error = None
+
+    if dataset_configured and tokenizer_configured:
+        try:
+            manifest = verify_dataset_manifest(dataset_dir)
+            dataset_version = manifest.get("version")
+            if not isinstance(dataset_version, str) or not dataset_version.strip():
+                raise TrainingUnavailable("Dataset manifest has no valid version.")
+            request = TrainingRunRequest(dataset_version=dataset_version)
+            # prepare() validates the native tokenizer, dataset splits, CPU resource
+            # bounds, and artifact-storage availability. It does not execute training.
+            jobs._orchestrator.prepare(
+                dataset_version=dataset_version,
+                training_values=request.training.model_dump(),
+                model_values=request.model.model_dump(),
+            )
+            dataset_integrity_verified = True
+            preflight_passed = True
+        except (TrainingUnavailable, OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            preflight_error = str(exc)
+
+    configured = dataset_configured and tokenizer_configured and admin_configured and preflight_passed
     active_run_id = str(jobs._active_run_id) if jobs._future is not None and not jobs._future.done() and jobs._active_run_id else None
     return {
         "configured": configured,
         "status": "ready" if configured else "not_configured",
         "dataset_configured": dataset_configured,
+        "dataset_integrity_verified": dataset_integrity_verified,
+        "dataset_version": dataset_version,
         "tokenizer_configured": tokenizer_configured,
         "admin_allowlist_configured": admin_configured,
         "is_training_admin": is_training_admin,
+        "training_preflight_passed": preflight_passed,
+        "preflight_error": preflight_error,
         "tier2_approval_required": True,
         "active_run_id": active_run_id,
     }
