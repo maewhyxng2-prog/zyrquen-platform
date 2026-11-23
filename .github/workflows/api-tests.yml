@@ -1,4 +1,65 @@
-name: ZYRQUEN API Tests
+python3 << 'PY'
+p = ".github/workflows/api-tests.yml"
+t = open(p).read()
+
+if "sqlite:///./test.db" not in t:
+    print("ALREADY FIXED - no sqlite found")
+    else:
+        # 1. แก้ job หลัก job แรกเท่านั้น
+            t = t.replace("DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/zyrquen_test",
+                              "DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/zyrquen_test", 1)
+                                  t = t.replace("ZYRQUEN_ENV: test", "ZYRQUEN_ENV: test", 1)
+                                      t = t.replace("JWT_SECRET_KEY: ci-test-secret
+      ZYRQUEN_PRODUCTION_DATABASE_HOSTS: prod-db.invalid
+      ZYRQUEN_PRODUCTION_DATABASE_NAMES: zyrquen
+      ZYRQUEN_TEST_DATABASE_HOST: 127.0.0.1
+      ZYRQUEN_TEST_DATABASE_PORT: "5432"
+      ZYRQUEN_TEST_DATABASE_NAME: zyrquen_test
+      ZYRQUEN_TEST_DATABASE_ID: ci-test-instance",
+                                                        "JWT_SECRET_KEY: ci-test-secret\n      ZYRQUEN_PRODUCTION_DATABASE_HOSTS: prod-db.invalid\n      ZYRQUEN_PRODUCTION_DATABASE_NAMES: zyrquen\n      ZYRQUEN_TEST_DATABASE_HOST: 127.0.0.1\n      ZYRQUEN_TEST_DATABASE_PORT: \"5432\"\n      ZYRQUEN_TEST_DATABASE_NAME: zyrquen_test\n      ZYRQUEN_TEST_DATABASE_ID: ci-test-instance", 1)
+                                                        
+                                                            # 2. ใส่ services: postgres ให้ job หลัก ถ้ายังไม่มีใน job นั้น
+                                                                lines = t.splitlines(True)
+                                                                    # หา env: ตัวแรกหลัง jobs:
+                                                                        env_idx = next(i for i,l in enumerate(lines) if l.strip() == "env:")
+                                                                            services = """    services:
+                                                                                  postgres:
+                                                                                          image: postgres:16
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: zyrquen_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d zyrquen_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+                                                                                                  env:
+                                                                                                            POSTGRES_USER: postgres
+                                                                                                                      POSTGRES_PASSWORD: postgres
+                                                                                                                                POSTGRES_DB: zyrquen_test
+                                                                                                                                        ports:
+                                                                                                                                                  - 5432:5432
+                                                                                                                                                          options: >-
+                                                                                                                                                                    --health-cmd "pg_isready -U postgres -d zyrquen_test"
+                                                                                                                                                                              --health-interval 10s
+                                                                                                                                                                                        --health-timeout 5s
+                                                                                                                                                                                                  --health-retries 5
+                                                                                                                                                                                                  """
+                                                                                                                                                                                                      lines.insert(env_idx, services)
+                                                                                                                                                                                                          t = "".join(lines)
+                                                                                                                                                                                                              open(p, "w").write(t)
+                                                                                                                                                                                                                  print("FIXED")
+                                                                                                                                                                                                                  
+                                                                                                                                                                                                                  print("--- check ---")
+                                                                                                                                                                                                                  print("sqlite left:", "sqlite" in open(p).read())
+                                                                                                                                                                                                                  print("unit_test left:", "unit_test" in open(p).read())
+                                                                                                                                                                                                                  PYname: ZYRQUEN API Tests
 
 on:
   push:
