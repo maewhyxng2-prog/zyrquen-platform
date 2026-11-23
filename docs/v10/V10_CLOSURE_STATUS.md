@@ -63,6 +63,7 @@
 - **Status:** **`BLOCKED`**
 
 - **Static Pre-Audit:** `V10-A`, `V10-B`, and `V10-C` wiring checks pass statically.
+- **Closure Pipeline Runner (`tools/close_v10d.py`):** End-to-end V10-D orchestrator wiring dataset generation/leakage audit, slot-safe tokenizer, `CentralWorkflowOrchestrator` + Tier-2 HMAC admin approval, `EvaluationEngine`, `handle_evaluation_gate`, and `build_v10_closure_audit` (tested via `tests/test_v10d_closure_runner.py`).
 - **Runtime Audit Blocker:** Final V10-D signoff requires executing end-to-end native training and native inference evaluation on real PyTorch CPU weights and producing an audited `zyrquen.v10.evaluation_report.v1` artifact. Currently **`BLOCKED`** (`TORCH_NOT_INSTALLED`).
 
 ---
@@ -135,11 +136,11 @@
 - **Status:** **`VERIFIED`** *(Static & Unit Evidence Only)*
 
 - Python static compile: `python3 -m compileall -q apps tools tests phases` (`STATIC PASS`)
-- Python V10 unit/integration/audit/remediation suite: `python3 -m unittest tests/test_v10a_contracts.py tests/test_v10c_integration_hook.py tests/test_v10_closure_audit.py tests/test_evaluation_gate_safety.py tests/test_workflow_engine.py tests/test_v10_remediation_suite.py -v` (`52` tests ran: `51` OK, `1` skipped `pydantic not installed in environment`)
+- Python V10/V11 unit, integration, closure-runner & audit suite: `78` tests ran (`76` OK, `2` skipped `torch not installed in environment`) across `test_v10d_closure_runner.py`, `tests/native/test_checkpoint_resume.py`, `test_v11_stage1_readiness.py`, `test_v10a_contracts.py`, `test_v10c_integration_hook.py`, `test_v10_closure_audit.py`, `test_evaluation_gate_safety.py`, `test_workflow_engine.py`, `test_v10_remediation_suite.py`, `test_v10_findings_abcd_remediation.py`
 - Module unit tests (`test_autonomous_training_loop`, `test_training_hook`, `test_checkpoint`, `test_evaluation`): `20` passed, `12` skipped (`ModuleNotFoundError: No module named 'torch'`)
 - Remediation & Audit Reports: `docs/v10/V10_CRITICAL_BLOCKER_REMEDIATION_REPORT.md`, `docs/v10/V10_FINAL_RUNTIME_READINESS_AUDIT.md`
-- Core anchors inspected: `apps/core/native/closure_audit.py`, `apps/api/routers/workflows.py`, `apps/web/src/components/ClosureAudit.tsx`
-- Prior frontend verification recorded on Closure Audit dashboard feature: `apps/web` Vitest (`21/21`), `tsc`, `next build`, `lint` (`STATIC / UNIT PASS`; live FastAPI+PyTorch runtime **`NOT RUN`**)
+- Core anchors inspected: `apps/core/native/closure_audit.py`, `tools/close_v10d.py`, `apps/api/routers/workflows.py`, `apps/web/src/components/ClosureAudit.tsx`
+- Web frontend verification: `apps/web` Vitest (`25/25`), `tsc`, `next build`, and `lint` (`STATIC / UNIT PASS`; live FastAPI+PyTorch runtime **`NOT RUN`**)
 
 ---
 

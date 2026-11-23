@@ -11,6 +11,27 @@ from pathlib import Path
 from typing import Iterable
 
 
+STRICT_MAX_BATCH_SIZE = 4
+STRICT_BLOCK_SIZE = 256
+STRICT_MAX_SEGMENT_STEPS = 500
+
+
+def validate_strict_resource_limits(cfg: "TrainConfig") -> None:
+    """Enforce strict Tier-0 CPU resource limits: batch_size <= 4, block_size == 256, segment <= 500."""
+    if cfg.batch_size > STRICT_MAX_BATCH_SIZE:
+        raise ValueError(
+            f"batch_size={cfg.batch_size} exceeds strict resource limit ({STRICT_MAX_BATCH_SIZE})"
+        )
+    if cfg.block_size != STRICT_BLOCK_SIZE:
+        raise ValueError(
+            f"block_size={cfg.block_size} violates strict resource limit (must equal {STRICT_BLOCK_SIZE})"
+        )
+    if cfg.segment_max_steps is None or cfg.segment_max_steps > STRICT_MAX_SEGMENT_STEPS:
+        raise ValueError(
+            f"segment_max_steps={cfg.segment_max_steps} violates strict resource limit (must be 1..{STRICT_MAX_SEGMENT_STEPS})"
+        )
+
+
 @dataclass(frozen=True)
 class TrainConfig:
     block_size: int = 128
@@ -31,6 +52,7 @@ class TrainConfig:
     lr_total_steps: int | None = None
     stage_id: int | None = None
     experiment_index: int | None = None
+    strict_limits: bool = False
 
     def __post_init__(self):
         if self.block_size < 2 or self.batch_size < 1 or self.grad_accum_steps < 1 or self.max_steps < 1:
@@ -46,6 +68,12 @@ class TrainConfig:
         horizon = self.lr_total_steps if self.lr_total_steps is not None else self.max_steps
         if not (0 < self.min_lr <= self.lr) or not (0 <= self.warmup_steps < horizon):
             raise ValueError("invalid learning-rate settings")
+        if self.strict_limits:
+            validate_strict_resource_limits(self)
+
+    def validate_strict_limits(self) -> None:
+        """Validate this config against strict Tier-0 resource limits."""
+        validate_strict_resource_limits(self)
 
     @classmethod
     def tier0_v11(
@@ -56,12 +84,13 @@ class TrainConfig:
         lr_total_steps: int | None = 10_000,
         stage_id: int | None = None,
         experiment_index: int | None = None,
+        strict_limits: bool = True,
         **overrides,
     ) -> "TrainConfig":
-        """Canonical V11-Tier0 CPU-safe config (`batch_size <= 4`, `block_size <= 256`, `segment <= 500`)."""
+        """Canonical V11-Tier0 CPU-safe config (`batch_size <= 4`, `block_size == 256`, `segment <= 500`)."""
         params = {
-            "block_size": 256,
-            "batch_size": 4,
+            "block_size": STRICT_BLOCK_SIZE,
+            "batch_size": STRICT_MAX_BATCH_SIZE,
             "grad_accum_steps": 1,
             "max_steps": max_steps,
             "lr": 3e-4,
@@ -78,6 +107,7 @@ class TrainConfig:
             "lr_total_steps": lr_total_steps,
             "stage_id": stage_id,
             "experiment_index": experiment_index,
+            "strict_limits": strict_limits,
         }
         params.update(overrides)
         return cls(**params)
@@ -137,7 +167,15 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
           cost_controller=None, tokenizer_fingerprint: str | None = None,
           dataset_version: str | None = None,
           runtime_guard=None, disk_reserve_gb: float | None = None,
-          cpu_threads: int | None = None, max_checkpoints: int = 3) -> dict:
+          cpu_threads: int | None = None, max_checkpoints: int = 3,
+          enforce_limits: bool = False) -> dict:
+    if enforce_limits or cfg.strict_limits:
+        validate_strict_resource_limits(cfg)
+    segment_cap = (
+        min(cfg.segment_max_steps, STRICT_MAX_SEGMENT_STEPS)
+        if (enforce_limits or cfg.strict_limits) and cfg.segment_max_steps is not None
+        else cfg.segment_max_steps
+    )
     import torch
 
     from apps.core.training_infrastructure.monitoring.training_monitor import TrainingMonitor
@@ -237,7 +275,7 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
     step = start_step
     executed_steps = 0
     while step < cfg.max_steps and (
-        cfg.segment_max_steps is None or executed_steps < cfg.segment_max_steps
+        segment_cap is None or executed_steps < segment_cap
     ):
         if cost_controller is not None and cost_controller.should_stop():
             stopped_reason = cost_controller.exceeded()
@@ -278,7 +316,7 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
         step += 1
         executed_steps += 1
         segment_done = (
-            cfg.segment_max_steps is not None and executed_steps >= cfg.segment_max_steps
+            segment_cap is not None and executed_steps >= segment_cap
         )
 
         if step % cfg.log_interval == 0 or step == cfg.max_steps or segment_done:
@@ -348,8 +386,16 @@ def train_sft(
     disk_reserve_gb: float | None = None,
     cpu_threads: int | None = None,
     max_checkpoints: int = 3,
+    enforce_limits: bool = False,
 ) -> dict:
     """Supervised fine-tuning / native SFT training over `(x, y)` pairs with `-100` label masking."""
+    if enforce_limits or cfg.strict_limits:
+        validate_strict_resource_limits(cfg)
+    segment_cap = (
+        min(cfg.segment_max_steps, STRICT_MAX_SEGMENT_STEPS)
+        if (enforce_limits or cfg.strict_limits) and cfg.segment_max_steps is not None
+        else cfg.segment_max_steps
+    )
     import torch
 
     from apps.core.native.sft import SFT_FORMAT_VERSION, SFT_SEP, collate_sft_batch
@@ -486,7 +532,7 @@ def train_sft(
     step = start_step
     executed_steps = 0
     while step < cfg.max_steps and (
-        cfg.segment_max_steps is None or executed_steps < cfg.segment_max_steps
+        segment_cap is None or executed_steps < segment_cap
     ):
         if cost_controller is not None and cost_controller.should_stop():
             stopped_reason = cost_controller.exceeded()
@@ -529,7 +575,7 @@ def train_sft(
         step += 1
         executed_steps += 1
         segment_done = (
-            cfg.segment_max_steps is not None and executed_steps >= cfg.segment_max_steps
+            segment_cap is not None and executed_steps >= segment_cap
         )
 
         if step % cfg.log_interval == 0 or step == cfg.max_steps or segment_done:
