@@ -151,28 +151,28 @@ export function ApiKeyUsageChart({
                   data={chartData}
                   margin={{ top: 8, right: 10, left: -12, bottom: 0 }}
                 >
-                  <CartesianGrid stroke="#1e2b37" strokeDasharray="3 3" vertical={false} />
+                  <CartesianGrid stroke="#1e2943" strokeDasharray="3 3" vertical={false} />
                   <XAxis
                     dataKey="shortDate"
-                    stroke="#647589"
-                    tick={{ fill: "#8aa0b5", fontSize: 10 }}
+                    stroke="#64748b"
+                    tick={{ fill: "#94a3b8", fontSize: 10 }}
                     tickLine={false}
-                    axisLine={{ stroke: "#202d3a" }}
+                    axisLine={{ stroke: "#1e2943" }}
                   />
                   <YAxis
                     allowDecimals={false}
-                    stroke="#647589"
-                    tick={{ fill: "#8aa0b5", fontSize: 10 }}
+                    stroke="#64748b"
+                    tick={{ fill: "#94a3b8", fontSize: 10 }}
                     tickFormatter={formatCompactTokens}
                     tickLine={false}
                     axisLine={false}
                   />
                   <Tooltip
-                    cursor={{ fill: "rgb(69 214 232 / 6%)" }}
+                    cursor={{ fill: "rgba(59, 130, 246, 0.08)" }}
                     content={<UsageTooltip />}
                   />
                   <Legend
-                    wrapperStyle={{ fontSize: "10px", paddingTop: "6px" }}
+                    wrapperStyle={{ fontSize: "11px", paddingTop: "6px", color: "#94a3b8" }}
                     formatter={(value: string) =>
                       value === "inputTokens" ? "Input Tokens" : "Output Tokens"
                     }
@@ -181,7 +181,7 @@ export function ApiKeyUsageChart({
                     dataKey="inputTokens"
                     name="inputTokens"
                     stackId="tokens"
-                    fill="#45d6e8"
+                    fill="#3b82f6"
                     radius={[0, 0, 3, 3]}
                     maxBarSize={32}
                   />
@@ -189,7 +189,7 @@ export function ApiKeyUsageChart({
                     dataKey="outputTokens"
                     name="outputTokens"
                     stackId="tokens"
-                    fill="#5e9cff"
+                    fill="#22d3ee"
                     radius={[4, 4, 0, 0]}
                     maxBarSize={32}
                   />

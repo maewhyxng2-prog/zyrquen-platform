@@ -30,6 +30,7 @@ const titles: Record<string, string> = {
   "/training": "พื้นที่ทำงานสำหรับการฝึกอบรม",
   "/system": "สถานะสุขภาพของระบบ",
   "/settings": "การตั้งค่า",
+  "/admin": "แดชบอร์ดผู้ดูแลระบบ",
   "/login": "การเข้าถึงบัญชี",
 };
 
@@ -44,8 +45,35 @@ export function AppShell({ children }: { children: ReactNode }) {
 function AppShellInner({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { platformVersion, platformStage, modelVersion } = usePlatformHealth();
+  const {
+    apiHealth,
+    nativeHealth,
+    apiError,
+    nativeError,
+    loading: healthLoading,
+    platformVersion,
+    platformStage,
+    modelVersion,
+  } = usePlatformHealth();
   const topbarVersion = platformVersion || modelVersion;
+
+  const connectionOk =
+    apiHealth?.status === "healthy" && Boolean(nativeHealth?.inference_available);
+  const connectionHasError = Boolean(apiError || nativeError);
+  const connectionIndicatorClass = connectionOk
+    ? "connection-indicator connection-indicator-ready"
+    : connectionHasError
+      ? "connection-indicator connection-indicator-warn"
+      : "connection-indicator";
+  const connectionSummary = healthLoading && !apiHealth
+    ? "กำลังตรวจสอบสถานะบริการ"
+    : connectionOk
+      ? "API และ Native AI พร้อมใช้งาน"
+      : connectionHasError
+        ? "ตรวจสอบการเชื่อมต่อบางส่วนไม่สำเร็จ"
+        : apiHealth?.status === "healthy"
+          ? "API พร้อม · รอความพร้อม Native Model"
+          : "ตรวจสอบความพร้อมของบริการตามคำขอ";
 
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -210,7 +238,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
               />
               <span className="brand-copy">
                 <strong>ZYRQUEN Ω∞</strong>
-                <small>แพลตฟอร์ม AI ระหว่างพัฒนา</small>
+                <small>AI PLATFORM</small>
               </span>
             </Link>
 
@@ -249,39 +277,50 @@ function AppShellInner({ children }: { children: ReactNode }) {
                   >
                     <Icon name={item.icon} size={18} />
                     <span>{item.label}</span>
-
-                    {item.href === "/workspace" && (
-                      <span className="nav-live-dot" />
-                    )}
                   </Link>
                 );
               })}
             </nav>
 
             <div className="nav-section-label nav-section-spaced">
-              การตั้งค่า
+              การตั้งค่าและผู้ดูแล
             </div>
 
-            <Link
-              aria-current={pathname === "/settings" ? "page" : undefined}
-              className={`nav-link${
-                pathname === "/settings" ? " nav-link-active" : ""
-              }`}
-              href="/settings"
-              onClick={() => setMobileOpen(false)}
-              title={collapsed ? "การตั้งค่า" : undefined}
-            >
-              <Icon name="settings" size={18} />
-              <span>การตั้งค่า</span>
-            </Link>
+            <nav aria-label="การนำทางการตั้งค่า" className="primary-nav">
+              <Link
+                aria-current={pathname === "/settings" ? "page" : undefined}
+                className={`nav-link${
+                  pathname === "/settings" ? " nav-link-active" : ""
+                }`}
+                href="/settings"
+                onClick={() => setMobileOpen(false)}
+                title={collapsed ? "การตั้งค่า" : undefined}
+              >
+                <Icon name="settings" size={18} />
+                <span>การตั้งค่า</span>
+              </Link>
+
+              <Link
+                aria-current={pathname === "/admin" ? "page" : undefined}
+                className={`nav-link${
+                  pathname === "/admin" ? " nav-link-active" : ""
+                }`}
+                href="/admin"
+                onClick={() => setMobileOpen(false)}
+                title={collapsed ? "แดชบอร์ดผู้ดูแลระบบ" : undefined}
+              >
+                <Icon name="shield" size={18} />
+                <span>ผู้ดูแลระบบ</span>
+              </Link>
+            </nav>
 
             <div className="sidebar-bottom">
               <div className="sidebar-connection">
-                <span className="connection-indicator" />
+                <span className={connectionIndicatorClass} />
 
                 <span className="connection-copy">
                   <strong>การเชื่อมต่อ API</strong>
-                  <small>ตรวจสอบความพร้อมของบริการตามคำขอ</small>
+                  <small>{connectionSummary}</small>
                 </span>
               </div>
 
@@ -335,9 +374,15 @@ function AppShellInner({ children }: { children: ReactNode }) {
             </div>
 
             <div className="topbar-right">
-              <StatusBadge icon="command" tone="info">
-                พื้นที่ทำงานแพลตฟอร์ม
-              </StatusBadge>
+              {pathname !== "/workspace" && (
+                <Link
+                  className="button button-primary topbar-workspace-cta"
+                  href="/workspace"
+                >
+                  <Icon name="sparkles" size={15} />
+                  เปิดพื้นที่ทำงาน AI
+                </Link>
+              )}
 
               {session?.authenticated ? (
                 <div className="account-menu">

@@ -377,7 +377,7 @@ export function WorkflowConsole() {
         <div className="unavailable-block">
           <strong>กรุณาเข้าสู่ระบบเพื่อเรียกดูสถานะ Workflow และ Model Registry จาก Backend</strong>
           <p>หน้านี้ไม่สร้างข้อมูลหรือสถานะจำลอง เมื่อลงชื่อเข้าใช้แล้วจะแสดงเฉพาะข้อมูลจริงจาก <code>/v1/workflows/*</code> และ <code>/v1/models/registry</code></p>
-          <div style={{ marginTop: 12 }}>
+          <div className="unavailable-actions">
             <Link className="button button-primary" href="/login">
               เข้าสู่ระบบ
             </Link>

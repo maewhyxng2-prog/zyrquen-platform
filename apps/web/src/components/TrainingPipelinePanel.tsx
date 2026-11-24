@@ -401,56 +401,60 @@ export function TrainingPipelinePanel() {
           </div>
 
           <form className="settings-form" onSubmit={(e) => void handleSubmitTraining(e)}>
-            <div className="settings-field">
-              <label htmlFor="train-dataset-version">เวอร์ชันชุดข้อมูล (dataset_version)</label>
-              <input
-                className="settings-input"
-                id="train-dataset-version"
-                onChange={(e) => setDatasetVersion(e.target.value)}
-                placeholder="เช่น 0.1.0 หรือ nagi_v11"
-                required
-                type="text"
-                value={datasetVersion}
-              />
+            <div className="settings-form-grid">
+              <div className="settings-field">
+                <label htmlFor="train-dataset-version">เวอร์ชันชุดข้อมูล (dataset_version)</label>
+                <input
+                  className="settings-input"
+                  id="train-dataset-version"
+                  onChange={(e) => setDatasetVersion(e.target.value)}
+                  placeholder="เช่น 0.1.0 หรือ nagi_v11"
+                  required
+                  type="text"
+                  value={datasetVersion}
+                />
+              </div>
+
+              <div className="settings-field">
+                <label htmlFor="train-approval-id">Tier-2 Approval ID (HMAC Signed)</label>
+                <input
+                  className="settings-input"
+                  id="train-approval-id"
+                  onChange={(e) => setApprovalId(e.target.value)}
+                  placeholder="ระบุ Approval ID จาก Workflow Console ด้านบน"
+                  required
+                  type="text"
+                  value={approvalId}
+                />
+              </div>
             </div>
 
-            <div className="settings-field">
-              <label htmlFor="train-approval-id">Tier-2 Approval ID (HMAC Signed)</label>
-              <input
-                className="settings-input"
-                id="train-approval-id"
-                onChange={(e) => setApprovalId(e.target.value)}
-                placeholder="ระบุ Approval ID จาก Workflow Console ด้านบน"
-                required
-                type="text"
-                value={approvalId}
-              />
-            </div>
+            <div className="settings-form-grid">
+              <div className="settings-field">
+                <label htmlFor="train-max-steps">จำนวน Steps สูงสุด (max_steps &le; 500)</label>
+                <input
+                  className="settings-input"
+                  id="train-max-steps"
+                  max={500}
+                  min={1}
+                  onChange={(e) => setMaxSteps(Number(e.target.value) || 100)}
+                  type="number"
+                  value={maxSteps}
+                />
+              </div>
 
-            <div className="settings-field">
-              <label htmlFor="train-max-steps">จำนวน Steps สูงสุด (max_steps &le; 500)</label>
-              <input
-                className="settings-input"
-                id="train-max-steps"
-                max={500}
-                min={1}
-                onChange={(e) => setMaxSteps(Number(e.target.value) || 100)}
-                type="number"
-                value={maxSteps}
-              />
-            </div>
-
-            <div className="settings-field">
-              <label htmlFor="train-batch-size">Batch Size (&le; 4)</label>
-              <input
-                className="settings-input"
-                id="train-batch-size"
-                max={4}
-                min={1}
-                onChange={(e) => setBatchSize(Number(e.target.value) || 1)}
-                type="number"
-                value={batchSize}
-              />
+              <div className="settings-field">
+                <label htmlFor="train-batch-size">Batch Size (&le; 4)</label>
+                <input
+                  className="settings-input"
+                  id="train-batch-size"
+                  max={4}
+                  min={1}
+                  onChange={(e) => setBatchSize(Number(e.target.value) || 1)}
+                  type="number"
+                  value={batchSize}
+                />
+              </div>
             </div>
 
             <div className="settings-field">

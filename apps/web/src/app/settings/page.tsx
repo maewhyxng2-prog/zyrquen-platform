@@ -43,16 +43,41 @@ function QuotaMetric({
   limit: number | null;
 }) {
   const percent = quotaPercent(used, limit);
+  const clamped = percent === null ? 0 : Math.min(100, Math.max(0, percent));
   return (
-    <div className="settings-info">
-      <span>{label}</span>
+    <div className="settings-quota-item">
+      <div className="settings-quota-head">
+        <span>{label}</span>
+        {limit !== null && (
+          <code className="tabular-nums">
+            {used.toLocaleString("th-TH")} / {limit.toLocaleString("th-TH")}
+          </code>
+        )}
+      </div>
       {limit === null ? (
-        <p>Backend ไม่ได้กำหนดขีดจำกัดสำหรับรายการนี้</p>
+        <p className="settings-quota-meta">Backend ไม่ได้กำหนดขีดจำกัดสำหรับรายการนี้</p>
       ) : (
         <>
-          <code>{used.toLocaleString("th-TH")} / {limit.toLocaleString("th-TH")}</code>
-          <progress aria-label={`สัดส่วน ${label}`} max={100} value={percent ?? 0} />
-          <p>{percent}% · {quotaState(used, limit)}</p>
+          <div
+            aria-label={`สัดส่วน ${label}`}
+            aria-valuemax={100}
+            aria-valuemin={0}
+            aria-valuenow={clamped}
+            className="progress-track"
+            role="progressbar"
+          >
+            <div
+              className={
+                clamped >= 80
+                  ? "progress-fill progress-fill-warn"
+                  : "progress-fill"
+              }
+              style={{ width: `${clamped}%` }}
+            />
+          </div>
+          <p className="settings-quota-meta tabular-nums">
+            {percent}% · {quotaState(used, limit)}
+          </p>
         </>
       )}
     </div>
@@ -726,18 +751,21 @@ export default function SettingsPage() {
           ) : profileIsLoading ? (
             <p className="settings-confirmation" role="status">กำลังโหลดข้อมูลโปรไฟล์...</p>
           ) : (
-            <form onSubmit={saveProfile}>
-              <label htmlFor="profile-email">อีเมลบัญชี</label>
-              <input
-                id="profile-email"
-                type="email"
-                value={profileEmail}
-                maxLength={320}
-                disabled={profileSaving}
-                onChange={(event) => setProfileEmail(event.target.value)}
-                required
-              />
-              <button className="button button-secondary" disabled={profileSaving || !profileEmail.trim()} type="submit">
+            <form className="settings-form" onSubmit={saveProfile}>
+              <div className="settings-field">
+                <label htmlFor="profile-email">อีเมลบัญชี</label>
+                <input
+                  className="settings-input"
+                  id="profile-email"
+                  type="email"
+                  value={profileEmail}
+                  maxLength={320}
+                  disabled={profileSaving}
+                  onChange={(event) => setProfileEmail(event.target.value)}
+                  required
+                />
+              </div>
+              <button className="button button-primary" disabled={profileSaving || !profileEmail.trim()} type="submit">
                 {profileSaving ? "กำลังบันทึก..." : "บันทึกอีเมล"}
               </button>
             </form>
@@ -772,16 +800,16 @@ export default function SettingsPage() {
               ) : !quota.active ? (
                 <div className="security-callout"><Icon name="lock" size={16} /><span>Policy โควตาหมดอายุหรือยังไม่เริ่มใช้งาน Native Inference จึงถูกปฏิเสธ</span></div>
               ) : (
-                <>
+                <div className="settings-quota-list">
                   <QuotaMetric label="Requests ที่ใช้หรือกำลังประมวลผล" used={quota.requestsInUse} limit={quota.maxRequests} />
                   <QuotaMetric label="Input Tokens ที่ใช้หรือจอง" used={quota.inputTokens} limit={quota.maxInputTokens} />
                   <QuotaMetric label="Output Tokens ที่ใช้หรือจอง" used={quota.outputTokens} limit={quota.maxOutputTokens} />
                   <QuotaMetric label="Total Tokens ที่ใช้หรือจอง" used={quota.totalTokens} limit={quota.maxTotalTokens} />
                   {quota.windowStartedAt && quota.windowEndsAt && (
-                    <p>ช่วงโควตา: {new Date(quota.windowStartedAt).toLocaleString("th-TH")} – {new Date(quota.windowEndsAt).toLocaleString("th-TH")}</p>
+                    <p className="settings-quota-meta">ช่วงโควตา: {new Date(quota.windowStartedAt).toLocaleString("th-TH")} – {new Date(quota.windowEndsAt).toLocaleString("th-TH")}</p>
                   )}
-                  {quota.runningRequests > 0 && <p>กำลังประมวลผลอยู่ {quota.runningRequests.toLocaleString("th-TH")} Request</p>}
-                </>
+                  {quota.runningRequests > 0 && <p className="settings-quota-meta">กำลังประมวลผลอยู่ {quota.runningRequests.toLocaleString("th-TH")} Request</p>}
+                </div>
               )}
             </>
           )}
@@ -804,8 +832,8 @@ export default function SettingsPage() {
           </div>
           <div className="security-callout"><Icon name="lock" size={16} /><span>URL ปลายทางเป็นค่ากำหนดฝั่งเซิร์ฟเวอร์ จึงไม่เปิดให้แก้ไขจากฝั่งเบราว์เซอร์</span></div>
         </Panel>
-        <Panel>
-          <div className="panel-heading"><div><div className="eyebrow">การเข้าถึง API</div><h2>API Key สำหรับ Native Inference</h2></div><span className="metric-icon metric-icon-blue"><Icon name="lock" /></span></div>
+        <Panel className="settings-panel-wide">
+          <div className="panel-heading"><div><div className="eyebrow">การเข้าถึง API</div><h2>API Key สำหรับ Native Inference</h2></div><span className="metric-icon metric-icon-cyan"><Icon name="key" /></span></div>
           {apiKeysAreLoading ? (
             <p className="settings-confirmation" role="status">กำลังโหลด API Key จาก Backend...</p>
           ) : !belongsToAccount(apiKeysOwnerId, session.userId) ? (
@@ -813,30 +841,32 @@ export default function SettingsPage() {
           ) : (
             <>
               <form className="settings-form" onSubmit={(event) => void submitApiKey(event)}>
-                <div className="settings-field">
-                  <label htmlFor="api-key-name">ชื่อ API Key</label>
-                  <input
-                    id="api-key-name"
-                    className="settings-input"
-                    value={apiKeyName}
-                    maxLength={80}
-                    placeholder="เช่น production-worker"
-                    onChange={(event) => setApiKeyName(event.target.value)}
-                    disabled={apiKeySaving}
-                    required
-                  />
-                </div>
-                <div className="settings-field">
-                  <label htmlFor="api-key-expires">วันหมดอายุ</label>
-                  <input
-                    id="api-key-expires"
-                    className="settings-input"
-                    type="datetime-local"
-                    value={apiKeyExpiresAt}
-                    onChange={(event) => setApiKeyExpiresAt(event.target.value)}
-                    disabled={apiKeySaving}
-                    required
-                  />
+                <div className="settings-form-grid">
+                  <div className="settings-field">
+                    <label htmlFor="api-key-name">ชื่อ API Key</label>
+                    <input
+                      id="api-key-name"
+                      className="settings-input"
+                      value={apiKeyName}
+                      maxLength={80}
+                      placeholder="เช่น production-worker"
+                      onChange={(event) => setApiKeyName(event.target.value)}
+                      disabled={apiKeySaving}
+                      required
+                    />
+                  </div>
+                  <div className="settings-field">
+                    <label htmlFor="api-key-expires">วันหมดอายุ</label>
+                    <input
+                      id="api-key-expires"
+                      className="settings-input"
+                      type="datetime-local"
+                      value={apiKeyExpiresAt}
+                      onChange={(event) => setApiKeyExpiresAt(event.target.value)}
+                      disabled={apiKeySaving}
+                      required
+                    />
+                  </div>
                 </div>
                 <div className="settings-field">
                   <label className="settings-checkbox-row" htmlFor="api-key-auto-rotate">
@@ -882,7 +912,8 @@ export default function SettingsPage() {
                     </div>
                   )}
                 </div>
-                <button className="button button-secondary" type="submit" disabled={apiKeySaving}>
+                <button className="button button-primary" type="submit" disabled={apiKeySaving}>
+                  <Icon name="plus" size={15} />
                   {apiKeySaving ? "กำลังสร้าง..." : "สร้าง API Key"}
                 </button>
               </form>
@@ -1121,8 +1152,8 @@ export default function SettingsPage() {
           )}
         </Panel>
         <Panel>
-          <div className="panel-heading"><div><div className="eyebrow">ผู้ดูแลระบบ</div><h2>แดชบอร์ดแพลตฟอร์ม</h2></div><span className="metric-icon"><Icon name="settings" /></span></div>
-          <p>ข้อมูลส่วนผู้ดูแลระบบจะเปิดให้เฉพาะบัญชีที่มีบทบาทซึ่งกำหนดจาก Backend เท่านั้น</p>
+          <div className="panel-heading"><div><div className="eyebrow">ผู้ดูแลระบบ</div><h2>แดชบอร์ดแพลตฟอร์ม</h2></div><span className="metric-icon metric-icon-violet"><Icon name="shield" /></span></div>
+          <p className="panel-body-copy">ข้อมูลส่วนผู้ดูแลระบบจะเปิดให้เฉพาะบัญชีที่มีบทบาทซึ่งกำหนดจาก Backend เท่านั้น</p>
           <Link className="button button-secondary" href="/admin">เปิดแดชบอร์ดผู้ดูแลระบบ</Link>
         </Panel>
         <Panel>

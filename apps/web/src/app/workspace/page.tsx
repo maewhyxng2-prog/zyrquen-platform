@@ -590,7 +590,13 @@ export default function WorkspacePage() {
           title="กำลังตรวจสอบพื้นที่ส่วนตัว"
         />
         <div className="panel notice-panel" role="status">
-          กำลังโหลดข้อมูลของบัญชีที่ยืนยันตัวตนแล้ว...
+          <span className="notice-icon">
+            <Icon name="lock" size={18} />
+          </span>
+          <div>
+            <strong>กำลังยืนยันสิทธิ์และซิงก์บทสนทนา</strong>
+            <p>กำลังโหลดข้อมูลของบัญชีที่ยืนยันตัวตนแล้ว...</p>
+          </div>
         </div>
       </div>
     );

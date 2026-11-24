@@ -1,7 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { PageHeader } from "@/components/PageHeader";
 import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -34,6 +45,38 @@ type ProgressDatum = {
   fill: string;
 };
 
+function subscribeClientMount() {
+  return () => {};
+}
+
+function ProgressTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload: ProgressDatum }>;
+}) {
+  if (!active || !payload || payload.length === 0) return null;
+  const item = payload[0]?.payload;
+  if (!item) return null;
+
+  return (
+    <div className="radar-tooltip">
+      <strong>{item.metric}</strong>
+      <div className="radar-tooltip-row">
+        <span>คะแนนปัจจุบัน</span>
+        <strong>{item.score.toFixed(1)}%</strong>
+      </div>
+      {item.target !== null && (
+        <div className="radar-tooltip-row">
+          <span>เป้าหมาย</span>
+          <span>{item.target.toFixed(1)}%</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const {
     apiHealth,
@@ -49,6 +92,11 @@ export default function DashboardPage() {
   const [datasetStatus, setDatasetStatus] = useState<DatasetPipelineStatus | null>(null);
   const [trainingReadiness, setTrainingReadiness] = useState<TrainingReadinessStatus | null>(null);
   const [closureRefreshTick, setClosureRefreshTick] = useState(0);
+  const chartMounted = useSyncExternalStore(
+    subscribeClientMount,
+    () => true,
+    () => false,
+  );
 
   const syncSession = useCallback(() => {
     readSession()
@@ -355,7 +403,7 @@ export default function DashboardPage() {
                       metric: "Generalization Score",
                       score: Math.min(100, Math.max(0, genScore)),
                       target: genTarget,
-                      fill: "#45d6e8",
+                      fill: "#22d3ee",
                     },
                   ]
                 : []),
@@ -365,7 +413,7 @@ export default function DashboardPage() {
                       metric: "Relational Reasoning",
                       score: Math.min(100, Math.max(0, relScore)),
                       target: relTarget,
-                      fill: "#5e9cff",
+                      fill: "#3b82f6",
                     },
                   ]
                 : []),
@@ -475,18 +523,68 @@ export default function DashboardPage() {
                       </span>
                     )}
                   </div>
-                  <div className="progress-chart-stage">
-        <table>
-          <tbody>
-            {chartData.map((entry) => (
-              <tr key={entry.metric}>
-                <td>{entry.metric}</td>
-                <td>{entry.score}%</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+                  <div
+                    className="progress-chart-stage"
+                    role="img"
+                    aria-label="กราฟเปรียบเทียบค่าตัวชี้วัดความก้าวหน้าจาก Backend"
+                  >
+                    {chartMounted ? (
+                      <ResponsiveContainer width="100%" height={176}>
+                        <BarChart
+                          data={chartData}
+                          layout="vertical"
+                          margin={{ top: 8, right: 20, left: 8, bottom: 4 }}
+                        >
+                          <CartesianGrid
+                            stroke="#1e2943"
+                            strokeDasharray="3 3"
+                            horizontal={false}
+                          />
+                          <XAxis
+                            type="number"
+                            domain={[0, 100]}
+                            stroke="#64748b"
+                            tick={{ fill: "#94a3b8", fontSize: 11 }}
+                            tickFormatter={(val: number) => `${val}%`}
+                            tickLine={false}
+                            axisLine={{ stroke: "#1e2943" }}
+                          />
+                          <YAxis
+                            type="category"
+                            dataKey="metric"
+                            width={150}
+                            stroke="#64748b"
+                            tick={{ fill: "#eef2fa", fontSize: 12 }}
+                            tickLine={false}
+                            axisLine={false}
+                          />
+                          <Tooltip
+                            cursor={{ fill: "rgba(59, 130, 246, 0.08)" }}
+                            content={<ProgressTooltip />}
+                          />
+                          {sharedTarget !== null && (
+                            <ReferenceLine
+                              x={sharedTarget}
+                              stroke="#8b5cf6"
+                              strokeDasharray="4 4"
+                              strokeWidth={2}
+                            />
+                          )}
+                          <Bar
+                            dataKey="score"
+                            radius={[0, 6, 6, 0]}
+                            maxBarSize={28}
+                          >
+                            {chartData.map((entry) => (
+                              <Cell key={entry.metric} fill={entry.fill} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="settings-usage-skeleton" />
+                    )}
+                  </div>
                 </div>
               </>
             );
