@@ -16,7 +16,7 @@ The API diagnostics endpoint is admin-only:
 
 `GET /v1/workflows/governance/diagnostics`
 
-It returns the canonical DB-path fingerprint and a SHA-256 secret fingerprint, never the secret itself. It also checks that the live API engine uses the configured DB, that the required workflow tables exist, that the V10-D workflow definition and handlers are registered, and that the workflow engine has started.
+It returns the canonical DB-path fingerprint, SQLite device/inode identity, and a SHA-256 secret fingerprint, never the secret itself. It also checks that the live API engine uses the configured DB, that the required workflow tables exist, that the V10-D workflow definition and handlers are registered, and that the workflow engine has started. The runner compares both path fingerprint and device/inode identity with its own read-only DB inspection; matching path strings alone are not accepted as proof of a shared SQLite file.
 
 ## Required runner environment
 
@@ -39,7 +39,7 @@ python -m unittest discover -s tests -p "test_v10d_governance_diagnostics.py" -v
 python tools/verify_v10d_governance.py
 ```
 
-Expected success is `overall_status: PASS` and all checks true. A 401/403 means the API token is missing, expired, or not an admin token. A DB-path or secret fingerprint mismatch means the API and runner are not configured with matching governance inputs. A missing API endpoint means the API has not yet deployed this revision and restarted.
+Expected success is `overall_status: PASS` and all checks true. A 401/403 means the API token is missing, expired, or not an admin token. A DB-path, SQLite file-identity, or secret fingerprint mismatch means the API and runner are not demonstrably using the same governance inputs and shared DB file. If the API and runner are on separate hosts or filesystems that cannot expose a common device/inode identity, this verifier fails closed; do not weaken the check to path-string equality. A missing API endpoint means the API has not yet deployed this revision and restarted.
 
 ## Security and execution boundary
 
