@@ -10,7 +10,7 @@ authorize training or establish capability in another version.
 | V7 | Frozen historical baseline | Historical regression only; do not modify or treat as current capability evidence | Preserve baseline; test inventory must be mapped before claiming a full pass |
 | V8 | Frozen historical baseline | Historical regression only; do not modify or treat as current capability evidence | Preserve baseline; test inventory must be mapped before claiming a full pass |
 | V9 | CLOSED_FAIL | Reproduce its leakage/evaluation audit and retain the recorded baseline | Closed; do not reopen by changing thresholds or substituting newer tests |
-| V10-D | Active closure verification | Resume identity, RNG serialization, real CPU checkpoint load, API/JWT/HMAC cross-process governance, forward probe, read-only preflight | Current validation target; training remains gated by authenticated Tier-2 approval |
+| V10-D | Active closure verification | Resume identity, RNG serialization, real CPU checkpoint load, API/JWT/HMAC cross-process governance, forward probe, read-only preflight | Targeted Colab regression PASS (19/19); fresh preflight and authenticated Tier-2 approval still pending; training NOT RUN |
 | V11 | LOCKED | Static/readiness verification only until its gate and required implementation are present | Blocked: `apps/core/native/dataset_v11.py` is absent on main, while `tests/native/test_checkpoint_resume.py` imports it |
 
 ## V10-D commands (Colab)
