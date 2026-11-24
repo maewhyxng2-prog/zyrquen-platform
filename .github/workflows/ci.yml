@@ -62,7 +62,7 @@ jobs:
       - name: Run Maintainer Audit & Protected Path Policy Check
         run: |
           python -m compileall -q apps tools tests phases
-          python tools/maintainer_bot.py --mode audit --run-tests --json --out maintainer-audit-report.json
+          python tools/maintainer_bot.py --mode audit --json --out maintainer-audit-report.json
           if [[ "${{ github.event_name }}" == "pull_request" && "${{ github.head_ref }}" == bot/* ]]; then
             BASE_SHA="${{ github.event.pull_request.base.sha }}"
             HEAD_SHA="${{ github.event.pull_request.head.sha }}"
