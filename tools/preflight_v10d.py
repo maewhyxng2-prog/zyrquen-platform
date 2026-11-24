@@ -142,7 +142,7 @@ def run_preflight(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Read-only ZYRQUEN V10-D runtime readiness preflight.")
-    parser.add_argument("--dataset-dir", type=Path, default=ROOT / "data" / "nagi_v10")
+    parser.add_argument("--dataset-dir", type=Path, default=ROOT / "artifacts" / "v10d_closure" / "data" / "nagi_v10")
     parser.add_argument("--tokenizer-path", type=Path, default=ROOT / "artifacts" / "v10d_closure" / "tokenizer" / "tokenizer.json")
     parser.add_argument("--checkpoint-dir", type=Path, default=ROOT / "artifacts" / "v10d_closure" / "checkpoints" / "nagi_v10")
     parser.add_argument("--registry-root", type=Path, default=ROOT / "artifacts" / "v10d_closure" / "registry")
