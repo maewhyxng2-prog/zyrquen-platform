@@ -1,11 +1,13 @@
 # ZYRQUEN Ω∞ — v9 — Generalization & Native Reasoning Blueprint
 
-- **สถานะเอกสาร:** `APPROVED PLANNING BLUEPRINT — PHASE 1 DESIGN (NO CODE EDIT / NO TRAINING YET)`
+- **สถานะเอกสาร:** `HISTORICAL BLUEPRINT — v9 EXPERIMENT CLOSED_FAIL`
+- **ผลการทดลองจริง:** [`docs/V9_EXPERIMENT_CLOSURE_REPORT.md`](V9_EXPERIMENT_CLOSURE_REPORT.md) — arm_d runtime training/evaluation completed; capability acceptance failed.
+- **หมายเหตุ:** เนื้อหา Blueprint นี้เป็นข้อกำหนดก่อนทดลอง ไม่ใช่สถานะ runtime ปัจจุบัน; ห้ามตีความข้อความเก่า “NO TRAINING YET” ว่ายังไม่มีการฝึก.
 - **สถานะ v8 ปัจจุบัน:** **ปิดการทดลองแล้วตามมติเจ้าของโครงการ** และคงสถานะ **`FROZEN`** (ห้ามแก้ไฟล์เดิม; ใช้ข้อมูลอ้างอิงจาก `docs/V8_SUMMARY.md` และคงหมายเหตุ `BLOCKED IN WORKSPACE` ใน `docs/V8_EXPERIMENT_CLOSURE_REPORT.md` สำหรับตัวเลขจาก Codespaces ที่ยังไม่อยู่ใน Snapshot นี้)
-- **ตำแหน่งในเส้นทาง NGI:** `v7 Baseline Foundation` → `v8 Attention + Pointer-Copy (ปิดแล้ว)` → **`v9 Generalization (ขั้นถัดไป)`** → `v10 Relational & Multi-step Reasoning` → `v11 Knowledge Integration` → `v12 Adaptive Learning` → `v13 Planning & Decomposition` → `v14 Verification & Self-Correction` → `v15 Autonomous Capability` → `v16+ Integrated Native Intelligence` → **ZYRQUEN Ω∞ — NGI** *(ไม่จำกัดที่ v20 และคง Roadmap Phase 11–20 เดิม)*
+- **ตำแหน่งในเส้นทาง NGI:** `v7 Baseline Foundation` → `v8 Attention + Pointer-Copy (ปิดแล้ว)` → **`v9 Generalization (CLOSED_FAIL; measured baseline)`** → `v10 Relational & Multi-step Reasoning` → `v11 Knowledge Integration` → `v12 Adaptive Learning` → `v13 Planning & Decomposition` → `v14 Verification & Self-Correction` → `v15 Autonomous Capability` → `v16+ Integrated Native Intelligence` → **ZYRQUEN Ω∞ — NGI** *(ไม่จำกัดที่ v20 และคง Roadmap Phase 11–20 เดิม)*
 - **เป้าหมายหลัก:** วางแผนพัฒนาความสามารถ **Generalization & Native Reasoning** ของโมเดล ZYRQUEN ต่อจาก `v8` โดยมุ่งให้เรียนรู้หลักการจริงและนำไปใช้กับ Entity และรูปแบบโจทย์ที่ไม่เคยเห็น (**ไม่ใช่ Chatbot-only**)
 - **เอกสารแผนการทดลองคู่ขนาน:** ดูสเปก Dataset v9, สถาปัตยกรรม `ZyrquenSlotReasoner` (~1.15M–1.35M params ใต้เพดาน CPU 5M) และ 6 Principle Probes เพิ่มเติมใน `docs/V9_EXPERIMENT_PLAN.md`
-- **ขอบเขตเอกสาร:** เอกสารวางแผนเท่านั้น ยังไม่มีการแก้ไข Source Code (`apps/web`, `apps/api`, `apps/core`, `tools/v7..v8`), Dataset, Checkpoint, Evaluation Report หรือ Roadmap Phase 11–20 และยังไม่มีการรัน Training หรือ Evaluation
+- **ขอบเขตเอกสารเดิม:** ข้อความนี้อธิบายขอบเขตก่อนเริ่มทดลองเท่านั้น; ผลจริงภายหลังบันทึกไว้ใน Closure Report โดยไม่แก้ไข v7/v8 หรือ Product Roadmap Phase 11–20.
 
 ---
 
