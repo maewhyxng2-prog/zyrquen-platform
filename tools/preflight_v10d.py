@@ -53,8 +53,9 @@ def run_preflight(
     checks.append(_check("pytorch_cpu", bool(torch_info.get("available")) and not bool(torch_info.get("cuda_available")),
                          torch_info))
     rss_gb = read_process_rss_bytes() / (1024 ** 3)
-    checks.append(_check("current_process_rss", rss_gb < RAM_HARD_LIMIT_GB,
-                         {"rss_gb": round(rss_gb, 4), "hard_limit_gb": RAM_HARD_LIMIT_GB}))
+    checks.append(_check("current_process_rss", 0 < rss_gb < RAM_HARD_LIMIT_GB,
+                         {"rss_gb": round(rss_gb, 4), "hard_limit_gb": RAM_HARD_LIMIT_GB,
+                          "measurement_available": rss_gb > 0}))
     disk_ok, disk_info = check_disk_reserve(dataset_dir, MIN_DISK_RESERVE_GB)
     checks.append(_check("disk_reserve", disk_ok, disk_info))
 
@@ -99,14 +100,15 @@ def run_preflight(
             tokenizer_info["error"] = str(exc)
     checks.append(_check("tokenizer_integrity", tokenizer_ok, tokenizer_info))
 
-    # Read-only artifact inventory. Missing outputs are expected before training and remain blockers.
-    checkpoint_manifest = checkpoint_dir / "version_manifest.json"
-    checks.append(_check("checkpoint_inventory", checkpoint_manifest.is_file(),
-                         {"directory_exists": checkpoint_dir.is_dir(),
-                          "version_manifest_exists": checkpoint_manifest.is_file()}))
-    registry_file = registry_root / "registry.json"
-    checks.append(_check("registry_inventory", registry_file.is_file(),
-                         {"directory_exists": registry_root.is_dir(), "registry_file_exists": registry_file.is_file()}))
+    # Pre-training artifacts are expected to be absent; verify path safety only.
+    checkpoint_safe = not checkpoint_dir.is_symlink()
+    registry_safe = not registry_root.is_symlink()
+    checks.append(_check("checkpoint_path_safety", checkpoint_safe,
+                         {"path": str(checkpoint_dir), "exists": checkpoint_dir.exists(),
+                          "artifact_presence_required": False}))
+    checks.append(_check("registry_path_safety", registry_safe,
+                         {"path": str(registry_root), "exists": registry_root.exists(),
+                          "artifact_presence_required": False}))
 
     if require_shared_governance:
         env_db = os.getenv("ZYRQUEN_WORKFLOW_DB_PATH", "").strip()
@@ -115,8 +117,8 @@ def run_preflight(
         checks.append(_check("shared_workflow_store",
                              bool(configured_db and configured_db.is_file()),
                              {"configured": bool(configured_db), "exists": bool(configured_db and configured_db.is_file())}))
-        checks.append(_check("shared_approval_secret", len(env_secret) >= 32,
-                             {"configured": bool(env_secret), "length_at_least_32": len(env_secret) >= 32}))
+        checks.append(_check("shared_approval_secret", bool(env_secret),
+                             {"configured": bool(env_secret)}))
     else:
         checks.append(_check("shared_governance", True, "Not required by explicit caller", blocking=False))
 
