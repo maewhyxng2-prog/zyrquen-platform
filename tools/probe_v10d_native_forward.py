@@ -75,7 +75,7 @@ def run_probe(
     train_pairs = build_sft_pairs(train_rows, tokenizer, max_seq_len=256, use_slots=True)
     val_pairs = build_sft_pairs(val_rows, tokenizer, max_seq_len=256, use_slots=True)
     x_rows, y_rows = collate_sft_batch(
-        train_pairs, pad_id=tokenizer.pad_id, max_seq_len=256
+        val_pairs, pad_id=tokenizer.pad_id, max_seq_len=256
     )
     x = torch.tensor(x_rows, dtype=torch.long, device="cpu")
     y = torch.tensor(y_rows, dtype=torch.long, device="cpu")
@@ -109,7 +109,7 @@ def run_probe(
     checks = {
         "cpu_runtime": True,
         "tokenizer_v2_atomic_slots": True,
-        "real_sft_samples_loaded": len(train_pairs) == batch_size and bool(val_pairs),
+        "real_sft_samples_loaded": len(train_pairs) == batch_size and len(val_pairs) == batch_size,
         "model_parameter_budget": params <= MAX_V10_PARAMETERS,
         "logits_shape": list(logits.shape) == [batch_size, x.shape[1], tokenizer.vocab_size],
         "finite_logits": finite_logits,
