@@ -115,7 +115,8 @@
 
 - Single-use HMAC-SHA256 Tier-2 token enforcement for training execution, stage transition, and `ModelRegistry` promotion/rollback is unit-tested (**`VERIFIED`**).
 - The V10-D CLI no longer accepts `--approve-as-admin` or self-asserted admin identity; it fails closed at `WAITING_APPROVAL`. A regression test rejects the former flag.
-- Live authenticated Admin API approval, shared workflow-store/HMAC-secret continuity with the Colab runner, and safe resume of the paused closure run remain **`BLOCKED / NOT INTEGRATED`**. No training approval has been issued or consumed.
+- Authenticated API integration is wired behind `ZYRQUEN_V10D_APPROVAL_ENABLED=1`: the API registers V10-D handlers, requires explicit `ZYRQUEN_WORKFLOW_DB_PATH` and `ZYRQUEN_APPROVAL_SECRET`, and queues approved `training.execute` work asynchronously. The runner enforces the shared DB/secret and supports `--resume-run-id` with exact payload-scope matching. Regression tests cover handler registration and fail-closed configuration.
+- Deployment/runtime integration remains **`NOT YET VERIFIED`**: API and runner must execute in the same trusted runtime or share a genuinely persistent SQLite path, with the same secret supplied securely. No live approval or training has been executed.
 
 ---
 
