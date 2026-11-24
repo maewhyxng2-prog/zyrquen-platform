@@ -44,6 +44,28 @@ class TestV10DClosureRunner(unittest.TestCase):
             with self.assertRaises(V10DClosureError):
                 run_v10d_closure(workspace_dir=ws, cpu_threads=4)
 
+    def test_runner_requires_and_passes_shared_hmac_secret(self) -> None:
+        from close_v10d import _open_orchestrator
+
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "workflow.db"
+            with patch.dict("os.environ", {"ZYRQUEN_APPROVAL_SECRET": "s" * 48}):
+                with patch("close_v10d.CentralWorkflowOrchestrator") as factory:
+                    fake = factory.return_value
+                    with _open_orchestrator(db):
+                        pass
+                    factory.assert_called_once_with(
+                        db_path=db,
+                        work_dir=ROOT,
+                        approval_secret="s" * 48,
+                    )
+                    fake.shutdown.assert_called_once_with(wait=True)
+
+            with patch.dict("os.environ", {}, clear=True):
+                with self.assertRaises(V10DClosureError):
+                    with _open_orchestrator(db):
+                        pass
+
     def test_cli_rejects_self_asserted_admin_approval(self) -> None:
         with patch.object(sys, "argv", ["close_v10d.py", "--approve-as-admin", "admin-01"]):
             with self.assertRaises(SystemExit) as exc:
