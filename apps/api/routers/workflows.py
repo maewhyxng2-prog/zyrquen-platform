@@ -36,7 +36,25 @@ _ENGINE: CentralWorkflowOrchestrator | None = None
 def get_workflow_engine() -> CentralWorkflowOrchestrator:
     global _ENGINE
     if _ENGINE is None:
+        v10d_enabled = os.getenv("ZYRQUEN_V10D_APPROVAL_ENABLED", "0").strip() == "1"
+        if v10d_enabled:
+            if not os.getenv("ZYRQUEN_WORKFLOW_DB_PATH", "").strip():
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="V10-D approval requires an explicitly shared ZYRQUEN_WORKFLOW_DB_PATH.",
+                )
+            if not os.getenv("ZYRQUEN_APPROVAL_SECRET", "").strip():
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="V10-D approval requires a configured shared ZY RQUEN_APPROVAL_SECRET.",
+                )
         _ENGINE = create_default_orchestrator()
+        if v10d_enabled:
+            # Register the exact closure workflow and its real handlers in the
+            # authenticated API process so an admin decision can safely resume it.
+            from tools.close_v10d import _register_v10d_closure_workflow
+
+            _register_v10d_closure_workflow(_ENGINE)
     return _ENGINE
 
 
@@ -166,12 +184,16 @@ def decide_workflow_approval(
 ):
     engine = get_workflow_engine()
     try:
+        approval = engine.store.get_approval(approval_id)
+        if approval is None:
+            raise ApprovalViolationError(f"Approval request not found: {approval_id}")
         run = engine.decide_approval_and_resume(
             approval_id,
             approve=body.approve,
             approver_user_id=str(current_user.id),
             approver_role=current_user.role,
             reason=body.reason,
+            execute_async=bool(body.approve and approval.get("action_type") == "training.execute"),
         )
         return redact_dict(run)
     except ApprovalViolationError as exc:
