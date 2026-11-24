@@ -29,7 +29,7 @@ def _definition() -> WorkflowDefinition:
     return WorkflowDefinition(
         workflow_key=WORKFLOW_KEY,
         version=VERSION,
-        group_name="test",
+        group_name="training",
         title="Cross-process approval resume test",
         description="Synthetic no-training test for shared workflow persistence.",
         default_tier="tier2_approval",
