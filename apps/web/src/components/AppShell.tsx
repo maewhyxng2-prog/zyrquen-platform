@@ -13,26 +13,55 @@ import type { Session } from "@/lib/types";
 import { Icon, type IconName } from "./Icon";
 import { StatusBadge } from "./StatusBadge";
 
-const navigation: {
+type NavItem = {
   href: string;
   label: string;
   icon: IconName;
-}[] = [
-  { href: "/", label: "ภาพรวม", icon: "gauge" },
+  exact?: boolean;
+};
+
+const primaryNavigation: NavItem[] = [
+  { href: "/", label: "หน้าหลัก", icon: "home", exact: true },
   { href: "/workspace", label: "พื้นที่ทำงาน AI", icon: "message" },
-  { href: "/training", label: "การฝึกอบรม", icon: "layers" },
+  { href: "/capabilities", label: "ความสามารถ AI", icon: "sparkles" },
+  { href: "/knowledge", label: "คลังความรู้และข้อมูล", icon: "book" },
   { href: "/system", label: "สถานะระบบ", icon: "activity" },
+  { href: "/settings", label: "การตั้งค่า", icon: "settings" },
+];
+
+const advancedNavigation: NavItem[] = [
+  { href: "/developer", label: "API Management", icon: "code", exact: true },
+  { href: "/developer/keys", label: "API Keys", icon: "key" },
+  { href: "/developer/console", label: "Developer Console", icon: "terminal" },
+  { href: "/developer/usage", label: "Usage & Quotas", icon: "layers" },
+  { href: "/admin", label: "ผู้ดูแลระบบ", icon: "shield" },
 ];
 
 const titles: Record<string, string> = {
-  "/": "ภาพรวม",
+  "/": "หน้าหลัก",
   "/workspace": "พื้นที่ทำงาน AI",
-  "/training": "พื้นที่ทำงานสำหรับการฝึกอบรม",
-  "/system": "สถานะสุขภาพของระบบ",
+  "/capabilities": "ความสามารถ AI",
+  "/knowledge": "คลังความรู้และข้อมูล",
+  "/system": "สถานะระบบ",
   "/settings": "การตั้งค่า",
-  "/admin": "แดชบอร์ดผู้ดูแลระบบ",
+  "/developer": "API Management",
+  "/developer/keys": "API Keys",
+  "/developer/console": "Developer Console",
+  "/developer/usage": "Usage & Quotas",
+  "/admin": "ผู้ดูแลระบบ",
   "/login": "การเข้าถึงบัญชี",
 };
+
+function isNavItemActive(pathname: string, item: NavItem): boolean {
+  if (item.exact) {
+    return pathname === item.href;
+  }
+  return pathname === item.href || pathname.startsWith(`${item.href}/`);
+}
+
+function isAdvancedRoute(pathname: string): boolean {
+  return pathname.startsWith("/developer") || pathname.startsWith("/admin");
+}
 
 export function AppShell({ children }: { children: ReactNode }) {
   return (
@@ -65,18 +94,22 @@ function AppShellInner({ children }: { children: ReactNode }) {
     : connectionHasError
       ? "connection-indicator connection-indicator-warn"
       : "connection-indicator";
-  const connectionSummary = healthLoading && !apiHealth
-    ? "กำลังตรวจสอบสถานะบริการ"
-    : connectionOk
-      ? "API และ Native AI พร้อมใช้งาน"
-      : connectionHasError
-        ? "ตรวจสอบการเชื่อมต่อบางส่วนไม่สำเร็จ"
-        : apiHealth?.status === "healthy"
-          ? "API พร้อม · รอความพร้อม Native Model"
-          : "ตรวจสอบความพร้อมของบริการตามคำขอ";
+  const connectionSummary =
+    healthLoading && !apiHealth
+      ? "กำลังตรวจสอบสถานะระบบ"
+      : connectionOk
+        ? "Native AI พร้อมใช้งาน"
+        : connectionHasError
+          ? "ตรวจสอบการเชื่อมต่อบางส่วนไม่สำเร็จ"
+          : apiHealth?.status === "healthy"
+            ? "ระบบเชื่อมต่อแล้ว · รอความพร้อม Native Model"
+            : "ตรวจสอบความพร้อมของระบบ";
 
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(() =>
+    isAdvancedRoute(pathname),
+  );
   const [prevPathname, setPrevPathname] = useState(pathname);
   const [session, setSession] = useState<Session | null>(null);
   const [signingOut, setSigningOut] = useState(false);
@@ -88,6 +121,9 @@ function AppShellInner({ children }: { children: ReactNode }) {
     setPrevPathname(pathname);
     if (mobileOpen) {
       setMobileOpen(false);
+    }
+    if (isAdvancedRoute(pathname) && !advancedOpen) {
+      setAdvancedOpen(true);
     }
   }
 
@@ -222,7 +258,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
             aria-label="แถบเมนูหลัก"
           >
             <Link
-              aria-label="ภาพรวม ZYRQUEN Ω∞"
+              aria-label="หน้าหลัก ZYRQUEN Ω∞"
               className="brand-lockup"
               href="/"
               onClick={() => setMobileOpen(false)}
@@ -238,39 +274,24 @@ function AppShellInner({ children }: { children: ReactNode }) {
               />
               <span className="brand-copy">
                 <strong>ZYRQUEN Ω∞</strong>
-                <small>AI PLATFORM</small>
+                <small>NATIVE AI PLATFORM</small>
               </span>
             </Link>
-
-            <div className="workspace-switcher">
-              <span className="workspace-symbol">
-                <Icon name="command" size={16} />
-              </span>
-
-              <span className="workspace-label">
-                <strong>พื้นที่ทำงานส่วนตัว</strong>
-                <small>แอปพลิเคชันเว็บ</small>
-              </span>
-
-              <span className="workspace-caret">
-                <Icon name="chevron-down" size={14} />
-              </span>
-            </div>
 
             <div className="nav-section-label">แพลตฟอร์ม</div>
 
             <nav aria-label="การนำทางหลัก" className="primary-nav">
-              {navigation.map((item) => {
-                const active =
-                  item.href === "/"
-                    ? pathname === "/"
-                    : pathname.startsWith(item.href);
+              {primaryNavigation.map((item) => {
+                const active = isNavItemActive(pathname, item);
+                const featured = item.href === "/workspace";
 
                 return (
                   <Link
                     key={item.href}
                     aria-current={active ? "page" : undefined}
-                    className={`nav-link${active ? " nav-link-active" : ""}`}
+                    className={`nav-link${
+                      featured ? " nav-link-featured" : ""
+                    }${active ? " nav-link-active" : ""}`}
                     href={item.href}
                     onClick={() => setMobileOpen(false)}
                     title={collapsed ? item.label : undefined}
@@ -282,44 +303,67 @@ function AppShellInner({ children }: { children: ReactNode }) {
               })}
             </nav>
 
-            <div className="nav-section-label nav-section-spaced">
-              การตั้งค่าและผู้ดูแล
+            <div className="sidebar-advanced-group">
+              <button
+                aria-controls="sidebar-advanced-nav"
+                aria-expanded={advancedOpen}
+                className={`sidebar-advanced-toggle${
+                  isAdvancedRoute(pathname)
+                    ? " sidebar-advanced-toggle-active"
+                    : ""
+                }`}
+                onClick={() => setAdvancedOpen((current) => !current)}
+                title={collapsed ? "นักพัฒนา & ขั้นสูง" : undefined}
+                type="button"
+              >
+                <span className="sidebar-advanced-toggle-label">
+                  <Icon name="code" size={16} />
+                  <span>นักพัฒนา &amp; ขั้นสูง</span>
+                </span>
+                <Icon
+                  className={`sidebar-advanced-chevron${
+                    advancedOpen ? " sidebar-advanced-chevron-open" : ""
+                  }`}
+                  name="chevron-down"
+                  size={15}
+                />
+              </button>
+
+              {advancedOpen && (
+                <nav
+                  aria-label="การนำทางขั้นสูงและนักพัฒนา"
+                  className="primary-nav sidebar-advanced-nav"
+                  id="sidebar-advanced-nav"
+                >
+                  {advancedNavigation.map((item) => {
+                    const active = isNavItemActive(pathname, item);
+
+                    return (
+                      <Link
+                        key={item.href}
+                        aria-current={active ? "page" : undefined}
+                        className={`nav-link nav-link-advanced${
+                          active ? " nav-link-active" : ""
+                        }`}
+                        href={item.href}
+                        onClick={() => setMobileOpen(false)}
+                        title={collapsed ? item.label : undefined}
+                      >
+                        <Icon name={item.icon} size={17} />
+                        <span>{item.label}</span>
+                      </Link>
+                    );
+                  })}
+                </nav>
+              )}
             </div>
-
-            <nav aria-label="การนำทางการตั้งค่า" className="primary-nav">
-              <Link
-                aria-current={pathname === "/settings" ? "page" : undefined}
-                className={`nav-link${
-                  pathname === "/settings" ? " nav-link-active" : ""
-                }`}
-                href="/settings"
-                onClick={() => setMobileOpen(false)}
-                title={collapsed ? "การตั้งค่า" : undefined}
-              >
-                <Icon name="settings" size={18} />
-                <span>การตั้งค่า</span>
-              </Link>
-
-              <Link
-                aria-current={pathname === "/admin" ? "page" : undefined}
-                className={`nav-link${
-                  pathname === "/admin" ? " nav-link-active" : ""
-                }`}
-                href="/admin"
-                onClick={() => setMobileOpen(false)}
-                title={collapsed ? "แดชบอร์ดผู้ดูแลระบบ" : undefined}
-              >
-                <Icon name="shield" size={18} />
-                <span>ผู้ดูแลระบบ</span>
-              </Link>
-            </nav>
 
             <div className="sidebar-bottom">
               <div className="sidebar-connection">
                 <span className={connectionIndicatorClass} />
 
                 <span className="connection-copy">
-                  <strong>การเชื่อมต่อ API</strong>
+                  <strong>รันไทม์ NATIVE AI</strong>
                   <small>{connectionSummary}</small>
                 </span>
               </div>
@@ -425,7 +469,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
         {authPage && (
           <header className="auth-topbar">
             <Link
-              aria-label="ภาพรวม ZYRQUEN"
+              aria-label="หน้าหลัก ZYRQUEN"
               className="brand-lockup"
               href="/"
             >
@@ -440,7 +484,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
               />
               <span className="brand-copy">
                 <strong>ZYRQUEN Ω∞</strong>
-                <small>แพลตฟอร์ม AI ระหว่างพัฒนา</small>
+                <small>NATIVE AI PLATFORM</small>
               </span>
             </Link>
 

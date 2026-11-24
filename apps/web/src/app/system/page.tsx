@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
+import { ClosureAudit } from "@/components/ClosureAudit";
 import { PageHeader } from "@/components/PageHeader";
 import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -44,6 +46,7 @@ export default function SystemPage() {
     refresh,
   } = usePlatformHealth();
   const [session, setSession] = useState<Session | null>(null);
+  const [closureRefreshTick, setClosureRefreshTick] = useState(0);
 
   useEffect(() => {
     const syncSession = () => {
@@ -125,14 +128,17 @@ export default function SystemPage() {
           <button
             className="button button-secondary"
             disabled={loading}
-            onClick={() => void refresh()}
+            onClick={() => {
+              void refresh();
+              setClosureRefreshTick((tick) => tick + 1);
+            }}
             type="button"
           >
             <Icon name="activity" size={16} />
             {loading ? "กำลังตรวจสอบ..." : "ตรวจสอบบริการอีกครั้ง"}
           </button>
         }
-        description="ตรวจสอบสถานะการเชื่อมต่อ API ความพร้อมของ Native Model และสถานะความปลอดภัยของ Workflow Scheduler / Recovery จาก Endpoint ที่มีอยู่จริง"
+        description="ตรวจสอบสถานะความพร้อมของ Native Model, บริการ API หลัก, Workflow Scheduler / Recovery และ V10→V11 Closure Audit จาก Endpoint จริง"
         eyebrow="แพลตฟอร์ม / สถานะระบบ"
         icon="activity"
         title="สถานะสุขภาพของระบบ"
@@ -238,11 +244,21 @@ export default function SystemPage() {
           />
         </div>
       </Panel>
+
+      <section aria-label="การตรวจสอบการปิดงาน V10 สู่ V11">
+        <ClosureAudit refreshTrigger={closureRefreshTick} />
+      </section>
+
       <Panel className="notice-panel">
         <span className="notice-icon"><Icon name="help" size={18} /></span>
         <div>
           <strong>หลักการตรวจสอบสถานะระบบ</strong>
-          <p>API รายงานเฉพาะสถานะสุขภาพบริการโดยรวม ความพร้อมของ Native Model และสถานะจริงของ Workflow Scheduler กับ Recovery (ผ่าน <code>GET /v1/workflows/services/status</code>) เพื่อให้ยืนยันได้ว่าโมดูลทำงานเบื้องหลังถูกปิดอย่างปลอดภัยระหว่างการตรวจสอบ ระบบจะไม่แสดงสถานะว่าสำเร็จหากยังไม่ได้ดำเนินการจริง</p>
+          <p>
+            API รายงานเฉพาะสถานะสุขภาพบริการโดยรวม ความพร้อมของ Native Model และสถานะจริงของ Workflow Scheduler กับ Recovery (ผ่าน <code>GET /v1/workflows/services/status</code>) เพื่อให้ยืนยันได้ว่าโมดูลทำงานเบื้องหลังถูกปิดอย่างปลอดภัยระหว่างการตรวจสอบ ระบบจะไม่แสดงสถานะว่าสำเร็จหากยังไม่ได้ดำเนินการจริง สำหรับการจัดการ Endpoint และ API Keys สามารถเปิดได้ที่{" "}
+            <Link className="text-link" href="/developer">
+              ส่วนนักพัฒนา (Developer)
+            </Link>
+          </p>
         </div>
       </Panel>
     </div>

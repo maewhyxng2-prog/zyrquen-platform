@@ -179,7 +179,7 @@ export default function LoginPage() {
             <div className="auth-heading">
               <StatusBadge tone="info" icon="lock">การเข้าถึงที่ปลอดภัย</StatusBadge>
               <h1 id="auth-title">{mode === "login" ? "ยินดีต้อนรับสู่ ZYRQUEN Ω∞" : "สร้างบัญชีผู้ใช้ใหม่"}</h1>
-              <p>{mode === "login" ? "เข้าสู่ระบบด้วยบัญชีของคุณเพื่อเปิดพื้นที่ทำงานและเริ่มต้นสนทนา" : "สมัครสมาชิกเพื่อเข้าถึงการใช้งานพื้นที่สนทนาและ API ของระบบ"}</p>
+              <p>{mode === "login" ? "เข้าสู่ระบบด้วยบัญชีของคุณเพื่อเปิดพื้นที่ทำงาน AI และเริ่มต้นสนทนา" : "สมัครสมาชิกเพื่อใช้งานพื้นที่ทำงาน AI บันทึกประวัติการสนทนา และเข้าถึงความสามารถของระบบ"}</p>
             </div>
             <div aria-label="ตัวเลือกการจัดการบัญชี" className="auth-tabs" role="tablist">
               <button

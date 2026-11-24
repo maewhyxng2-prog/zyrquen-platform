@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { DeveloperNav } from "@/components/DeveloperNav";
 import { Icon } from "@/components/Icon";
 import { PageHeader } from "@/components/PageHeader";
 import { Panel } from "@/components/Panel";
@@ -126,10 +127,12 @@ export default function AdminPage() {
           </button>
         }
         description="ข้อมูลผู้ดูแลระบบจาก Backend พร้อมการตรวจสิทธิ์ฝั่งเซิร์ฟเวอร์"
-        eyebrow="แพลตฟอร์ม / ผู้ดูแลระบบ"
+        eyebrow="DEVELOPER & ADVANCED / ผู้ดูแลระบบ"
         icon="shield"
         title="แดชบอร์ดผู้ดูแลระบบ"
       />
+
+      <DeveloperNav />
 
       {loading && !overview ? (
         <Panel className="notice-panel">
@@ -378,7 +381,7 @@ export default function AdminPage() {
                 </div>
               )}
               <div className="panel-link-row">
-                <Link className="text-link" href="/training">
+                <Link className="text-link" href="/developer/console">
                   เปิดคอนโซล Workflow และ Tier-2 Approvals
                   <Icon name="arrow-right" size={15} />
                 </Link>
