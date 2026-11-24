@@ -195,7 +195,7 @@ def perplexity(loss: float) -> float:
 
 def _training_resume_identity(cfg: TrainConfig) -> dict:
     """Stable optimizer/data sampling settings across segmented resume."""
-    ignored = {"max_steps", "segment_max_steps", "stage_id", "experiment_index"}
+    ignored = {"max_steps", "segment_max_steps"}
     return {key: value for key, value in cfg.__dict__.items() if key not in ignored}
 
 
