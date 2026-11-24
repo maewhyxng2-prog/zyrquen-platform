@@ -17,7 +17,7 @@ ZYRQUEN Ω∞ เป็นโครงการวิจัยและวิศ
 | **Integration Verification** | **Phase 10.9.9 Gate: `PASSED / CLOSED`** | CI Run `44893016007`, SHA `466b58a75419708a86469f59a903e322d85081d2`, 4/4 `web / docker / test / postgres-integration` |
 | **GitHub CI สำหรับ 11–20** | **ยังไม่ยืนยัน** | ห้ามอ้างว่า CI 4/4 สำหรับ Phase 11–20 ผ่านจนกว่าจะเห็น Workflow 4 Jobs สำเร็จบน Commit SHA เดียวกัน |
 | **Native Model `v8` Experiment** | **ปิดการทดลองแล้ว (`FROZEN`)** | รายละเอียดโค้ดและข้อจำกัดบันทึกใน [`docs/V8_SUMMARY.md`](docs/V8_SUMMARY.md) และ [`docs/V8_EXPERIMENT_CLOSURE_REPORT.md`](docs/V8_EXPERIMENT_CLOSURE_REPORT.md) *(ตัวเลขรันไทม์จริงจาก Codespaces ยังสถานะ `BLOCKED IN WORKSPACE` จนกว่าจะแนบ `report.json`)* |
-| **Native Model `v9` Planning** | **วางแผนแล้ว (`NOT YET TRAINED`)** | ออกแบบ Dataset Disjoint 4 ชั้น, Slotizer แก้ `<unk>` collision, 4-Arm Protocol และ Acceptance Gates ใน [`docs/V9_BLUEPRINT.md`](docs/V9_BLUEPRINT.md) และ [`docs/V9_EXPERIMENT_PLAN.md`](docs/V9_EXPERIMENT_PLAN.md) *(ยังไม่ได้เริ่มฝึกโมเดลจริง)* |
+| **Native Model `v9` Experiment** | **`CLOSED_FAIL` (runtime + evaluation completed)** | arm_d ฝึกและประเมินบน Colab จริง; test_unseen FG 29.2%, test_ood FG 9.2%, unseen copy 27.7%; ไม่ผ่าน generalization / planning / conflict / stability gates. หลักฐานสรุป: [`docs/V9_EXPERIMENT_CLOSURE_REPORT.md`](docs/V9_EXPERIMENT_CLOSURE_REPORT.md) *(ไฟล์ report/checkpoint ต้นฉบับยังอยู่นอก GitHub)* |
 | **Production Deployment** | ยังไม่พร้อมและยังไม่ได้ Deploy | ยังไม่มี trained ZYRQUEN model weights และยังไม่ได้ provision Cloud / PostgreSQL / GPU / Monitoring / Backup |
 
 ---
@@ -30,10 +30,10 @@ ZYRQUEN Ω∞ เป็นโครงการวิจัยและวิศ
 | :--- | :--- | :--- | :--- |
 | **v7** | Baseline Foundation (`TinyNGI` 2-layer LSTM) | ผ่านการทดลองฐาน (`FROZEN`) | `tools/train_nagi_500_v7.py` |
 | **v8** | Attention + Pointer-Copy (`BiGRU + Bahdanau + p_gen`) | ปิดการทดลองแล้ว (`FROZEN`) | [`docs/V8_SUMMARY.md`](docs/V8_SUMMARY.md), [`docs/V8_EXPERIMENT_CLOSURE_REPORT.md`](docs/V8_EXPERIMENT_CLOSURE_REPORT.md) |
-| **v9** | **Generalization** — Unseen Entity & OOD Template | **ขั้นถัดไป (Blueprint พร้อม / ยังไม่ฝึก)** | [`docs/V9_BLUEPRINT.md`](docs/V9_BLUEPRINT.md), [`docs/V9_EXPERIMENT_PLAN.md`](docs/V9_EXPERIMENT_PLAN.md) |
-| **v10** | Relational & Multi-step Reasoning | แผนขั้นถัดไป | [`docs/V9_BLUEPRINT.md`](docs/V9_BLUEPRINT.md) |
-| **v11** | Knowledge Integration | แผนขั้นถัดไป | [`docs/PHASE_17_SPEC.md`](docs/PHASE_17_SPEC.md) |
-| **v12** | Adaptive Learning | แผนขั้นถัดไป | [`docs/PHASE_18_SPEC.md`](docs/PHASE_18_SPEC.md) |
+| **v9** | **Generalization** — Unseen Entity & OOD Template | **`CLOSED_FAIL` — retained as measured baseline** | [`docs/V9_EXPERIMENT_CLOSURE_REPORT.md`](docs/V9_EXPERIMENT_CLOSURE_REPORT.md) |
+| **v10** | Relational & Multi-step Reasoning | **Preparation only; V10-D runtime closure BLOCKED** | [`docs/v10/V10_CLOSURE_STATUS.md`](docs/v10/V10_CLOSURE_STATUS.md) |
+| **v11** | Knowledge Integration | **BLUEPRINT ONLY — LOCKED until V10 runtime closure PASS** | [`docs/v11/README.md`](docs/v11/README.md) |
+| **v12** | Adaptive Learning | **BLUEPRINT ONLY — LOCKED until V10 and V11 gates PASS** | [`docs/v12/README.md`](docs/v12/README.md) |
 | **v13** | Planning & Decomposition | แผนขั้นถัดไป | [`docs/PHASE_16_SPEC.md`](docs/PHASE_16_SPEC.md) |
 | **v14** | Verification & Self-Correction | แผนขั้นถัดไป | [`docs/V9_BLUEPRINT.md`](docs/V9_BLUEPRINT.md) |
 | **v15** | Autonomous Capability | แผนขั้นถัดไป | [`docs/PHASE_19_SPEC.md`](docs/PHASE_19_SPEC.md) |
@@ -77,7 +77,7 @@ ZYRQUEN Ω∞ เป็นโครงการวิจัยและวิศ
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — สถาปัตยกรรมและขอบเขตระบบ
 - [`API_ACCESS.md`](API_ACCESS.md) — การใช้งาน API Key และ Native Inference Endpoint
 - [`docs/V8_SUMMARY.md`](docs/V8_SUMMARY.md) & [`docs/V8_EXPERIMENT_CLOSURE_REPORT.md`](docs/V8_EXPERIMENT_CLOSURE_REPORT.md) — สรุปการปิดการทดลอง `v8` และข้อจำกัด
-- [`docs/V9_BLUEPRINT.md`](docs/V9_BLUEPRINT.md) & [`docs/V9_EXPERIMENT_PLAN.md`](docs/V9_EXPERIMENT_PLAN.md) — พิมพ์เขียวและแผนการทดลอง `v9 Generalization`
+- [`docs/V9_BLUEPRINT.md`](docs/V9_BLUEPRINT.md) & [`docs/V9_EXPERIMENT_PLAN.md`](docs/V9_EXPERIMENT_PLAN.md) — พิมพ์เขียว/แผน `v9`; [`docs/V9_EXPERIMENT_CLOSURE_REPORT.md`](docs/V9_EXPERIMENT_CLOSURE_REPORT.md) — ผลทดลองจริงและข้อสรุป `CLOSED_FAIL`
 - [`docs/NATIVE_TRAINING_500_SPEC.md`](docs/NATIVE_TRAINING_500_SPEC.md) & [`docs/SCALING_POLICY.md`](docs/SCALING_POLICY.md) — สเปกการฝึกและการขยายขนาดโมเดล
 - [`docs/PHASES_11_20_INDEX.md`](docs/PHASES_11_20_INDEX.md) & [`docs/PHASE_9_STATUS.md`](docs/PHASE_9_STATUS.md) — ดัชนีสถานะ Phase 9 และ Phase 11–20
 - [`docs/engineering/ZYRQUEN_PHASE_READINESS.md`](docs/engineering/ZYRQUEN_PHASE_READINESS.md) & [`docs/operations/KNOWN_LIMITATIONS.md`](docs/operations/KNOWN_LIMITATIONS.md)
