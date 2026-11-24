@@ -5,7 +5,7 @@
 - **Strategy:** Native-Only (`ZyrquenModel`, Random Initialization, CPU-Only Budget, Zero Pretrained External Weights, Zero External AI APIs)
 - **Overall Closure Status:** **`BLOCKED`** *(Static contracts & integration hooks verified; PyTorch CPU runtime training & evaluation have not executed)*
 - **V11 Unlock Gate:** **`LOCKED`**
-- **Last Audited:** `2026-11-22`
+- **Last Audited:** `2026-11-24`
 
 > **Mandatory Status Taxonomy:** `VERIFIED` | `BLOCKED` | `PENDING` | `NOT RUN` | `NOT APPLICABLE`
 > ห้ามใช้ `VERIFIED` กับ Runtime Training, Real Checkpoints หรือ Real-Weight Evaluation จนกว่าจะมีผลการรัน PyTorch CPU จริง
@@ -22,7 +22,7 @@
 | **V10-A** | Architecture & Integration Contracts 1–5 | **`VERIFIED`** *(Static)* | `tests/test_v10a_contracts.py` & `apps/core/native/closure_audit.py` (`STATIC PASS`) |
 | **V10-B** | Central Workflow Engine, Anti-False-PASS Gate & Security Governance | **`VERIFIED`** *(Static / Unit)* | 8 workflow groups, Tier-2 HMAC single-use tokens, strict `zyrquen.v10.evaluation_report.v1` gate |
 | **V10-C** | Native SFT Hook, `EvaluationEngine`, Closure Audit API & Dashboard UI | **`VERIFIED`** *(Wired / Static)* | `handle_training_execute`, `EvaluationEngine`, `GET /v1/v10/closure-audit`, `<ClosureAudit />` |
-| **V10-D** | Final PyTorch CPU Runtime Training, Real Eval Report & Registry Baseline | **`BLOCKED`** | `TORCH_NOT_INSTALLED` in container; real forward/backward & eval have not executed |
+| **V10-D** | Final PyTorch CPU Runtime Training, Real Eval Report & Registry Baseline | **`BLOCKED`** | Colab PyTorch CPU available; Dataset/Leakage Audit PASS (600 examples); paused at `WAITING_APPROVAL` (`TIER2_HMAC_APPROVAL_REQUIRED`); no training or real-weight evaluation yet |
 | **Final Runtime Closure Gate** | Authorization to declare V10 runtime complete | **`BLOCKED`** | Cannot pass while **V10-D** and PyTorch runtime checks remain **`BLOCKED` / `NOT RUN`** |
 | **V11 Unlock Gate** | Authorization to unlock **V11 (`10,000` Steps)** | **`BLOCKED`** (**`LOCKED`**) | Automatically remains **`LOCKED`** until Final Runtime Closure Gate = `VERIFIED (RUNTIME PASS)` |
 
@@ -66,7 +66,7 @@
 
 - **Static Pre-Audit:** `V10-A`, `V10-B`, and `V10-C` wiring checks pass statically.
 - **Closure Pipeline Runner (`tools/close_v10d.py`):** End-to-end V10-D orchestrator wiring dataset generation/leakage audit, slot-safe tokenizer, `CentralWorkflowOrchestrator` + Tier-2 HMAC admin approval, `EvaluationEngine`, `handle_evaluation_gate`, and `build_v10_closure_audit` (tested via `tests/test_v10d_closure_runner.py`).
-- **Runtime Audit Blocker:** Final V10-D signoff requires executing end-to-end native training and native inference evaluation on real PyTorch CPU weights and producing an audited `zyrquen.v10.evaluation_report.v1` artifact. Currently **`BLOCKED`** (`TORCH_NOT_INSTALLED`).
+- **Runtime Audit Blocker:** Final V10-D signoff requires executing end-to-end native training and native inference evaluation on real PyTorch CPU weights and producing an audited `zyrquen.v10.evaluation_report.v1` artifact. Currently **`BLOCKED`** (`TIER2_HMAC_APPROVAL_REQUIRED`; Dataset/Leakage Audit has passed, but no training or real-weight evaluation has executed).
 
 ---
 
@@ -74,7 +74,7 @@
 - **Status:** **`BLOCKED`**
 
 - **Required Checks:** `import torch`, CPU-only thread cap (`threads <= 2`), `use_paid_gpu = False`, real `ZyrquenModel` forward/backward pass, SFT `-100` loss masking execution, `weights_only=True` save/load parity.
-- **Current Finding:** Container does not have `torch` installed (`TORCH_NOT_INSTALLED`).
+- **Current Finding:** Container does not have `torch` installed (`TIER2_HMAC_APPROVAL_REQUIRED`).
 
 ---
 
@@ -122,7 +122,7 @@
 - **Status:** **`BLOCKED`**
 
 - **Gate Rule:** Passes only when Sections 5, 6, 7, 8, 9, 10, and 11 all reach **`VERIFIED`** with genuine SHA-256 artifacts and zero fallback or mocked results.
-- **Current Verdict:** **`BLOCKED`** (`TORCH_NOT_INSTALLED`; runtime training & evaluation not run).
+- **Current Verdict:** **`BLOCKED`** (`TIER2_HMAC_APPROVAL_REQUIRED`; runtime training & evaluation not run).
 
 ---
 
