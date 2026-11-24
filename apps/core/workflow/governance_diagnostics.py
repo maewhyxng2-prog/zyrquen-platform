@@ -56,6 +56,8 @@ def inspect_workflow_db_readonly(path: str | Path) -> dict[str, Any]:
             "error": "NOT_A_FILE",
         }
 
+    stat = canonical.stat()
+    file_identity = {"device": int(stat.st_dev), "inode": int(stat.st_ino)}
     uri = f"file:{quote(str(canonical), safe='/')}?mode=ro"
     try:
         with sqlite3.connect(uri, uri=True, timeout=5.0) as conn:
@@ -71,6 +73,7 @@ def inspect_workflow_db_readonly(path: str | Path) -> dict[str, Any]:
                 "required_tables_present": not missing,
                 "missing_tables": missing,
                 "journal_mode": str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower(),
+                "file_identity": file_identity,
                 "read_only": True,
             }
     except sqlite3.Error as exc:
