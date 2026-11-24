@@ -145,6 +145,74 @@ class TrainConfig:
         return cls(**params)
 
 
+class StageAwareSampler:
+    """Sample record indices by stage probability, then uniformly within a stage."""
+
+    def __init__(
+        self,
+        records: Iterable[dict],
+        *,
+        stage_weights: dict[str, float],
+        seed: int = 0,
+    ) -> None:
+        if not isinstance(stage_weights, dict) or not stage_weights:
+            raise ValueError("stage_weights must define every dataset stage")
+
+        self._indices_by_stage: dict[str, list[int]] = {}
+        for index, record in enumerate(records):
+            if not isinstance(record, dict):
+                raise ValueError("each record must be a mapping with a stage_tag")
+            stage = record.get("stage_tag")
+            if not isinstance(stage, str) or not stage:
+                raise ValueError("each record must have a non-empty stage_tag")
+            self._indices_by_stage.setdefault(stage, []).append(index)
+
+        if not self._indices_by_stage:
+            raise ValueError("records must contain at least one stage")
+
+        observed_stages = set(self._indices_by_stage)
+        configured_stages = set(stage_weights)
+        if observed_stages != configured_stages:
+            missing = sorted(observed_stages - configured_stages)
+            unknown = sorted(configured_stages - observed_stages)
+            raise ValueError(
+                f"stage_weights must match dataset stages (missing={missing}, unknown={unknown})"
+            )
+
+        normalized_weights: dict[str, float] = {}
+        for stage, weight in stage_weights.items():
+            if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+                raise ValueError(f"stage weight for {stage!r} must be a finite non-negative number")
+            numeric_weight = float(weight)
+            if not math.isfinite(numeric_weight) or numeric_weight < 0:
+                raise ValueError(f"stage weight for {stage!r} must be a finite non-negative number")
+            normalized_weights[stage] = numeric_weight
+
+        self._active_stages = [
+            stage for stage in self._indices_by_stage
+            if normalized_weights[stage] > 0
+        ]
+        self._active_weights = [
+            normalized_weights[stage] for stage in self._active_stages
+        ]
+        if not self._active_stages or sum(self._active_weights) <= 0:
+            raise ValueError("at least one stage must have a positive weight")
+
+        self._rng = random.Random(seed)
+
+    def sample_indices(self, count: int) -> list[int]:
+        """Return a requested number of indices, sampled with replacement."""
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ValueError("count must be a non-negative integer")
+        sampled: list[int] = []
+        for _ in range(count):
+            stage = self._rng.choices(
+                self._active_stages, weights=self._active_weights, k=1
+            )[0]
+            sampled.append(self._rng.choice(self._indices_by_stage[stage]))
+        return sampled
+
+
 # ---- pure-python helpers ----
 def lr_at(step: int, cfg: TrainConfig) -> float:
     """Linear warm-up then cosine decay to min_lr across `lr_total_steps or max_steps`. `step` is 0-based."""

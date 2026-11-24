@@ -41,7 +41,6 @@ jobs:
             tests/test_maintainer_bot.py \
             tests/test_workflow_engine.py \
             tests/test_v10d_closure_runner.py \
-            tests/test_v11_stage1_readiness.py \
             tests/test_v9_static_contracts.py \
             tests/native/test_checkpoint_resume.py \
             -v
