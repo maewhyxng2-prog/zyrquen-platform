@@ -92,7 +92,17 @@ class V10DClosureError(RuntimeError):
 @contextmanager
 def _open_orchestrator(workflow_db: Path) -> Iterator[CentralWorkflowOrchestrator]:
     workflow_db.parent.mkdir(parents=True, exist_ok=True)
-    orch = CentralWorkflowOrchestrator(db_path=workflow_db, work_dir=PROJECT_ROOT)
+    approval_secret = os.getenv("ZYRQUEN_APPROVAL_SECRET", "").strip()
+    if len(approval_secret) < 32:
+        raise V10DClosureError(
+            "ZYRQUEN_APPROVAL_SECRET must be configured (at least 32 characters) "
+            "and shared with the authenticated API process."
+        )
+    orch = CentralWorkflowOrchestrator(
+        db_path=workflow_db,
+        work_dir=PROJECT_ROOT,
+        approval_secret=approval_secret,
+    )
     try:
         yield orch
     finally:
