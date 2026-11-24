@@ -211,3 +211,13 @@
 - `handle_training_execute` now passes the dataset manifest content fingerprint into both native training entry points.
 - Added `tests/test_v10d_resume_integrity.py`, including a real CPU PyTorch checkpoint save/load test using the default `weights_only=True` loader, identity mismatch tests, and RNG round-trip coverage.
 - This is a source change, not yet a runtime PASS. Run the targeted tests and existing V10-D regression suite in Colab before considering the training pipeline ready. Authenticated Tier-2 approval and runtime resource guards remain mandatory; no training was started by this change.
+
+
+## 22. V10-D Resume Integrity Colab Validation
+- **Status:** **TARGETED REGRESSION PASS — 19/19; TRAINING NOT RUN**
+- Colab validation after commit `fb9caa4d1e665d8189576668853b73912ac80685`:
+  - `test_v10d_resume_integrity.py`: **4/4 PASS**, including Python RNG exact round-trip, identity rejection, legacy checkpoint rejection, and real CPU PyTorch `weights_only=True` checkpoint save/load.
+  - `test_v10d_*.py`: **19/19 PASS**, including API fail-closed behavior, runner guards, cross-process resume, real HTTP/JWT admin gate, forward-probe contract, read-only preflight contract, resume integrity, and Tier-2 governance.
+- The expected CLI rejection of `--approve-as-admin` is a passing negative test, not a suite failure.
+- The broader default discovery command also encountered `tests/native/test_checkpoint_resume.py` importing absent `apps.core.native.dataset_v11`. This is a separate V11 blocker and is not part of the V10-D 19-test suite.
+- This evidence is targeted Colab regression evidence only. Fresh read-only preflight after the latest source changes, authenticated Tier-2 approval, actual training, checkpoint evaluation, and capability measurements remain pending/not run.
