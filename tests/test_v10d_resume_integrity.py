@@ -47,8 +47,8 @@ class TestV10DResumeIntegrity(unittest.TestCase):
 
     def test_python_rng_state_round_trips_as_primitive_lists(self):
         source = random.Random(1234)
-        expected_next = source.random()
         state = serialize_python_rng_state(source.getstate())
+        expected_next = source.random()
         self.assertIsInstance(state, list)
         self.assertIsInstance(state[1], list)
         restored = random.Random()
