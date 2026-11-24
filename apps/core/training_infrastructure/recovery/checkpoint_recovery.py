@@ -48,8 +48,22 @@ def _normalize_python_rng_state(raw_state: Any) -> tuple:
     return (version, tuple(internal_state), gauss_next)
 
 
+def serialize_python_rng_state(raw_state: Any | None = None) -> list:
+    """Serialize Python RNG tuples as primitive lists accepted by torch weights_only."""
+    raw = random.getstate() if raw_state is None else raw_state
+    if isinstance(raw, tuple):
+        return [serialize_python_rng_state(item) if isinstance(item, (tuple, list)) else item for item in raw]
+    if isinstance(raw, list):
+        return [serialize_python_rng_state(item) if isinstance(item, (tuple, list)) else item for item in raw]
+    return raw
+
+
+def restore_python_rng_state(rng: random.Random, raw_state: Any) -> None:
+    rng.setstate(_normalize_python_rng_state(raw_state))
+
+
 def capture_rng_state() -> dict:
-    state = {"python": random.getstate()}
+    state = {"python": serialize_python_rng_state()}
     try:
         import torch
         state["torch"] = torch.get_rng_state()
@@ -63,12 +77,35 @@ def capture_rng_state() -> dict:
 def restore_rng_state(state: dict) -> None:
     if not isinstance(state, dict) or "python" not in state:
         raise ValueError("checkpoint RNG state is missing 'python'")
-    random.setstate(_normalize_python_rng_state(state["python"]))
+    restore_python_rng_state(random, state["python"])
     if "torch" in state:
         import torch
         torch.set_rng_state(state["torch"])
         if "cuda" in state and torch.cuda.is_available():
             torch.cuda.set_rng_state_all(state["cuda"])
+
+
+def validate_resume_identity(
+    state: Any,
+    *,
+    expected: dict[str, Any],
+    required_fields: tuple[str, ...] = (
+        "dataset_version",
+        "dataset_content_sha256",
+        "tokenizer_sha256",
+        "model_config",
+        "training_identity",
+    ),
+) -> None:
+    """Fail closed unless checkpoint data/model/training identity matches this run."""
+    if not isinstance(state, dict):
+        raise ValueError("resume checkpoint payload must be a mapping")
+    missing = [key for key in required_fields if key not in state or state[key] is None]
+    if missing:
+        raise ValueError("resume checkpoint missing identity fields: " + ", ".join(missing))
+    for key in required_fields:
+        if state[key] != expected.get(key):
+            raise ValueError(f"resume checkpoint identity mismatch: {key}")
 
 
 class CheckpointManager:
