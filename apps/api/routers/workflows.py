@@ -129,6 +129,7 @@ def get_workflow_governance_diagnostics(
         "api_process": {
             "pid": os.getpid(),
             "workflow_db_path_sha256": workflow_db_path_fingerprint(engine_db),
+            "workflow_db_file_identity": db_report.get("file_identity"),
             "approval_secret_fingerprint": approval_secret_fingerprint(configured_secret),
             "workflow_db": db_report,
             "workflow_contract": workflow_contract,
