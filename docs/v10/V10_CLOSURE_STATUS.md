@@ -13,6 +13,8 @@
 ---
 
 ## 1. Executive Summary
+
+- **v9 failure-response plan:** See [`docs/v10/V10_V9_FAILURE_RESPONSE_PLAN.md`](V10_V9_FAILURE_RESPONSE_PLAN.md) for evidence-driven benchmark requirements derived from the completed v9 `CLOSED_FAIL` report. This is preparation guidance only; it does not alter V10-D status or authorize runtime execution.
 - **Status:** **`BLOCKED`**
 
 | Track | Scope | Recorded Status | Verification Basis / Blocker |
