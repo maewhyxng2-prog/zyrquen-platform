@@ -220,7 +220,7 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
     from apps.core.training_infrastructure.monitoring.training_monitor import TrainingMonitor
     from apps.core.training_infrastructure.recovery.checkpoint_recovery import (
         CheckpointManager, capture_rng_state, restore_rng_state,
-        serialize_python_rng_state, validate_resume_identity)
+        serialize_python_rng_state, restore_python_rng_state, validate_resume_identity)
     from apps.core.workflow.resource_guard import (
         MAX_CPU_THREADS, check_disk_reserve, enforce_cpu_thread_cap)
 
