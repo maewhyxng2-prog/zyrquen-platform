@@ -1,9 +1,11 @@
 # ZYRQUEN Ω∞ — v9 Experiment Plan (Audit, Dataset v9, Architecture & Protocol)
 
-- **รุ่น:** `v9 — Generalization` *(ขั้นถัดไปต่อจาก v8 ที่ปิดการทดลองแล้ว)*
-- **สถานะเอกสาร:** `PLANNING SPECIFICATION — AWAITING EXPERIMENT APPROVAL`
+- **รุ่น:** `v9 — Generalization` *(experiment completed; retained as baseline)*
+- **สถานะเอกสาร:** `HISTORICAL EXPERIMENT PLAN — CLOSED_FAIL`
+- **ผลปิดการทดลอง:** ดู [`docs/V9_EXPERIMENT_CLOSURE_REPORT.md`](V9_EXPERIMENT_CLOSURE_REPORT.md); runtime training/evaluation completed on Colab, but capability acceptance failed.
+- **ข้อกำหนดการอ่านเอกสาร:** เนื้อหาด้านล่างเป็นแผนและสมมติฐานก่อนทดลอง ไม่ใช่สถานะปัจจุบันหรือผลที่พิสูจน์แล้ว.
 - **เส้นทางพัฒนาเชิงความสามารถ (Capability-Driven Progression):**
-  - `v7 Baseline Foundation` (ผ่านการทดลอง) → `v8 Attention + Pointer-Copy` (ปิดการทดลองแล้ว) → **`v9 Generalization` (ขั้นถัดไป — พิสูจน์การเรียนรู้หลักการข้าม Unseen Entity & Unseen Template)** → `v10 Relational & Multi-step Reasoning` → `v11 Knowledge Integration` → `v12 Adaptive Learning` → `v13 Planning & Decomposition` → `v14 Verification & Self-Correction` → `v15 Autonomous Capability` → `v16+ Integrated Native Intelligence` → **ZYRQUEN Ω∞ — NGI** *(ไม่จำกัดว่าต้องจบที่ v20 และคง Roadmap `Phase 11–20` เดิมโดยไม่สร้าง `Phase 21`)*
+  - `v7 Baseline Foundation` (ผ่านการทดลอง) → `v8 Attention + Pointer-Copy` (ปิดการทดลองแล้ว) → **`v9 Generalization` (`CLOSED_FAIL`; report retained as baseline)** → `v10 Relational & Multi-step Reasoning` → `v11 Knowledge Integration` → `v12 Adaptive Learning` → `v13 Planning & Decomposition` → `v14 Verification & Self-Correction` → `v15 Autonomous Capability` → `v16+ Integrated Native Intelligence` → **ZYRQUEN Ω∞ — NGI** *(ไม่จำกัดว่าต้องจบที่ v20 และคง Roadmap `Phase 11–20` เดิมโดยไม่สร้าง `Phase 21`)*
 - **อ้างอิงหลัก:** `docs/V9_BLUEPRINT.md`, `docs/V8_SUMMARY.md`, `docs/V8_EXPERIMENT_CLOSURE_REPORT.md`, `docs/NATIVE_TRAINING_500_SPEC.md`, `docs/SCALING_POLICY.md`, `docs/HONOR_X6B_MOBILE_PLAN.md`
 - **เป้าหมายสูงสุด:** พัฒนา **Native General Intelligence (NGI)** ด้วยสถาปัตยกรรมที่รวมความสามารถเข้าด้วยกันอย่างต่อเนื่อง (**ไม่สร้างโมเดลแยกส่วน และไม่ใช่ Chatbot-only**) โดยในรอบ `v9` มุ่งพิสูจน์ **Generalization Gate** ก่อนขยายสู่ `v10+`
 - **การแยกส่วนและข้อห้าม:** ไม่แก้ไข/เขียนทับไฟล์ `v7` หรือ `v8` เดิม, ไม่ลบ/ย้าย Checkpoint หรือ Report เดิม, ไม่ Push น้ำหนักขึ้น GitHub, ไม่เพิ่มค่าใช้จ่าย Cloud/GPU และ **ยังไม่เริ่ม Training จริงจนกว่าเจ้าของโครงการจะอนุมัติแผนนี้**
