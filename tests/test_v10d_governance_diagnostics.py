@@ -48,6 +48,8 @@ class TestV10DGovernanceDiagnostics(unittest.TestCase):
             self.assertTrue(result["required_tables_present"])
             self.assertTrue(result["read_only"])
             self.assertEqual([], result["missing_tables"])
+            self.assertIn("device", result["file_identity"])
+            self.assertIn("inode", result["file_identity"])
             self.assertEqual(before, after)
 
     def test_missing_database_is_not_created(self) -> None:
