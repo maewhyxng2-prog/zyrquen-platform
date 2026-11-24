@@ -27,6 +27,11 @@ from apps.core.workflow import (
     create_default_orchestrator,
 )
 from apps.core.workflow.audit import redact_dict
+from apps.core.workflow.governance_diagnostics import (
+    approval_secret_fingerprint,
+    inspect_workflow_db_readonly,
+    workflow_db_path_fingerprint,
+)
 
 router = APIRouter(tags=["Workflows & Model Registry"])
 
@@ -56,6 +61,71 @@ def get_workflow_engine() -> CentralWorkflowOrchestrator:
 
             _register_v10d_closure_workflow(_ENGINE)
     return _ENGINE
+
+
+
+@router.get("/v1/workflows/governance/diagnostics")
+def get_workflow_governance_diagnostics(
+    _: User = Depends(require_admin),
+):
+    """Read-only live API/Runner governance comparison; never exposes the HMAC secret."""
+    engine = get_workflow_engine()
+    configured_db = os.getenv("ZYRQUEN_WORKFLOW_DB_PATH", "").strip()
+    configured_secret = os.getenv("ZYRQUEN_APPROVAL_SECRET", "").strip()
+    v10d_enabled = os.getenv("ZYRQUEN_V10D_APPROVAL_ENABLED", "0").strip() == "1"
+
+    engine_db = Path(engine.store.db_path).expanduser().resolve(strict=False)
+    configured_db_path = Path(configured_db).expanduser().resolve(strict=False) if configured_db else None
+    db_matches = bool(configured_db_path and configured_db_path == engine_db)
+    db_report = inspect_workflow_db_readonly(engine_db)
+
+    workflow_registered = False
+    required_handlers_registered = False
+    workflow_contract: dict[str, object] = {}
+    try:
+        definition = engine.registry.get("training.v10d_closure_run", "1.0.0")
+        workflow_registered = True
+        steps = {step.step_key: step for step in definition.steps}
+        training_step = steps.get("execute_v10d_training")
+        audit_step = steps.get("v10_data_audit")
+        workflow_contract = {
+            "default_tier": definition.default_tier,
+            "training_action_type": training_step.action_type if training_step else None,
+            "training_tier": training_step.tier if training_step else None,
+            "audit_action_type": audit_step.action_type if audit_step else None,
+        }
+        engine.registry.get_handler("v10d.data_audit")
+        engine.registry.get_handler("v10d.train_execute")
+        required_handlers_registered = bool(training_step and audit_step)
+    except Exception:
+        workflow_registered = False
+        required_handlers_registered = False
+
+    service_status = engine.get_service_status()
+    checks = {
+        "v10d_approval_enabled": v10d_enabled,
+        "shared_workflow_db_configured": bool(configured_db),
+        "api_db_matches_configured_path": db_matches,
+        "workflow_db_readable_and_schema_valid": bool(db_report.get("required_tables_present")),
+        "shared_approval_secret_configured": bool(configured_secret),
+        "workflow_definition_registered": workflow_registered,
+        "required_handlers_registered": required_handlers_registered,
+        "workflow_engine_started": bool(service_status.get("started")),
+    }
+    return {
+        "schema": "zyrquen.v10d.live_governance_diagnostics.v1",
+        "overall_status": "PASS" if all(checks.values()) else "BLOCKED",
+        "read_only": True,
+        "checks": checks,
+        "api_process": {
+            "pid": os.getpid(),
+            "workflow_db_path_sha256": workflow_db_path_fingerprint(engine_db),
+            "approval_secret_fingerprint": approval_secret_fingerprint(configured_secret),
+            "workflow_db": db_report,
+            "workflow_contract": workflow_contract,
+            "service": service_status,
+        },
+    }
 
 
 def _get_model_registry() -> tuple[ModelRegistry | None, str]:
