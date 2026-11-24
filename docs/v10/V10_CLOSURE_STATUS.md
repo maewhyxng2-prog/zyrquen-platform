@@ -192,3 +192,12 @@
 - Fixed in commit `c6ffa01394be04a9615b569e8e14b42a4a52df55`: the runner now requires a shared secret of at least 32 characters and passes it explicitly to the orchestrator.
 - Regression test added in commit `f692c3dd763d7e9ccb60b185148e3df90e8e6c09`: asserts the exact shared secret is passed to the runner orchestrator and missing secret fails closed.
 - This is a source-level correction pending Colab test execution. It does not approve or start training.
+
+
+## 20. Read-Only Native CPU Forward Probe
+- **Status:** **IMPLEMENTED — STATIC SAFETY TEST ADDED; COLAB RUNTIME RESULT PENDING**
+- Added `tools/probe_v10d_native_forward.py` to exercise the actual randomly initialized native V10 decoder on held-out validation SFT samples using the existing V2 atomic-slot tokenizer.
+- The probe performs CPU model construction, real tokenization/collation, and a `torch.inference_mode()` forward pass with teacher-forced loss. It checks output shape, finite logits/loss, parameter-budget compliance, unchanged weight fingerprint, and observed process RSS.
+- Explicitly does **not** run backward, create an optimizer, perform optimizer steps, write checkpoints, modify ModelRegistry, consume approval, or train the V10 model.
+- Added `tests/test_v10d_native_forward_probe.py` to enforce the read-only/no-training source contract.
+- This validates forward execution only; it is not evidence of training, a trained checkpoint, capability generalization, or Tier-2 authorization.
