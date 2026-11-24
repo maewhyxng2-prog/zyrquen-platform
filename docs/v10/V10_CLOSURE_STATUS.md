@@ -117,7 +117,7 @@
 - The V10-D CLI no longer accepts `--approve-as-admin` or self-asserted admin identity; it fails closed at `WAITING_APPROVAL`. A regression test rejects the former flag.
 - Authenticated API integration is wired behind `ZYRQUEN_V10D_APPROVAL_ENABLED=1`: the API registers V10-D handlers, requires explicit `ZYRQUEN_WORKFLOW_DB_PATH` and `ZYRQUEN_APPROVAL_SECRET`, and queues approved `training.execute` work asynchronously. The runner enforces the shared DB/secret and supports `--resume-run-id` with exact payload-scope matching.
 - **Shared-secret factory correction (2026-11-24):** `create_default_orchestrator()` now explicitly passes `ZYRQUEN_APPROVAL_SECRET` into `CentralWorkflowOrchestrator` (commit `cfc3846ff7bd7752a55ddf98fe8164bfe27a1fc9`). Previously the API factory omitted this argument and could silently use a process-local ephemeral secret despite the environment variable being configured.
-- **Real HTTP/JWT cross-process regression test added (commit `314c8c6071df96c1240b91edff45501947b9f602`):** a separate API worker process serves the FastAPI workflow router, checks anonymous `401`, non-admin `403`, admin approval `200`, signature redaction, shared HMAC configuration, cross-process workflow completion, and single-use approval consumption. Its handler is synthetic and explicitly asserts `training_invoked=false`. This new test is **`NOT RUN` pending Colab execution**.
+- **Real HTTP/JWT cross-process regression test added (commit `314c8c6071df96c1240b91edff45501947b9f602`):** a separate API worker process serves the FastAPI workflow router, checks anonymous `401`, non-admin `403`, admin approval `200`, signature redaction, shared HMAC configuration, cross-process workflow completion, and single-use approval consumption. Its handler is synthetic and explicitly asserts `training_invoked=false`. This new test is **`PASS` in Colab (1/1)**.
 - The earlier cross-process synthetic test passed in Colab (1/1), but it invoked orchestration directly and did not exercise HTTP/JWT. The new test is designed to close that evidence gap. Deployment/runtime integration remains **`NOT YET VERIFIED`**. No live approval or training has been executed.
 
 ---
@@ -143,7 +143,7 @@
 
 - Python static compile: `python3 -m compileall -q apps tools tests phases` (`STATIC PASS`)
 - Python V10/V11 unit, integration, closure-runner & audit suite: `78` tests ran (`76` OK, `2` skipped `torch not installed in environment`) across `test_v10d_closure_runner.py`, `tests/native/test_checkpoint_resume.py`, `test_v11_stage1_readiness.py`, `test_v10a_contracts.py`, `test_v10c_integration_hook.py`, `test_v10_closure_audit.py`, `test_evaluation_gate_safety.py`, `test_workflow_engine.py`, `test_v10_remediation_suite.py`, `test_v10_findings_abcd_remediation.py`
-- Additional V10-D governance evidence: prior Colab results include Tier-2 governance `5/5`, API integration `2/2`, closure runner `3/3`, and synthetic cross-process resume `1/1` (all passed). The new actual HTTP/JWT + cross-process test `tests/test_v10d_http_jwt_cross_process_e2e.py` is committed but **`NOT RUN`**; do not count it as passing until its Colab result is reviewed.
+- Additional V10-D governance evidence: combined Colab command `python -m unittest discover -s tests -p "test_v10d_*.py" -v` passed **12/12** (10.339s), including API integration `2/2`, closure runner `3/3`, cross-process resume `1/1`, HTTP/JWT cross-process E2E `1/1`, and Tier-2 governance `5/5`. These tests use synthetic workflow handlers for approval/resume and do not execute training.
 - Module unit tests (`test_autonomous_training_loop`, `test_training_hook`, `test_checkpoint`, `test_evaluation`): `20` passed, `12` skipped (`ModuleNotFoundError: No module named 'torch'`)
 - Remediation & Audit Reports: `docs/v10/V10_CRITICAL_BLOCKER_REMEDIATION_REPORT.md`, `docs/v10/V10_FINAL_RUNTIME_READINESS_AUDIT.md`
 - Core anchors inspected: `apps/core/native/closure_audit.py`, `tools/close_v10d.py`, `apps/api/routers/workflows.py`, `apps/web/src/components/ClosureAudit.tsx`
@@ -175,3 +175,12 @@
 - Real native inference evaluation report (`zyrquen.v10.evaluation_report.v1`) across splits — **`NOT RUN`**
 - Measured Peak RSS (GB), CPU wall-clock `sec/step`, and live FastAPI + `EvaluationEngine` end-to-end closure check — **`NOT RUN`**
 - Sign-off fields: `Promoted V10 Registry Version = NONE`, `Final V10 Closure Verdict = BLOCKED`, `V11 Authorization = LOCKED`
+
+
+## 18. V10-D Readiness Preflight (Read-only)
+- **Status:** **IMPLEMENTED — NOT YET EXECUTED**
+- Tool: `tools/preflight_v10d.py`; regression test: `tests/test_v10d_readiness_preflight.py`.
+- The preflight checks CPU-only PyTorch availability, process RSS measurement, disk reserve, locked CPU budget, dataset integrity and leakage, existing tokenizer schema/fingerprint, checkpoint/registry path safety, and shared workflow DB/HMAC configuration.
+- It does not generate data, train a tokenizer, create checkpoint/registry directories, write reports, issue approvals, or invoke training.
+- Missing trained checkpoints and registry artifacts are expected before the inaugural training run; the preflight checks target paths for symlink safety instead of requiring trained artifacts to exist.
+- `READY_FOR_AUTHORIZED_TRAINING_REVIEW` is not Tier-2 approval. Real training, checkpoint integrity, evaluation, and measured runtime resource telemetry remain NOT RUN.
