@@ -24,8 +24,8 @@ class TestV10DResumeIntegrity(unittest.TestCase):
     def test_identity_validation_rejects_each_mismatched_identity(self):
         expected = {
             "dataset_version": "10.0.0",
-            "dataset_content_sha256": "dataset-a",
-            "tokenizer_sha256": "tokenizer-a",
+            "dataset_content_sha256": "a" * 64,
+            "tokenizer_sha256": "b" * 64,
             "model_config": {"vocab_size": 512, "d_model": 256},
             "training_identity": {"seed": 7, "lr": 0.0003},
         }
@@ -59,8 +59,8 @@ class TestV10DResumeIntegrity(unittest.TestCase):
             optimizer = torch.optim.AdamW(model.parameters())
             expected = {
                 "dataset_version": "10.0.0",
-                "dataset_content_sha256": "dataset-sha",
-                "tokenizer_sha256": "tokenizer-sha",
+                "dataset_content_sha256": "c" * 64,
+                "tokenizer_sha256": "d" * 64,
                 "model_config": {"vocab_size": 512, "d_model": 256},
                 "training_identity": {"seed": 7, "lr": 0.0003},
             }
