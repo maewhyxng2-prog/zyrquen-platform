@@ -92,11 +92,20 @@ def get_workflow_governance_diagnostics(
             "default_tier": definition.default_tier,
             "training_action_type": training_step.action_type if training_step else None,
             "training_tier": training_step.tier if training_step else None,
+            "training_handler_key": training_step.handler_key if training_step else None,
             "audit_action_type": audit_step.action_type if audit_step else None,
+            "audit_handler_key": audit_step.handler_key if audit_step else None,
         }
         engine.registry.get_handler("v10d.data_audit")
         engine.registry.get_handler("v10d.train_execute")
-        required_handlers_registered = bool(training_step and audit_step)
+        required_handlers_registered = bool(
+            training_step
+            and audit_step
+            and training_step.action_type == "training.execute"
+            and training_step.tier == "tier2_approval"
+            and training_step.handler_key == "v10d.train_execute"
+            and audit_step.handler_key == "v10d.data_audit"
+        )
     except Exception:
         workflow_registered = False
         required_handlers_registered = False
