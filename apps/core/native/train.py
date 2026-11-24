@@ -195,11 +195,21 @@ def perplexity(loss: float) -> float:
 
 def _training_resume_identity(cfg: TrainConfig) -> dict:
     """Stable optimizer/data sampling settings across segmented resume."""
-    ignored = {"max_steps", "segment_max_steps"}
+    ignored = {"max_steps", "segment_max_steps", "experiment_index", "stage_id", "lr_total_steps", "eval_interval", "eval_batches", "checkpoint_interval", "log_interval"}
     return {key: value for key, value in cfg.__dict__.items() if key not in ignored}
 
 
 # ---- torch training loop (not run in authoring environment) ----
+def _resolve_training_identity(state, *, tokenizer_fingerprint, dataset_version, dataset_content_sha256):
+    """Fill missing resume identity from checkpoint state, keep explicit values."""
+    if state is None:
+        return dataset_version, dataset_content_sha256, tokenizer_fingerprint
+    return (
+        dataset_version if dataset_version is not None else state.get("dataset_version"),
+        dataset_content_sha256 if dataset_content_sha256 is not None else state.get("dataset_content_sha256"),
+        tokenizer_fingerprint if tokenizer_fingerprint is not None else state.get("tokenizer_sha256"),
+    )
+
 def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
           checkpoint_dir: str | Path, log_path: str | Path, device: str = "cpu",
           cost_controller=None, tokenizer_fingerprint: str | None = None,
@@ -258,6 +268,12 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
     resumed = ckpts.load_latest()
     if resumed is not None:
         start_step, state = resumed
+        dataset_version, dataset_content_sha256, tokenizer_fingerprint = _resolve_training_identity(
+            state,
+            tokenizer_fingerprint=tokenizer_fingerprint,
+            dataset_version=dataset_version,
+            dataset_content_sha256=dataset_content_sha256,
+        )
         validate_resume_identity(
             state,
             expected={
@@ -537,6 +553,12 @@ def train_sft(
     resumed = ckpts.load_latest()
     if resumed is not None:
         start_step, state = resumed
+        dataset_version, dataset_content_sha256, tokenizer_fingerprint = _resolve_training_identity(
+            state,
+            tokenizer_fingerprint=tokenizer_fingerprint,
+            dataset_version=dataset_version,
+            dataset_content_sha256=dataset_content_sha256,
+        )
         validate_resume_identity(
             state,
             expected={

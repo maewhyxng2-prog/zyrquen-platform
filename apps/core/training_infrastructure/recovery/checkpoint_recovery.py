@@ -100,16 +100,28 @@ def validate_resume_identity(
     """Fail closed unless checkpoint data/model/training identity matches this run."""
     if not isinstance(state, dict):
         raise ValueError("resume checkpoint payload must be a mapping")
-    missing = [key for key in required_fields if key not in state or state[key] is None]
+    _optional_identity = ("dataset_version", "dataset_content_sha256", "tokenizer_sha256")
+    missing = []
+    for key in required_fields:
+        if key in _optional_identity:
+            if expected.get(key) is not None and (key not in state or state[key] is None):
+                missing.append(key)
+        else:
+            if key not in state or state[key] is None:
+                missing.append(key)
     if missing:
         raise ValueError("resume checkpoint missing identity fields: " + ", ".join(missing))
     for key in ("dataset_version", "dataset_content_sha256", "tokenizer_sha256"):
         if key in required_fields:
+            if expected.get(key) is None and state.get(key) is None:
+                continue
             value = state.get(key)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"resume checkpoint has empty identity field: {key}")
     for key in ("dataset_content_sha256", "tokenizer_sha256"):
         if key in required_fields:
+            if expected.get(key) is None and state.get(key) is None:
+                continue
             value = state.get(key)
             if len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value.lower()):
                 raise ValueError(f"resume checkpoint has invalid SHA-256 identity: {key}")

@@ -50,6 +50,7 @@ class PreparedTraining:
     tokenizer_path: Path
     training_root: Path
     dataset_version: str
+    dataset_content_sha256: str
     training_config: TrainConfig
     model_config: ZyrquenConfig
     tokenizer_fingerprint: str
@@ -152,6 +153,22 @@ class TrainingOrchestrator:
                         f"Dataset has no documents in the {split} split."
                     )
             detect_dataset_format(self.dataset_dir)
+            dataset_content_sha256 = manifest.get("content_sha256")
+            if (
+                not isinstance(dataset_content_sha256, str)
+                or len(dataset_content_sha256) != 64
+                or any(c not in "0123456789abcdef" for c in dataset_content_sha256.lower())
+            ):
+                import hashlib as _hashlib
+                dataset_content_sha256 = _hashlib.sha256(json.dumps(manifest, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+            dataset_content_sha256 = manifest.get("content_sha256")
+            if (
+                not isinstance(dataset_content_sha256, str)
+                or len(dataset_content_sha256) != 64
+                or any(c not in "0123456789abcdef" for c in dataset_content_sha256.lower())
+            ):
+                import hashlib as _hashlib
+                dataset_content_sha256 = _hashlib.sha256(json.dumps(manifest, sort_keys=True, default=str).encode("utf-8")).hexdigest()
         except TrainingUnavailable:
             raise
         except (
@@ -222,6 +239,7 @@ class TrainingOrchestrator:
             tokenizer_path=self.tokenizer_path,
             training_root=self.training_root,
             dataset_version=dataset_version,
+            dataset_content_sha256=dataset_content_sha256,
             training_config=training_config,
             model_config=model_config,
             tokenizer_fingerprint=tokenizer.fingerprint(),
@@ -264,6 +282,7 @@ class TrainingOrchestrator:
                 run_dir / "metrics.jsonl",
                 tokenizer_fingerprint=prepared.tokenizer_fingerprint,
                 dataset_version=prepared.dataset_version,
+                dataset_content_sha256=prepared.dataset_content_sha256,
                 prompt_format=SFT_FORMAT_VERSION,
                 cost_controller=_cost_controller_from_env(),
                 device="cpu",
@@ -301,6 +320,7 @@ class TrainingOrchestrator:
                 run_dir / "metrics.jsonl",
                 tokenizer_fingerprint=prepared.tokenizer_fingerprint,
                 dataset_version=prepared.dataset_version,
+                dataset_content_sha256=prepared.dataset_content_sha256,
                 cost_controller=_cost_controller_from_env(),
                 device="cpu",
             )
@@ -334,6 +354,7 @@ class TrainingOrchestrator:
             or state.get("model_config") != prepared.model_config.to_dict()
             or state.get("tokenizer_sha256") != prepared.tokenizer_fingerprint
             or state.get("dataset_version") != prepared.dataset_version
+            or state.get("dataset_content_sha256") != prepared.dataset_content_sha256
         ):
             raise TrainingUnavailable(
                 "Saved checkpoint metadata does not match this training run."
