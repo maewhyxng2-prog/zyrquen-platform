@@ -3089,6 +3089,59 @@ code {
   opacity: 0.45;
 }
 
+.composer-model-select-wrap {
+  display: inline-flex;
+  min-height: 36px;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: var(--radius-xs);
+  background: var(--surface-inset);
+  color: var(--cyan);
+  padding: 0 8px;
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+
+.composer-model-select-wrap:hover {
+  border-color: rgba(59, 130, 246, 0.6);
+  background: var(--surface-hover);
+}
+
+.composer-model-select-wrap:focus-within {
+  border-color: var(--blue-bright);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.16);
+}
+
+.composer-model-select-wrap > svg {
+  flex: 0 0 auto;
+}
+
+.composer-model-select {
+  min-width: 0;
+  max-width: 220px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  outline: none;
+  text-overflow: ellipsis;
+}
+
+.composer-model-select option {
+  background: var(--surface-deep);
+  color: var(--text);
+}
+
+.composer-model-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .composer-popover,
 .generation-popover {
   position: absolute;
@@ -4946,12 +4999,25 @@ code {
   .composer textarea {
     font-size: 16px;
   }
+  .composer-controls-left {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
   .composer-action-btn {
     min-height: 40px;
     padding: 0 8px;
   }
   .composer-action-btn span {
     display: none;
+  }
+  .composer-model-select-wrap {
+    min-height: 40px;
+    max-width: 150px;
+    padding: 0 6px;
+  }
+  .composer-model-select {
+    max-width: 116px;
+    font-size: 12px;
   }
   .composer-hint {
     font-size: 10px;

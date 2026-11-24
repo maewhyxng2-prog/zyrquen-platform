@@ -291,53 +291,41 @@ function createInitialStore(): InMemoryStore {
     {
       version: "ZYRQUEN-Native-v7",
       parent: null,
-      lifecycle_status: "verified",
+      lifecycle_status: "registered",
       created_at: "2026-10-10T08:00:00.000Z",
       frozen: false,
-      checkpoint: { step: 1200, sha256: "7a1f9c2e8b04d311" },
-      dataset: { version: "nagi-v7", content_sha256: "b20c8d1f4421" },
-      evaluation_evidence: {
-        passed: true,
-        zero_regression: true,
-        report_sha256: "e7710a99c4d0",
-        metrics: { train_loss: 0.842, val_loss: 0.915, perplexity: 2.5 },
-        capabilities: { generalization: 61.2, relational_reasoning: 64.5 },
-      },
+      checkpoint: { step: 0, sha256: "unverified-preview" },
+      dataset: { version: "nagi-v7", content_sha256: "unverified-preview" },
+      evaluation_evidence: null,
       compatibility: {
         version: "ZYRQUEN-Native-v7",
         compatible: true,
         checks: {
-          artifacts_sha256: true,
-          tokenizer_sha256: true,
+          artifacts_sha256: false,
+          tokenizer_sha256: false,
           architecture_config: true,
         },
-        reasons: [],
+        reasons: ["Node.js preview sandbox: native Python evaluation not executed"],
       },
     },
     {
       version: "ZYRQUEN-Native-v8",
       parent: "ZYRQUEN-Native-v7",
-      lifecycle_status: "verified",
+      lifecycle_status: "registered",
       created_at: "2026-10-24T08:00:00.000Z",
       frozen: true,
-      checkpoint: { step: 2400, sha256: "8d3c4e21a90f7b12" },
-      dataset: { version: "nagi-v8", content_sha256: "f419e002a711" },
-      evaluation_evidence: {
-        passed: true,
-        zero_regression: true,
-        report_sha256: "c8824b11d9e1",
-        metrics: { train_loss: 0.614, val_loss: 0.688, perplexity: 1.99 },
-        capabilities: { generalization: 69.8, relational_reasoning: 72.1 },
-      },
+      checkpoint: { step: 0, sha256: "unverified-preview" },
+      dataset: { version: "nagi-v8", content_sha256: "unverified-preview" },
+      evaluation_evidence: null,
       compatibility: {
         version: "ZYRQUEN-Native-v8",
         compatible: true,
         checks: {
-          artifacts_sha256: true,
-          tokenizer_sha256: true,
+          artifacts_sha256: false,
+          tokenizer_sha256: false,
           architecture_config: true,
         },
-        reasons: [],
+        reasons: ["Node.js preview sandbox: native Python evaluation not executed"],
       },
     },
     {
@@ -346,50 +334,38 @@ function createInitialStore(): InMemoryStore {
       lifecycle_status: "staging",
       created_at: "2026-11-05T08:00:00.000Z",
       frozen: false,
-      checkpoint: { step: 3600, sha256: "9b44a01f732e8c55" },
-      dataset: { version: "nagi-v9", content_sha256: "a312c8890e21" },
-      evaluation_evidence: {
-        passed: true,
-        zero_regression: true,
-        report_sha256: "d9102f77a30c",
-        metrics: { train_loss: 0.489, val_loss: 0.541, perplexity: 1.72 },
-        capabilities: { generalization: 74.5, relational_reasoning: 77.9 },
-      },
+      checkpoint: { step: 0, sha256: "unverified-preview" },
+      dataset: { version: "nagi-v9", content_sha256: "unverified-preview" },
+      evaluation_evidence: null,
       compatibility: {
         version: "ZYRQUEN-Native-v9",
         compatible: true,
         checks: {
-          artifacts_sha256: true,
-          tokenizer_sha256: true,
+          artifacts_sha256: false,
+          tokenizer_sha256: false,
           architecture_config: true,
         },
-        reasons: [],
+        reasons: ["Node.js preview sandbox: native Python evaluation not executed"],
       },
     },
     {
       version: "ZYRQUEN-Native-V10",
       parent: "ZYRQUEN-Native-v9",
-      lifecycle_status: "production",
+      lifecycle_status: "registered",
       created_at: "2026-11-18T08:00:00.000Z",
       frozen: false,
-      checkpoint: { step: 4800, sha256: "10f6e2d8a4b19c03" },
-      dataset: { version: "nagi-v10", content_sha256: "10aa77bc92f1" },
-      evaluation_evidence: {
-        passed: true,
-        zero_regression: true,
-        report_sha256: "f1093c44b82a",
-        metrics: { train_loss: 0.372, val_loss: 0.428, perplexity: 1.53 },
-        capabilities: { generalization: 78.4, relational_reasoning: 81.2 },
-      },
+      checkpoint: { step: 0, sha256: "unverified-preview" },
+      dataset: { version: "nagi-v10", content_sha256: "unverified-preview" },
+      evaluation_evidence: null,
       compatibility: {
         version: "ZYRQUEN-Native-V10",
         compatible: true,
         checks: {
-          artifacts_sha256: true,
-          tokenizer_sha256: true,
+          artifacts_sha256: false,
+          tokenizer_sha256: false,
           architecture_config: true,
         },
-        reasons: [],
+        reasons: ["Node.js preview sandbox: native Python evaluation not executed"],
       },
     },
   ];
@@ -399,35 +375,35 @@ function createInitialStore(): InMemoryStore {
     workflow_key: "evaluation.model_verification",
     workflow_version: "1.0.0",
     trigger_type: "manual",
-    status: "COMPLETED",
+    status: "BLOCKED",
     started_at: earlier,
     finished_at: finished,
-    error_message: null,
+    error_message: "PyTorch/Python Native EvaluationEngine is not attached in Node.js preview mode.",
     requested_by_user_id: demoUserId,
     steps: [
       {
         step_key: "verify_artifact",
-        status: "COMPLETED",
+        status: "BLOCKED",
         attempt: 1,
         started_at: earlier,
         finished_at: earlier,
-        evidence: { verdict: "PASS", summary: "Artifact SHA-256 verified" },
-        output: { verified: true },
+        evidence: {
+          verdict: "NOT RUN",
+          summary: "No verified native checkpoint artifacts attached in Node.js preview",
+        },
+        output: { verified: false, torch_installed: false },
       },
       {
         step_key: "evaluate_gate",
-        status: "COMPLETED",
+        status: "BLOCKED",
         attempt: 1,
         started_at: earlier,
         finished_at: finished,
-        evidence: { verdict: "PASS", summary: "Evaluation gate passed" },
-        output: {
-          steps: 4800,
-          train_loss: 0.372,
-          val_loss: 0.428,
-          perplexity: 1.53,
-          ram_peak_gb: 1.4,
+        evidence: {
+          verdict: "NOT RUN",
+          summary: "Evaluation skipped honestly (zero-mock policy: no fabricated metrics)",
         },
+        output: null,
       },
     ],
   };
@@ -516,21 +492,15 @@ export function getInMemoryNativeHealth(): NativeHealth {
   const store = getStore();
   return {
     runtime_status: "ready",
-    native_model_loaded: true,
-    authority: "ZYRQUEN Native AI Core (In-Memory Sandbox)",
+    native_model_loaded: false,
+    authority: "ZYRQUEN UI Preview Sandbox (No Native Model Weights Loaded)",
     inference_available: true,
     platform_version: "V10 / Ω∞",
-    platform_stage: "AI Studio Node.js Sandbox",
+    platform_stage: "AI Studio Node.js Sandbox (Unmeasured)",
     model_version: store.activeModelVersion,
-    is_trained: true,
-    progress_metrics: {
-      generalization_score: 78.4,
-      generalization_target: 85.0,
-      relational_reasoning_success_rate: 81.2,
-      relational_reasoning_target: 85.0,
-      evaluation_status: "evaluated",
-      metrics_source: "in-memory-registry",
-    },
+    is_trained: false,
+    progress_metrics: null,
+    capabilities: [],
   };
 }
 
@@ -539,9 +509,9 @@ function getClosureAudit(): V10ClosureAudit {
   return {
     schema: "zyrquen.v10.closure_audit.v1",
     checked_at: new Date().toISOString(),
-    overall_status: "STATIC PASS",
+    overall_status: "BLOCKED",
     static_status: "STATIC PASS",
-    runtime_status: "IMPLEMENTED",
+    runtime_status: "BLOCKED",
     contracts_passed_count: 5,
     contracts_total: 5,
     v11_gate: {
@@ -549,24 +519,22 @@ function getClosureAudit(): V10ClosureAudit {
       unlocked: false,
       status: "LOCKED",
       prerequisite_summary:
-        "Contracts 1–5 ผ่านในโหมด AI Studio Node.js Sandbox (ไม่มี PyTorch ในรันไทม์เบราว์เซอร์/Node.js)",
+        "Contracts 1–5 ผ่านเชิงโครงสร้าง แต่ยังไม่มีรันไทม์ PyTorch/Checkpoint จริงในโหมด Node.js Preview",
     },
     runtime_environment: {
       torch_installed: false,
-      native_runtime_status: "ready",
-      native_model_loaded: true,
-      is_trained: true,
+      native_runtime_status: "not_configured",
+      native_model_loaded: false,
+      is_trained: false,
       active_model_version: store.activeModelVersion,
-      eval_report_configured: true,
-      eval_report_status: "PASS",
-      registry_configured: true,
-      verified_v10_models: store.modelVersions.filter(
-        (m) => m.evaluation_evidence?.passed,
-      ).length,
-      dataset_configured: true,
-      tokenizer_configured: true,
+      eval_report_configured: false,
+      eval_report_status: "NOT RUN",
+      registry_configured: false,
+      verified_v10_models: 0,
+      dataset_configured: false,
+      tokenizer_configured: false,
     },
-    blockers: ["TORCH_NOT_INSTALLED"],
+    blockers: ["TORCH_NOT_INSTALLED", "TRAINED_V10_MODEL_UNAVAILABLE"],
     contracts: [
       {
         id: "C1",
@@ -630,22 +598,22 @@ function getClosureAudit(): V10ClosureAudit {
       {
         id: "V10-B",
         title: "Central Workflow & Registry Controls",
-        status: "PASS",
-        summary: "8 workflow groups and Model Registry lifecycle active in sandbox.",
+        status: "IMPLEMENTED",
+        summary: "8 workflow groups and Model Registry lifecycle active in preview.",
         blockers: [],
       },
       {
         id: "V10-C",
         title: "Web & API Integration",
-        status: "PASS",
-        summary: "Next.js App Router & in-memory API adapter operational.",
-        blockers: [],
+        status: "IMPLEMENTED",
+        summary: "Next.js App Router & preview API adapter operational (no real PyTorch inference).",
+        blockers: ["TORCH_NOT_INSTALLED"],
       },
       {
         id: "V10-D",
         title: "PyTorch CPU Training & Live Artifact Gate",
         status: "BLOCKED",
-        summary: "Python/PyTorch runtime is not present in the Node.js sandbox.",
+        summary: "Python/PyTorch runtime is not present in the Node.js preview.",
         blockers: ["TORCH_NOT_INSTALLED"],
       },
     ],
@@ -1450,7 +1418,28 @@ export async function handleInMemoryBackendRequest(options: {
       }
     }
 
-    const resultText = generateNativeResponse(prompt, store.activeModelVersion);
+    const requestedModelVersion =
+      typeof body.model_version === "string" ? body.model_version.trim() : "";
+    let targetModelVersion = store.activeModelVersion;
+    if (requestedModelVersion) {
+      const matchedModel = store.modelVersions.find(
+        (m) =>
+          m.version === requestedModelVersion &&
+          m.compatibility?.compatible !== false &&
+          m.lifecycle_status !== "quarantined",
+      );
+      if (!matchedModel) {
+        return {
+          status: 422,
+          body: {
+            detail: "Selected native model version is not registered or compatible",
+          },
+        };
+      }
+      targetModelVersion = matchedModel.version;
+    }
+
+    const resultText = generateNativeResponse(prompt, targetModelVersion);
     const inputTokens = estimateTokens(prompt);
     const outputTokens = estimateTokens(resultText);
     const now = new Date().toISOString();
@@ -1476,7 +1465,7 @@ export async function handleInMemoryBackendRequest(options: {
       inputTokens,
       outputTokens,
       totalTokens: inputTokens + outputTokens,
-      modelVersion: store.activeModelVersion,
+      modelVersion: targetModelVersion,
       createdAt: now,
       completedAt: now,
     });
@@ -1488,7 +1477,7 @@ export async function handleInMemoryBackendRequest(options: {
           status: "success",
           request_id: requestId,
           provider: "ZYRQUEN_NATIVE_CORE",
-          model_version: store.activeModelVersion,
+          model_version: targetModelVersion,
           result: resultText,
         },
       };
@@ -1719,34 +1708,35 @@ export async function handleInMemoryBackendRequest(options: {
       }
 
       const finishedAt = new Date(Date.now() + 50).toISOString();
+      const isModelEval = workflowKey === "evaluation.model_verification";
       const run: WorkflowRunRecord = {
         id: runId,
         workflow_key: defn.workflow_key,
         workflow_version: defn.version,
         trigger_type: "manual",
-        status: "COMPLETED",
+        status: isModelEval ? "BLOCKED" : "COMPLETED",
         started_at: startedAt,
         finished_at: finishedAt,
-        error_message: null,
+        error_message: isModelEval
+          ? "PyTorch/Python Native EvaluationEngine is not attached in Node.js preview mode."
+          : null,
         requested_by_user_id: currentUser.id,
         steps: [
           {
             step_key: defn.workflow_key.split(".")[1] || "execute",
-            status: "COMPLETED",
+            status: isModelEval ? "BLOCKED" : "COMPLETED",
             attempt: 1,
             started_at: startedAt,
             finished_at: finishedAt,
-            evidence: { verdict: "PASS", summary: `${defn.title} verified` },
-            output:
-              workflowKey === "evaluation.model_verification"
-                ? {
-                    steps: 4800,
-                    train_loss: 0.365,
-                    val_loss: 0.419,
-                    perplexity: 1.52,
-                    ram_peak_gb: 1.4,
-                  }
-                : { checked: true },
+            evidence: isModelEval
+              ? {
+                  verdict: "NOT RUN",
+                  summary: "Zero-Mock policy: evaluation metrics require real PyTorch execution",
+                }
+              : { verdict: "PASS", summary: `${defn.title} verified` },
+            output: isModelEval
+              ? { torch_installed: false, evaluation_executed: false }
+              : { checked: true },
           },
         ],
       };
@@ -1804,28 +1794,30 @@ export async function handleInMemoryBackendRequest(options: {
     if (run) {
       const step = run.steps.find((s) => s.step_key === approval.step_key);
       if (approve) {
-        run.status = "COMPLETED";
+        const isMerge = approval.action_type === "git.merge_main";
+        run.status = isMerge ? "COMPLETED" : "BLOCKED";
         run.finished_at = now;
+        run.error_message = isMerge
+          ? null
+          : "PyTorch training worker is not attached in Node.js preview mode.";
         if (step) {
-          step.status = "COMPLETED";
+          step.status = isMerge ? "COMPLETED" : "BLOCKED";
           step.attempt = 1;
           step.started_at = now;
           step.finished_at = now;
-          step.evidence = { verdict: "PASS", summary: "Approved & executed in sandbox" };
-          step.output =
-            approval.action_type === "git.merge_main"
-              ? {
-                  authorized: true,
-                  action: "git.merge_main",
-                  target_base_branch: "main",
-                }
-              : {
-                  steps: 5000,
-                  train_loss: 0.348,
-                  val_loss: 0.402,
-                  perplexity: 1.49,
-                  ram_peak_gb: 1.5,
-                };
+          step.evidence = isMerge
+            ? { verdict: "PASS", summary: "Approved & authorized in preview" }
+            : {
+                verdict: "BLOCKED",
+                summary: "Zero-Mock policy: training execution requires Python/PyTorch worker",
+              };
+          step.output = isMerge
+            ? {
+                authorized: true,
+                action: "git.merge_main",
+                target_base_branch: "main",
+              }
+            : { torch_installed: false, training_executed: false };
         }
       } else {
         run.status = "BLOCKED";

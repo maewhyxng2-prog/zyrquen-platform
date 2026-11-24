@@ -34,6 +34,22 @@ export type NativeHealth = {
   progress_metrics?: ZyrquenProgressMetrics | null;
 };
 
+export type NativeModelVariant = {
+  version: string;
+  lifecycle_status?: string;
+  frozen?: boolean;
+  compatibility?: {
+    compatible?: boolean;
+  } | null;
+};
+
+export type NativeModelRegistryResponse = {
+  configured: boolean;
+  active_version: string | null;
+  registered_count?: number;
+  versions: NativeModelVariant[];
+};
+
 export type Session = {
   authenticated: boolean;
   email: string | null;

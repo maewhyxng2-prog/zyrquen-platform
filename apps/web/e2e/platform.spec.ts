@@ -191,17 +191,37 @@ test("standard user flow: register, workspace attachments & chat, recent convers
     );
   }
 
+  // Registered native model selector appears in composer and allows switching variants
+  const modelSelect = page.locator("#workspace-model-select");
+  await expect(modelSelect).toBeVisible();
+  await expect(modelSelect).toHaveValue("ZYRQUEN-Native-V10");
+  await modelSelect.selectOption("ZYRQUEN-Native-v9");
+  await expect(modelSelect).toHaveValue("ZYRQUEN-Native-v9");
+
   await page
     .locator("#prompt")
     .fill("สรุปความสามารถของ Native Model ในระบบปัจจุบัน");
   await expect(page.getByRole("button", { name: "ส่งข้อความ" })).toBeEnabled();
+  const streamRequestPromise = page.waitForRequest(
+    (req) =>
+      req.method() === "POST" &&
+      req.url().includes("/api/backend/v1/native-ai/infer/stream"),
+  );
   await page.getByRole("button", { name: "ส่งข้อความ" }).click();
+  const streamRequest = await streamRequestPromise;
+  const streamPayload = streamRequest.postDataJSON() as {
+    model_version?: string;
+  };
+  expect(streamPayload.model_version).toBe("ZYRQUEN-Native-v9");
 
   await expect(
     page
       .getByRole("button", { name: "คัดลอกข้อความตอบกลับลงคลิปบอร์ด" })
       .first(),
   ).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator(".message-assistant p").first()).toContainText(
+    "ZYRQUEN-Native-v9",
+  );
 
   // Return to Home and verify the conversation appears under date grouping with search filter
   await page.getByRole("link", { name: "หน้าหลัก ZYRQUEN Ω∞" }).click();

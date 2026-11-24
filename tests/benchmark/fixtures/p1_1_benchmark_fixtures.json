@@ -1,0 +1,192 @@
+{
+  "schema": "zyrquen.p1_1.benchmark_fixtures.v1",
+  "fixture_split": "p1_1_held_out_eval",
+  "isolation_policy": "Disjoint BM_P1_* namespaces; zero overlap with TR_E*, VA_E*, TE_E*, UN_E*, OO_E* or golden_dataset.json",
+  "forbidden_training_prefixes": ["TR_E", "VA_E", "TE_E", "UN_E", "OO_E", "node_tr_", "item_tr_", "step_tr_", "rec_tr_"],
+  "positive_cases": {
+    "knowledge_direct_lookup": {
+      "entity_a": "BM_P1_ORBIT_CORE",
+      "entity_a_data": {"kind": "subsystem", "domain": "telemetry"},
+      "entity_b": "BM_P1_SENSOR_BUS",
+      "entity_b_data": {"kind": "bus", "status": "active"},
+      "question": "Which component connects directly to BM_P1_ORBIT_CORE?"
+    },
+    "planning_valid_dag": {
+      "goal": "Prepare verified capability snapshot without modifying core weights",
+      "steps": [
+        {
+          "id": "bm_step_load_fixtures",
+          "description": "Load isolated P1-1 held-out benchmark fixtures",
+          "depends_on": [],
+          "success_criteria": "Fixtures schema validated"
+        },
+        {
+          "id": "bm_step_run_checks",
+          "description": "Run real core interface probes",
+          "depends_on": ["bm_step_load_fixtures"],
+          "success_criteria": "Deterministic counts collected"
+        },
+        {
+          "id": "bm_step_emit_report",
+          "description": "Emit reproducible P1-1 baseline report",
+          "depends_on": ["bm_step_run_checks"],
+          "success_criteria": "Baseline digest computed"
+        }
+      ]
+    },
+    "tool_read_only_auth": {
+      "tool": {
+        "name": "bm_doc_inspector",
+        "description": "Read-only document metadata inspector",
+        "effect": "read_only",
+        "required_permission": "benchmark:read_doc",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "doc_id": {"type": "string"}
+          },
+          "required": ["doc_id"],
+          "additionalProperties": false
+        }
+      },
+      "call": {
+        "call_id": "bm-call-001",
+        "tool_name": "bm_doc_inspector",
+        "arguments": {"doc_id": "BM_DOC_101"}
+      },
+      "granted_permissions": ["benchmark:read_doc"]
+    }
+  },
+  "negative_abstention_cases": {
+    "ungrounded_entity_query": {
+      "known_entity": "BM_P1_ALPHA_NODE",
+      "unknown_query_entity": "BM_P1_NONEXISTENT_PLANET_99",
+      "question": "What is the orbital mass of BM_P1_NONEXISTENT_PLANET_99?"
+    },
+    "unverified_evidence_metadata": {
+      "entity_id": "BM_P1_STALE_CLAIM",
+      "metadata": {
+        "source_url": "not-a-valid-url://broken",
+        "retrieved_at": "2019-01-01T00:00:00Z",
+        "freshness": "STALE",
+        "verified": false
+      },
+      "related_target": "BM_P1_UNVERIFIED_TARGET",
+      "question": "Should BM_P1_STALE_CLAIM be cited as verified current evidence?"
+    },
+    "side_effecting_tool_unapproved": {
+      "tool": {
+        "name": "bm_external_publish",
+        "description": "Side-effecting external write tool",
+        "effect": "side_effecting",
+        "required_permission": "benchmark:publish",
+        "input_schema": {
+          "type": "object",
+          "properties": {"target": {"type": "string"}},
+          "required": ["target"],
+          "additionalProperties": false
+        }
+      },
+      "call": {
+        "call_id": "bm-call-002",
+        "tool_name": "bm_external_publish",
+        "arguments": {"target": "public_feed"}
+      }
+    }
+  },
+  "math_logic_cases": {
+    "perplexity_loss": 1.5,
+    "token_preds": [11, 22, 33, 44, 55],
+    "token_targets": [11, 22, 99, 44, 55],
+    "expected_token_accuracy": 0.8,
+    "transitive_order": {
+      "facts": [
+        {"source": "BM_P1_X1", "relation": "greater_than", "target": "BM_P1_X2"},
+        {"source": "BM_P1_X2", "relation": "greater_than", "target": "BM_P1_X3"}
+      ],
+      "query_left": "BM_P1_X1",
+      "query_right": "BM_P1_X3",
+      "expected_answer": ">"
+    },
+    "arithmetic_query": {
+      "context": "BM_P1_CALC_BASE",
+      "question": "Compute 18 * 4 - 9 and return only the integer result.",
+      "expected_answer": "63"
+    },
+    "cyclic_plan": {
+      "goal": "Detect impossible cyclic dependency",
+      "steps": [
+        {
+          "id": "bm_cycle_a",
+          "description": "Step A waiting on B",
+          "depends_on": ["bm_cycle_b"],
+          "success_criteria": "A done"
+        },
+        {
+          "id": "bm_cycle_b",
+          "description": "Step B waiting on A",
+          "depends_on": ["bm_cycle_a"],
+          "success_criteria": "B done"
+        }
+      ]
+    }
+  },
+  "graph_multi_hop_cases": {
+    "chain_nodes": ["BM_P1_G0", "BM_P1_G1", "BM_P1_G2", "BM_P1_G3"],
+    "two_hop_target": "BM_P1_G2",
+    "three_hop_target": "BM_P1_G3",
+    "novel_domain_slot_prompt": "Trace BM_P1_G0 -> BM_P1_G1 -> BM_P1_G2 | target from BM_P1_G0?",
+    "novel_domain_slot_target": "BM_P1_G2",
+    "diamond_plan": {
+      "goal": "Execute diamond dependency workflow",
+      "steps": [
+        {"id": "bm_root", "description": "Root step", "depends_on": [], "success_criteria": "ok"},
+        {"id": "bm_left", "description": "Left branch", "depends_on": ["bm_root"], "success_criteria": "ok"},
+        {"id": "bm_right", "description": "Right branch", "depends_on": ["bm_root"], "success_criteria": "ok"},
+        {"id": "bm_join", "description": "Join branch", "depends_on": ["bm_left", "bm_right"], "success_criteria": "ok"}
+      ],
+      "expected_order": ["bm_root", "bm_left", "bm_right", "bm_join"]
+    }
+  },
+  "memory_retrieval_cases": {
+    "stored_facts": [
+      {"id": "BM_P1_MEM_PROJECT", "data": {"name": "Project Meridian", "owner": "Core Team", "alias": "เมอริเดียน"}},
+      {"id": "BM_P1_MEM_POLICY", "data": {"rule": "Zero fabricated evidence"}}
+    ],
+    "relation": ["BM_P1_MEM_PROJECT", "BM_P1_MEM_POLICY"],
+    "semantic_alias_query": "เมอริเดียน",
+    "expected_entity_id": "BM_P1_MEM_PROJECT",
+    "multi_turn_turns": [
+      {"role": "user", "content": "จำรหัสอ้างอิงนี้ไว้: BM-REF-4821"},
+      {"role": "assistant", "content": "รับทราบ บันทึกรหัส BM-REF-4821 แล้ว"},
+      {"role": "user", "content": "รหัสอ้างอิงที่บอกไปก่อนหน้าคืออะไร?"}
+    ],
+    "expected_recall_token": "BM-REF-4821"
+  },
+  "tokenizer_scoring_cases": {
+    "corpus": [
+      "ZYRQUEN native core processes structured logic and bilingual Thai English input.",
+      "ระบบปัญญาประดิษฐ์หลักต้องวิเคราะห์ข้อมูลอย่างถูกต้องและตรวจสอบหลักฐานได้เสมอ",
+      "Graph <slot_0> connects to <slot_1> through verified deterministic edges.",
+      "ความแม่นยำ ความปลอดภัย และการไม่สร้างข้อมูลเท็จคือมาตรฐานหลักของระบบ",
+      "Audit status VERIFIED requires valid SHA-256 provenance and zero entity leakage."
+    ],
+    "vocab_size": 384,
+    "eval_english": "Native core verifies structured logic across unseen graph transitions.",
+    "eval_thai": "ระบบหลักต้องวิเคราะห์หลักฐานและปฏิเสธคำตอบที่ไม่แน่ใจอย่างซื่อสัตย์",
+    "eval_mixed": "ตรวจสอบสถานะ BM_P1_TOKEN_CHECK กับ <slot_0> และ <slot_1> ให้ครบถ้วน",
+    "sft_prompt": "Inspect BM_P1_ENTITY_A -> BM_P1_ENTITY_B",
+    "sft_target": "BM_P1_ENTITY_B"
+  },
+  "leakage_detection_cases": {
+    "probe_eval_entity": "TE_E99421",
+    "clean_train_records": [
+      {"input": "TR_E80001 -> TR_E80002", "target": "TR_E80002"},
+      {"input": "TR_E80003 -> TR_E80004", "target": "TR_E80004"},
+      {"input": "TR_E80005 -> TR_E80006", "target": "TR_E80006"}
+    ],
+    "leaked_eval_records": [
+      {"input": "TE_E99421 -> TE_E99422", "target": "TE_E99422"}
+    ]
+  }
+}

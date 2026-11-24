@@ -16,6 +16,7 @@ import { Icon } from "@/components/Icon";
 import { StatusBadge } from "@/components/StatusBadge";
 import { usePlatformHealth } from "@/hooks/usePlatformHealth";
 import {
+  apiRequest,
   apiStreamRequest,
   ApiError,
   readSession,
@@ -35,7 +36,13 @@ import {
   consumeNativeInferenceStream,
   MAX_NATIVE_PROMPT_LENGTH,
 } from "@/lib/native-chat";
-import type { Conversation, ConversationMessage, Session } from "@/lib/types";
+import type {
+  Conversation,
+  ConversationMessage,
+  NativeModelRegistryResponse,
+  NativeModelVariant,
+  Session,
+} from "@/lib/types";
 
 const examples = [
   "สรุปความสามารถของ Native Model ในระบบปัจจุบัน",
@@ -109,6 +116,26 @@ export function WorkspaceClient({
   const [mobileHistory, setMobileHistory] = useState(false);
   const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
   const [optionsOpen, setOptionsOpen] = useState(false);
+  const [registeredModels, setRegisteredModels] = useState<NativeModelVariant[]>([]);
+  const [activeRegistryVersion, setActiveRegistryVersion] = useState<string | null>(
+    null,
+  );
+  const [selectedModelVersion, setSelectedModelVersion] = useState("");
+  const [trackedRegistryUserId, setTrackedRegistryUserId] = useState<string | null>(
+    null,
+  );
+
+  const targetRegistryUserId =
+    sessionReady && session?.authenticated ? (session.userId ?? null) : null;
+
+  if (targetRegistryUserId !== trackedRegistryUserId) {
+    setTrackedRegistryUserId(targetRegistryUserId);
+    if (!targetRegistryUserId) {
+      setRegisteredModels([]);
+      setActiveRegistryVersion(null);
+      setSelectedModelVersion("");
+    }
+  }
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -295,6 +322,46 @@ export function WorkspaceClient({
       active = false;
     };
   }, [activeId, session?.userId, conversationsReadyForCurrentUser]);
+
+  useEffect(() => {
+    if (!targetRegistryUserId) return;
+    let active = true;
+    apiRequest<NativeModelRegistryResponse>("v1/models/registry")
+      .then((payload) => {
+        if (!active || !payload?.configured || !Array.isArray(payload.versions)) {
+          return;
+        }
+        const compatible = payload.versions.filter(
+          (item) =>
+            Boolean(item.version) &&
+            item.compatibility?.compatible !== false &&
+            item.lifecycle_status !== "quarantined",
+        );
+        setRegisteredModels(compatible);
+        setActiveRegistryVersion(payload.active_version ?? null);
+        setSelectedModelVersion((current) => {
+          if (current && compatible.some((item) => item.version === current)) {
+            return current;
+          }
+          if (
+            payload.active_version &&
+            compatible.some((item) => item.version === payload.active_version)
+          ) {
+            return payload.active_version;
+          }
+          return compatible[0]?.version ?? "";
+        });
+      })
+      .catch(() => {
+        if (!active) return;
+        setRegisteredModels([]);
+        setActiveRegistryVersion(null);
+        setSelectedModelVersion("");
+      });
+    return () => {
+      active = false;
+    };
+  }, [targetRegistryUserId]);
 
   useEffect(() => {
     const refreshHistory = () => {
@@ -648,6 +715,9 @@ export function WorkspaceClient({
           request_id: crypto.randomUUID(),
           max_tokens: maxTokens,
           temperature,
+          ...(selectedModelVersion
+            ? { model_version: selectedModelVersion }
+            : {}),
         }),
         signal: controller.signal,
       });
@@ -1050,7 +1120,10 @@ export function WorkspaceClient({
               </span>
               <span>
                 <h1>{activeConversation?.title || "พื้นที่ทำงาน AI"}</h1>
-                <small>Native Model · ZYRQUEN Ω∞</small>
+                <small>
+                  {selectedModelVersion || nativeHealth?.model_version || "Native Model"}{" "}
+                  · ZYRQUEN Ω∞
+                </small>
               </span>
             </div>
           </div>
@@ -1431,6 +1504,36 @@ export function WorkspaceClient({
                     </div>
                   )}
                 </div>
+
+                {registeredModels.length > 1 && (
+                  <label className="composer-model-select-wrap" htmlFor="workspace-model-select">
+                    <Icon name="cpu" size={14} />
+                    <span className="sr-only">เลือกรุ่น Native Model</span>
+                    <select
+                      aria-label="เลือกรุ่น Native Model"
+                      className="composer-model-select"
+                      disabled={sending}
+                      id="workspace-model-select"
+                      onChange={(event) => setSelectedModelVersion(event.target.value)}
+                      title="เลือกรุ่น Native Model ที่ลงทะเบียนไว้ในระบบ"
+                      value={selectedModelVersion}
+                    >
+                      {registeredModels.map((variant) => {
+                        const statusNote =
+                          variant.version === activeRegistryVersion
+                            ? "Active"
+                            : variant.lifecycle_status || null;
+                        return (
+                          <option key={variant.version} value={variant.version}>
+                            {statusNote
+                              ? `${variant.version} (${statusNote})`
+                              : variant.version}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </label>
+                )}
               </div>
 
               <span className="composer-hint tabular-nums">
