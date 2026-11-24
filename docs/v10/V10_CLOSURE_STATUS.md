@@ -201,3 +201,13 @@
 - Explicitly does **not** run backward, create an optimizer, perform optimizer steps, write checkpoints, modify ModelRegistry, consume approval, or train the V10 model.
 - Added `tests/test_v10d_native_forward_probe.py` to enforce the read-only/no-training source contract.
 - This validates forward execution only; it is not evidence of training, a trained checkpoint, capability generalization, or Tier-2 authorization.
+
+
+## 21. V10-D Resume Identity and Weights-Only RNG Integrity
+- **Status:** **IMPLEMENTED — COLAB REGRESSION VALIDATION PENDING; TRAINING NOT AUTHORIZED**
+- Both native training entry points now persist and validate dataset version, dataset content SHA-256, tokenizer SHA-256, model configuration, and stable optimizer/sampling configuration before loading any checkpoint state.
+- SFT resume additionally validates prompt-format version and separator. Legacy checkpoints without the required identity fields fail closed instead of silently resuming.
+- Python RNG states are serialized as primitive lists for PyTorch `weights_only=True` compatibility and restored to tuple form before use. Batch-sampling RNG and global Python/PyTorch RNG state are restored separately.
+- `handle_training_execute` now passes the dataset manifest content fingerprint into both native training entry points.
+- Added `tests/test_v10d_resume_integrity.py`, including a real CPU PyTorch checkpoint save/load test using the default `weights_only=True` loader, identity mismatch tests, and RNG round-trip coverage.
+- This is a source change, not yet a runtime PASS. Run the targeted tests and existing V10-D regression suite in Colab before considering the training pipeline ready. Authenticated Tier-2 approval and runtime resource guards remain mandatory; no training was started by this change.
