@@ -47,10 +47,15 @@ describe("Registered Native Model variant selection in inference", () => {
         model_version: "ZYRQUEN-Native-v9",
       }),
     });
-    expect(inferValid.status).toBe(200);
-    const validBody = inferValid.body as { model_version: string; result: string };
+    expect(inferValid.status).toBe(503);
+    const validBody = inferValid.body as {
+      status: string;
+      code: string;
+      model_version: string;
+    };
+    expect(validBody.status).toBe("blocked");
+    expect(validBody.code).toBe("NATIVE_INFERENCE_BLOCKED");
     expect(validBody.model_version).toBe("ZYRQUEN-Native-v9");
-    expect(validBody.result).toContain("ZYRQUEN-Native-v9");
 
     const inferInvalid = await handleInMemoryBackendRequest({
       method: "POST",

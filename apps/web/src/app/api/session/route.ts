@@ -133,20 +133,25 @@ export async function GET(request: NextRequest) {
   const hasExplicitUrl = hasExplicitExternalApiUrl(configuredUrl);
   const authorization = `Bearer ${accessToken}`;
 
-  if (!baseUrl && hasExplicitUrl) {
+  const isProduction = process.env.NODE_ENV === "production";
+  if (!baseUrl) {
     return NextResponse.json(
       {
         authenticated: false,
         email: null,
         userId: null,
         verified: false,
-        error: "ค่า ZYRQUEN_API_BASE_URL ไม่ถูกต้องสำหรับตรวจสอบเซสชัน",
+        error: hasExplicitUrl
+          ? "ค่า ZYRQUEN_API_BASE_URL ไม่ถูกต้องสำหรับตรวจสอบเซสชัน"
+          : "BLOCKED: ยังไม่ได้กำหนดค่า ZYRQUEN_API_BASE_URL สำหรับตรวจสอบเซสชันในโหมด Production",
       },
       { status: 503, headers: { "Cache-Control": "no-store" } },
     );
   }
 
-  if (await shouldUseInMemoryBackend(baseUrl, hasExplicitUrl)) {
+  if (
+    await shouldUseInMemoryBackend(baseUrl, hasExplicitUrl, process.env.NODE_ENV)
+  ) {
     const inMemory = await handleInMemoryBackendRequest({
       method: "GET",
       path: "auth/me",
@@ -171,7 +176,7 @@ export async function GET(request: NextRequest) {
       signal: AbortSignal.timeout(hasExplicitUrl ? 10_000 : 300),
     });
   } catch {
-    if (!hasExplicitUrl) {
+    if (!isProduction && !hasExplicitUrl) {
       const inMemory = await handleInMemoryBackendRequest({
         method: "GET",
         path: "auth/me",
@@ -189,7 +194,7 @@ export async function GET(request: NextRequest) {
         email: null,
         userId: null,
         verified: false,
-        error: "ไม่สามารถเชื่อมต่อบริการ ZYRQUEN API เพื่อยืนยันเซสชันได้",
+        error: "BLOCKED: ไม่สามารถเชื่อมต่อบริการ ZYRQUEN API เพื่อยืนยันเซสชันได้",
       },
       { status: 503, headers: { "Cache-Control": "no-store" } },
     );

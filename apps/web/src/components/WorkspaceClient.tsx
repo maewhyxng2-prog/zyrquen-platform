@@ -14,6 +14,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/Icon";
 import { StatusBadge } from "@/components/StatusBadge";
+import { emitCognitiveState, ZyrquenLogo } from "@/components/ZyrquenLogo";
 import { usePlatformHealth } from "@/hooks/usePlatformHealth";
 import {
   apiRequest,
@@ -86,7 +87,12 @@ export function WorkspaceClient({
   allowUnauthenticatedEntry: boolean;
 }) {
   const router = useRouter();
-  const { nativeHealth, nativeError, loading: healthLoading } = usePlatformHealth();
+  const {
+    nativeHealth,
+    nativeError,
+    loading: healthLoading,
+    refresh: refreshHealth,
+  } = usePlatformHealth();
   const [session, setSession] = useState<Session | null>(null);
   const [sessionReady, setSessionReady] = useState(false);
   const sessionRef = useRef<Session | null>(null);
@@ -428,6 +434,13 @@ export function WorkspaceClient({
     vv.addEventListener("resize", onViewportResize);
     return () => vv.removeEventListener("resize", onViewportResize);
   }, []);
+
+  useEffect(() => {
+    emitCognitiveState(Boolean(requestPhase), requestPhase);
+    return () => {
+      emitCognitiveState(false, null);
+    };
+  }, [requestPhase]);
 
   async function handleFileSelection(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -812,8 +825,8 @@ export function WorkspaceClient({
       : nativeHealth?.inference_available
         ? "Native Model พร้อมใช้งาน"
         : nativeError
-          ? "รันไทม์ตรวจสอบไม่สำเร็จ"
-          : "รันไทม์ไม่พร้อมใช้งาน";
+          ? "BLOCKED · รันไทม์ตรวจสอบไม่สำเร็จ"
+          : "BLOCKED · รันไทม์ไม่พร้อมใช้งาน";
 
   const requestStatusLabel =
     requestPhase === "verifying"
@@ -1167,7 +1180,7 @@ export function WorkspaceClient({
           ) : !activeConversation?.messages.length ? (
             <div className="chat-empty-state">
               <div className="chat-empty-mark">
-                <Icon name="sparkles" size={24} />
+                <ZyrquenLogo processing={sending} size={42} />
               </div>
               <StatusBadge
                 tone={
@@ -1200,6 +1213,17 @@ export function WorkspaceClient({
                   </button>
                 ))}
               </div>
+              {(!nativeHealth?.inference_available || nativeError) && (
+                <button
+                  className="button button-secondary"
+                  disabled={healthLoading}
+                  onClick={() => void refreshHealth()}
+                  type="button"
+                >
+                  <Icon name="activity" size={15} />
+                  {healthLoading ? "กำลังเชื่อมต่อใหม่..." : "ลองเชื่อมต่อ Native Runtime ใหม่"}
+                </button>
+              )}
               {sessionReady && !session?.authenticated && (
                 <Link className="button button-primary workspace-empty-login" href="/login">
                   <Icon name="lock" size={16} />
@@ -1294,7 +1318,7 @@ export function WorkspaceClient({
                 <div className="message-generating-inner">
                   <div className="message-row message-assistant">
                     <span className="message-avatar message-avatar-assistant">
-                      <Icon name="sparkles" size={15} />
+                      <ZyrquenLogo processing={sending} size={22} />
                     </span>
                     <div className="message-content">
                       <div className="message-meta">
@@ -1320,6 +1344,17 @@ export function WorkspaceClient({
           <div className="workspace-error" role="alert">
             <Icon name="close" size={16} />
             <span>{error}</span>
+            <button
+              className="workspace-tool-btn"
+              disabled={healthLoading}
+              onClick={() => {
+                setError("");
+                void refreshHealth();
+              }}
+              type="button"
+            >
+              ลองเชื่อมต่อใหม่
+            </button>
             {!session?.authenticated && <Link href="/login">เข้าสู่ระบบ</Link>}
           </div>
         )}

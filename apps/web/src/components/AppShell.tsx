@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -12,6 +11,11 @@ import {
 import type { Session } from "@/lib/types";
 import { Icon, type IconName } from "./Icon";
 import { StatusBadge } from "./StatusBadge";
+import {
+  COGNITIVE_STATE_EVENT,
+  type CognitiveStateDetail,
+  ZyrquenLogo,
+} from "./ZyrquenLogo";
 
 type NavItem = {
   href: string;
@@ -101,6 +105,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   const [accountError, setAccountError] = useState("");
+  const [isCognitiveProcessing, setIsCognitiveProcessing] = useState(false);
   const accountMenuRef = useRef<HTMLDivElement>(null);
 
   const authPage = pathname === "/login";
@@ -116,7 +121,21 @@ function AppShellInner({ children }: { children: ReactNode }) {
     if (accountOpen) {
       setAccountOpen(false);
     }
+    if (isCognitiveProcessing && pathname !== "/workspace") {
+      setIsCognitiveProcessing(false);
+    }
   }
+
+  useEffect(() => {
+    const handleCognitiveState = (event: Event) => {
+      const custom = event as CustomEvent<CognitiveStateDetail>;
+      setIsCognitiveProcessing(Boolean(custom.detail?.processing));
+    };
+    window.addEventListener(COGNITIVE_STATE_EVENT, handleCognitiveState);
+    return () => {
+      window.removeEventListener(COGNITIVE_STATE_EVENT, handleCognitiveState);
+    };
+  }, []);
 
   useEffect(() => {
     const refreshSession = () => {
@@ -213,6 +232,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
       ]
         .filter(Boolean)
         .join(" ")}
+      data-cognitive-state={isCognitiveProcessing ? "processing" : "idle"}
     >
       {!authPage && (
         <header className="app-header">
@@ -232,14 +252,10 @@ function AppShellInner({ children }: { children: ReactNode }) {
               className="app-brand"
               href="/"
             >
-              <Image
-                alt=""
+              <ZyrquenLogo
                 className="app-brand-mark"
-                height={32}
-                priority
-                src="/zyrquen-icon.svg"
-                unoptimized
-                width={32}
+                processing={isCognitiveProcessing}
+                size={32}
               />
               <span className="app-brand-text">
                 <strong>ZYRQUEN Ω∞</strong>
@@ -473,14 +489,10 @@ function AppShellInner({ children }: { children: ReactNode }) {
             className="brand-lockup"
             href="/"
           >
-            <Image
-              alt=""
+            <ZyrquenLogo
               className="brand-mark"
-              height={36}
-              priority
-              src="/zyrquen-icon.svg"
-              unoptimized
-              width={36}
+              processing={isCognitiveProcessing}
+              size={36}
             />
             <span className="brand-copy">
               <strong>ZYRQUEN Ω∞</strong>

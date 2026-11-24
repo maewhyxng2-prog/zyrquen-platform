@@ -123,14 +123,17 @@ describe("API key auto-rotate & 7-day usage backend lifecycle", () => {
       new Date(baseTime.getTime() + 30 * 86_400_000).toISOString(),
     );
 
-    // Call inference with the API key secret to verify 7-day usage attribution
+    // Call inference with the API key secret: authenticates key but fails closed (503 BLOCKED) with zero fake tokens
     const inferRes = await handleInMemoryBackendRequest({
       method: "POST",
       path: "v1/native-ai/infer",
       authorizationHeader: `Bearer ${created.key}`,
       rawBody: JSON.stringify({ prompt: "user: ทดสอบการใช้งาน API Key\nassistant:" }),
     });
-    expect(inferRes.status).toBe(200);
+    expect(inferRes.status).toBe(503);
+    expect((inferRes.body as { code?: string }).code).toBe(
+      "NATIVE_INFERENCE_BLOCKED",
+    );
 
     const usageRes = await handleInMemoryBackendRequest({
       method: "GET",
@@ -147,12 +150,12 @@ describe("API key auto-rotate & 7-day usage backend lifecycle", () => {
         total_tokens: number;
       }>;
     };
-    expect(usageBody.successful_requests).toBe(1);
-    expect(usageBody.total_tokens).toBeGreaterThan(0);
+    expect(usageBody.successful_requests).toBe(0);
+    expect(usageBody.total_tokens).toBe(0);
     expect(usageBody.daily_usage).toHaveLength(7);
     expect(usageBody.daily_usage[6]).toMatchObject({
       date: "2026-11-22",
-      successful_requests: 1,
+      successful_requests: 0,
     });
 
     const crossSchedule = await handleInMemoryBackendRequest({

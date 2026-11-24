@@ -14,6 +14,35 @@ from typing import Iterable
 STRICT_MAX_BATCH_SIZE = 4
 STRICT_BLOCK_SIZE = 256
 STRICT_MAX_SEGMENT_STEPS = 500
+ALLOWED_MIXED_PRECISION = frozenset({"off", "auto", "bf16", "fp16"})
+
+
+def resolve_amp_dtype(
+    device: str,
+    mixed_precision: str = "off",
+    torch_mod=None,
+) -> str | None:
+    """Resolve hardware-gated AMP dtype ('bfloat16' | 'float16' | None).
+
+    Pure-Python safe: returns None whenever CPU device or CUDA unavailable.
+    """
+    if mixed_precision not in ALLOWED_MIXED_PRECISION:
+        raise ValueError(
+            f"mixed_precision={mixed_precision!r} must be one of {sorted(ALLOWED_MIXED_PRECISION)}"
+        )
+    if mixed_precision == "off" or str(device).startswith("cpu"):
+        return None
+    if torch_mod is None:
+        return None
+    cuda = getattr(torch_mod, "cuda", None)
+    if cuda is None or not callable(getattr(cuda, "is_available", None)) or not cuda.is_available():
+        return None
+    bf16_ok = bool(callable(getattr(cuda, "is_bf16_supported", None)) and cuda.is_bf16_supported())
+    if mixed_precision == "bf16":
+        return "bfloat16" if bf16_ok else None
+    if mixed_precision == "fp16":
+        return "float16"
+    return "bfloat16" if bf16_ok else "float16"
 
 
 def validate_strict_resource_limits(cfg: "TrainConfig") -> None:
@@ -53,10 +82,13 @@ class TrainConfig:
     stage_id: int | None = None
     experiment_index: int | None = None
     strict_limits: bool = False
+    mixed_precision: str = "off"
 
     def __post_init__(self):
         if self.block_size < 2 or self.batch_size < 1 or self.grad_accum_steps < 1 or self.max_steps < 1:
             raise ValueError("invalid training sizes")
+        if self.mixed_precision not in ALLOWED_MIXED_PRECISION:
+            raise ValueError("invalid mixed_precision setting")
         if self.segment_max_steps is not None and self.segment_max_steps < 1:
             raise ValueError("segment_max_steps must be >= 1")
         if self.lr_total_steps is not None and self.lr_total_steps < 1:
@@ -202,6 +234,16 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
         [{"params": decay, "weight_decay": cfg.weight_decay},
          {"params": no_decay, "weight_decay": 0.0}], lr=cfg.lr, betas=(0.9, 0.95))
 
+    amp_dtype_name = resolve_amp_dtype(device, cfg.mixed_precision, torch_mod=torch)
+    amp_dtype = (
+        getattr(torch, amp_dtype_name, None) if amp_dtype_name is not None else None
+    )
+    scaler = (
+        torch.amp.GradScaler("cuda", enabled=True)
+        if amp_dtype_name == "float16" and hasattr(torch, "amp")
+        else None
+    )
+
     ckpts = CheckpointManager(checkpoint_dir, keep_last=max(1, int(max_checkpoints)))
     monitor = TrainingMonitor(log_path)
     start_step = 0
@@ -292,8 +334,15 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
         total_loss = 0.0
         for _ in range(cfg.grad_accum_steps):
             x, y = sample_batch(train_ids, cfg.block_size, cfg.batch_size, rng)
-            loss = model(to_tensor(x), to_tensor(y))[1] / cfg.grad_accum_steps
-            loss.backward()
+            if amp_dtype is not None and hasattr(torch, "amp"):
+                with torch.amp.autocast("cuda", dtype=amp_dtype):
+                    loss = model(to_tensor(x), to_tensor(y))[1] / cfg.grad_accum_steps
+            else:
+                loss = model(to_tensor(x), to_tensor(y))[1] / cfg.grad_accum_steps
+            if scaler is not None:
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
             total_loss += loss.item()
         if not math.isfinite(total_loss):
             optimizer.zero_grad(set_to_none=True)
@@ -310,8 +359,14 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
                 optimizer.zero_grad(set_to_none=True)
                 stopped_reason = guard_reason
                 break
+        if scaler is not None:
+            scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
-        optimizer.step()
+        if scaler is not None:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
         last_train_loss = total_loss
         step += 1
         executed_steps += 1
@@ -440,6 +495,16 @@ def train_sft(
         betas=(0.9, 0.95),
     )
 
+    amp_dtype_name = resolve_amp_dtype(device, cfg.mixed_precision, torch_mod=torch)
+    amp_dtype = (
+        getattr(torch, amp_dtype_name, None) if amp_dtype_name is not None else None
+    )
+    scaler = (
+        torch.amp.GradScaler("cuda", enabled=True)
+        if amp_dtype_name == "float16" and hasattr(torch, "amp")
+        else None
+    )
+
     ckpts = CheckpointManager(checkpoint_dir, keep_last=max(1, int(max_checkpoints)))
     monitor = TrainingMonitor(log_path)
     start_step = 0
@@ -551,8 +616,15 @@ def train_sft(
         for _ in range(cfg.grad_accum_steps):
             x, y = sample_sft_batch(train_pairs)
             step_tokens += sum(len(row) for row in x)
-            loss = model(to_tensor(x), to_tensor(y))[1] / cfg.grad_accum_steps
-            loss.backward()
+            if amp_dtype is not None and hasattr(torch, "amp"):
+                with torch.amp.autocast("cuda", dtype=amp_dtype):
+                    loss = model(to_tensor(x), to_tensor(y))[1] / cfg.grad_accum_steps
+            else:
+                loss = model(to_tensor(x), to_tensor(y))[1] / cfg.grad_accum_steps
+            if scaler is not None:
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
             total_loss += loss.item()
         if not math.isfinite(total_loss):
             optimizer.zero_grad(set_to_none=True)
@@ -569,8 +641,14 @@ def train_sft(
                 optimizer.zero_grad(set_to_none=True)
                 stopped_reason = guard_reason
                 break
+        if scaler is not None:
+            scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
-        optimizer.step()
+        if scaler is not None:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
         last_train_loss = total_loss
         step += 1
         executed_steps += 1

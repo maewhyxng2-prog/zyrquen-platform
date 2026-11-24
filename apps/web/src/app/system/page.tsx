@@ -76,7 +76,8 @@ export default function SystemPage() {
       ? "กำลังตรวจสอบ"
       : nativeHealth?.inference_available
         ? "พร้อมใช้งาน"
-        : nativeHealth?.runtime_status || (nativeError ? "ตรวจสอบไม่สำเร็จ" : "ยังไม่มีข้อมูล");
+        : nativeHealth?.runtime_status?.toUpperCase() ||
+          (nativeError ? "BLOCKED" : "ยังไม่มีข้อมูล");
 
   const nativeTone =
     nativeHealth?.inference_available ? "good" : nativeHealth || nativeError ? "warn" : "neutral";

@@ -202,17 +202,25 @@ async function proxy(request: NextRequest, context: RouteContext) {
   if (accessToken && path !== "auth/login" && path !== "auth/register") {
     headers.set("Authorization", `Bearer ${accessToken}`);
   }
-  if (!baseUrl && hasExplicitUrl) {
+  const isProduction = process.env.NODE_ENV === "production";
+  if (!baseUrl) {
     return NextResponse.json(
       {
-        detail:
-          "บริการ ZYRQUEN API ยังไม่ได้กำหนดค่าปลายทางที่ใช้งานได้",
+        status: "blocked",
+        code: hasExplicitUrl ? "BACKEND_INVALID_URL" : "BACKEND_NOT_CONFIGURED",
+        detail: hasExplicitUrl
+          ? "บริการ ZYRQUEN API ยังไม่ได้กำหนดค่าปลายทางที่ใช้งานได้"
+          : "BLOCKED: บริการ ZYRQUEN API ยังไม่ได้กำหนดค่า ZYRQUEN_API_BASE_URL ในโหมด Production",
       },
       { status: 503 },
     );
   }
 
-  let useInMemory = await shouldUseInMemoryBackend(baseUrl, hasExplicitUrl);
+  let useInMemory = await shouldUseInMemoryBackend(
+    baseUrl,
+    hasExplicitUrl,
+    process.env.NODE_ENV,
+  );
 
   if (requiresExpectedIdentity) {
     const expectedUserId = request.headers
@@ -256,11 +264,15 @@ async function proxy(request: NextRequest, context: RouteContext) {
           identityErrorText = await identityResponse.text();
         }
       } catch {
-        if (!hasExplicitUrl) {
+        if (!isProduction && !hasExplicitUrl) {
           useInMemory = true;
         } else {
           return NextResponse.json(
-            { detail: "ไม่สามารถยืนยันบัญชีกับ ZYRQUEN API ได้" },
+            {
+              status: "blocked",
+              code: "BACKEND_UNAVAILABLE",
+              detail: "BLOCKED: ไม่สามารถยืนยันบัญชีกับ ZYRQUEN API ได้",
+            },
             { status: 503 },
           );
         }
@@ -342,13 +354,15 @@ async function proxy(request: NextRequest, context: RouteContext) {
         ]),
       });
     } catch {
-      if (!hasExplicitUrl) {
+      if (!isProduction && !hasExplicitUrl) {
         useInMemory = true;
       } else {
         return NextResponse.json(
           {
+            status: "blocked",
+            code: "BACKEND_UNAVAILABLE",
             detail:
-              "ไม่สามารถเชื่อมต่อกับ ZYRQUEN API ที่กำหนดไว้ได้ กรุณาตรวจสอบว่าบริการ API กำลังทำงานอยู่",
+              "BLOCKED: ไม่สามารถเชื่อมต่อกับ ZYRQUEN API ที่กำหนดไว้ได้ กรุณาตรวจสอบว่าบริการ API กำลังทำงานอยู่",
           },
           { status: 503 },
         );

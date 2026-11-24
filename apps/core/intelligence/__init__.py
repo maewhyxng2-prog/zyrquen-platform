@@ -36,6 +36,50 @@ from .integration import (
     IntelligenceRuntime,
     validate_integration_result,
 )
+from .memory_layers import (
+    EpisodicMemory,
+    EvaluationCorpusStore,
+    MemoryRecord,
+    SegmentedKnowledgeEngine,
+    TrainingCorpusStore,
+    VerifiedKnowledgeStore,
+    WorkingMemory,
+)
+from .research import (
+    EVIDENCE_STATUSES,
+    ResearchSource,
+    ResearchVerificationResult,
+    ResearchVerifier,
+    UntrustedEvidenceEnvelope,
+    sanitize_untrusted_source,
+    validate_research_url,
+)
+from .mission_planner import (
+    MISSION_STATES,
+    DomainAdaptiveDAGPlanner,
+    MissionPlanningError,
+    MissionStateMachine,
+    MissionStepSpec,
+)
+from .cognitive_core import (
+    CognitiveDecisionResult,
+    DecisionTrace,
+    NativeCognitiveOrchestrator,
+    audit_strict_native_only_compliance,
+)
+from .verified_learning import VerifiedFeedbackCurator
+from .capability_benchmark import (
+    CAPABILITY_LIFECYCLE_STATUSES,
+    SUBSYSTEM_KEYS,
+    BenchmarkEvidenceRecord,
+    evaluate_capability_status,
+    run_measured_capability_suite,
+)
+from .self_improvement import (
+    ExperimentEvaluationResult,
+    ImprovementProposal,
+    SelfImprovementResearchLoop,
+)
 
 __all__ = [
     "KnowledgeSystem",
@@ -69,4 +113,36 @@ __all__ = [
     "ToolRegistry",
     "PermissionGate",
     "ExecutionPolicy",
+    "WorkingMemory",
+    "EpisodicMemory",
+    "VerifiedKnowledgeStore",
+    "EvaluationCorpusStore",
+    "TrainingCorpusStore",
+    "SegmentedKnowledgeEngine",
+    "MemoryRecord",
+    "EVIDENCE_STATUSES",
+    "ResearchSource",
+    "ResearchVerificationResult",
+    "ResearchVerifier",
+    "UntrustedEvidenceEnvelope",
+    "sanitize_untrusted_source",
+    "validate_research_url",
+    "MISSION_STATES",
+    "MissionStepSpec",
+    "MissionPlanningError",
+    "DomainAdaptiveDAGPlanner",
+    "MissionStateMachine",
+    "DecisionTrace",
+    "CognitiveDecisionResult",
+    "NativeCognitiveOrchestrator",
+    "audit_strict_native_only_compliance",
+    "VerifiedFeedbackCurator",
+    "CAPABILITY_LIFECYCLE_STATUSES",
+    "SUBSYSTEM_KEYS",
+    "BenchmarkEvidenceRecord",
+    "evaluate_capability_status",
+    "run_measured_capability_suite",
+    "ImprovementProposal",
+    "ExperimentEvaluationResult",
+    "SelfImprovementResearchLoop",
 ]

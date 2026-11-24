@@ -37,13 +37,15 @@ export async function POST(request: NextRequest) {
   const hasExplicitUrl = hasExplicitExternalApiUrl(configuredUrl);
   const authorization = `Bearer ${accessToken}`;
 
-  if (!baseUrl && hasExplicitUrl) {
+  const isProduction = process.env.NODE_ENV === "production";
+  if (!baseUrl) {
     const response = NextResponse.json(
       {
         authenticated: false,
         revoked: false,
-        detail:
-          "ล้างคุกกี้ในเบราว์เซอร์แล้ว แต่ค่า ZYRQUEN_API_BASE_URL ไม่ถูกต้อง จึงไม่สามารถเพิกถอน Token ฝั่ง Backend ได้",
+        detail: hasExplicitUrl
+          ? "ล้างคุกกี้ในเบราว์เซอร์แล้ว แต่ค่า ZYRQUEN_API_BASE_URL ไม่ถูกต้อง จึงไม่สามารถเพิกถอน Token ฝั่ง Backend ได้"
+          : "BLOCKED: ล้างคุกกี้ในเบราว์เซอร์แล้ว แต่ยังไม่ได้กำหนด ZYRQUEN_API_BASE_URL ในโหมด Production",
       },
       { status: 503, headers: { "Cache-Control": "no-store" } },
     );
@@ -51,7 +53,9 @@ export async function POST(request: NextRequest) {
     return response;
   }
 
-  if (await shouldUseInMemoryBackend(baseUrl, hasExplicitUrl)) {
+  if (
+    await shouldUseInMemoryBackend(baseUrl, hasExplicitUrl, process.env.NODE_ENV)
+  ) {
     await handleInMemoryBackendRequest({
       method: "POST",
       path: "auth/logout",
@@ -77,7 +81,7 @@ export async function POST(request: NextRequest) {
       signal: AbortSignal.timeout(hasExplicitUrl ? 10_000 : 300),
     });
   } catch {
-    if (!hasExplicitUrl) {
+    if (!isProduction && !hasExplicitUrl) {
       await handleInMemoryBackendRequest({
         method: "POST",
         path: "auth/logout",
@@ -95,7 +99,7 @@ export async function POST(request: NextRequest) {
         authenticated: false,
         revoked: false,
         detail:
-          "ล้างคุกกี้ในเบราว์เซอร์แล้ว แต่ไม่สามารถเชื่อมต่อ Backend เพื่อเพิกถอน Token ได้",
+          "BLOCKED: ล้างคุกกี้ในเบราว์เซอร์แล้ว แต่ไม่สามารถเชื่อมต่อ Backend เพื่อเพิกถอน Token ได้",
       },
       { status: 503, headers: { "Cache-Control": "no-store" } },
     );

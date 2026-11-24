@@ -82,24 +82,25 @@ export default function CapabilitiesPage() {
               ? "กำลังตรวจสอบ"
               : nativeHealth?.inference_available
                 ? "พร้อมประมวลผล"
-                : "ยังไม่พร้อม"}
+                : "BLOCKED"}
           </div>
           <div className="metric-foot">
             <StatusBadge
               tone={
                 nativeHealth?.inference_available
                   ? "good"
-                  : nativeError
+                  : nativeError || nativeHealth
                     ? "warn"
                     : "neutral"
               }
             >
-              {nativeHealth?.runtime_status || (nativeError ? "ตรวจสอบไม่สำเร็จ" : "รอข้อมูล")}
+              {nativeHealth?.runtime_status?.toUpperCase() ||
+                (nativeError ? "BLOCKED" : "รอข้อมูล")}
             </StatusBadge>
             <span className="metric-caption">
               {nativeHealth?.native_model_loaded
                 ? "โหลดน้ำหนักโมเดลแล้ว"
-                : "ยังไม่ได้โหลดน้ำหนักโมเดล"}
+                : "ยังไม่ได้โหลดน้ำหนักโมเดล (BLOCKED)"}
             </span>
           </div>
         </Panel>
@@ -116,7 +117,7 @@ export default function CapabilitiesPage() {
           </div>
           <div className="metric-foot">
             <StatusBadge tone={nativeHealth?.is_trained ? "good" : "warn"}>
-              {nativeHealth?.is_trained ? "Trained Artifact" : "Untrained / Baseline"}
+              {nativeHealth?.is_trained ? "Trained Artifact" : "NOT_VERIFIED / Untrained"}
             </StatusBadge>
             <span className="metric-caption">
               {nativeHealth?.platform_stage || "Native Intelligence Core"}
@@ -133,14 +134,14 @@ export default function CapabilitiesPage() {
           </div>
           <div className="metric-value tabular-nums">
             {progress?.evaluation_status === "evaluated"
-              ? "ผ่านการวัดผลแล้ว"
-              : "ยังไม่ประเมินผล"}
+              ? "VERIFIED (Measured)"
+              : "NOT_VERIFIED"}
           </div>
           <div className="metric-foot">
             <StatusBadge
-              tone={progress?.evaluation_status === "evaluated" ? "good" : "neutral"}
+              tone={progress?.evaluation_status === "evaluated" ? "good" : "warn"}
             >
-              {progress?.evaluation_status === "evaluated" ? "MEASURED" : "NOT EVALUATED"}
+              {progress?.evaluation_status === "evaluated" ? "VERIFIED" : "BLOCKED / NOT RUN"}
             </StatusBadge>
             <span className="metric-caption">
               {progress?.metrics_source || "ไม่มีการสร้างคะแนนจำลอง"}
@@ -214,7 +215,7 @@ export default function CapabilitiesPage() {
           <Panel className="capability-panel" key={domain.key}>
             <div className="capability-top">
               <span className="phase-label">NATIVE CORE MODULE</span>
-              <StatusBadge tone="info">มีโค้ดหลักในระบบ</StatusBadge>
+              <StatusBadge tone="info">IMPLEMENTED · มีโค้ดหลักในระบบ</StatusBadge>
             </div>
             <h2>{domain.title}</h2>
             <p>{domain.description}</p>

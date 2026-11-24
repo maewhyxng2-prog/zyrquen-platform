@@ -449,7 +449,9 @@ const globalForProbe = globalThis as typeof globalThis & {
 export async function shouldUseInMemoryBackend(
   baseUrl: string | null,
   hasExplicitExternalUrl: boolean,
+  nodeEnvironment: string | undefined = process.env.NODE_ENV,
 ): Promise<boolean> {
+  if (nodeEnvironment === "production") return false;
   if (!baseUrl) return !hasExplicitExternalUrl;
   if (hasExplicitExternalUrl) return false;
 
@@ -491,12 +493,12 @@ export async function shouldUseInMemoryBackend(
 export function getInMemoryNativeHealth(): NativeHealth {
   const store = getStore();
   return {
-    runtime_status: "ready",
+    runtime_status: "blocked",
     native_model_loaded: false,
-    authority: "ZYRQUEN UI Preview Sandbox (No Native Model Weights Loaded)",
-    inference_available: true,
+    authority: "ZYRQUEN Preview Sandbox (BLOCKED: Native Model Weights Not Loaded)",
+    inference_available: false,
     platform_version: "V10 / Ω∞",
-    platform_stage: "AI Studio Node.js Sandbox (Unmeasured)",
+    platform_stage: "AI Studio Node.js Sandbox (BLOCKED · No Native Weights)",
     model_version: store.activeModelVersion,
     is_trained: false,
     progress_metrics: null,
@@ -674,50 +676,7 @@ function parseJsonBody(rawBody?: string): Record<string, unknown> {
   return {};
 }
 
-function extractUserPrompt(rawPrompt: string): string {
-  const marker = "user:";
-  const lastUserIndex = rawPrompt.lastIndexOf(marker);
-  if (lastUserIndex === -1) return rawPrompt.trim();
-  const afterUser = rawPrompt.slice(lastUserIndex + marker.length);
-  const assistantIndex = afterUser.lastIndexOf("\nassistant:");
-  return (assistantIndex >= 0 ? afterUser.slice(0, assistantIndex) : afterUser).trim();
-}
-
-function generateNativeResponse(rawPrompt: string, modelVersion: string): string {
-  const userText = extractUserPrompt(rawPrompt);
-  const lower = userText.toLowerCase();
-
-  if (lower.includes("native model") || userText.includes("ความสามารถ")) {
-    return (
-      `ระบบ ${modelVersion} ในสภาพแวดล้อม Sandbox นี้พร้อมให้บริการการสนทนาและการตรวจสอบ Workflow กลางแล้ว ` +
-      `คุณสามารถจัดการประวัติการสนทนา ตรวจสอบสถานะ Closure Audit, ทดสอบ Model Registry และจัดการ API Keys ได้ทันที`
-    );
-  }
-  if (lower.includes("ไปป์ไลน์") || lower.includes("pipeline") || lower.includes("ฝึกโมเดล")) {
-    return (
-      `ไปป์ไลน์การฝึกโมเดลของ ZYRQUEN Ω∞ ทำงานผ่าน Central Workflow Orchestrator 8 กลุ่ม ` +
-      `โดยเริ่มจาก Data Validation & Leakage Audit, Pre-flight Resource Guard, Tier-2 Human Approval Gate, ` +
-      `การฝึกและบันทึก Checkpoint แบบ SHA-256 และ Evaluation Gate ก่อนโปรโมตเข้าสู่ Production ใน Model Registry`
-    );
-  }
-  if (lower.includes("แก้ไขปัญหา") || lower.includes("วิเคราะห์")) {
-    return (
-      `แนวทางการวิเคราะห์เชิงระบบ:\n` +
-      `1. ตรวจสอบความพร้อมของบริการผ่าน /health และ /v1/native-ai/health\n` +
-      `2. ตรวจสถานะสัญญา Contracts 1–5 ใน V10 Closure Audit\n` +
-      `3. สั่งตรวจสอบผ่าน Workflow Engine ในหน้าการฝึกอบรมเพื่อรับหลักฐาน Verification ล่าสุด`
-    );
-  }
-  return (
-    `[ZYRQUEN Native Core · ${modelVersion}] ได้รับข้อความของคุณแล้ว: "${userText}"\n\n` +
-    `ขณะนี้แอปพลิเคชันกำลังทำงานผ่าน In-Memory Node.js API Adapter ของ AI Studio ` +
-    `ประวัติการสนทนา Usage และ Workflow ที่คุณสร้างจะถูกบันทึกตลอดเซสชันการทำงานนี้`
-  );
-}
-
-function estimateTokens(text: string): number {
-  return Math.max(1, Math.ceil(text.length / 4));
-}
+// Strict Native-Only Policy: template or simulated neural responses are strictly prohibited.
 
 function summarizeConversation(conv: StoredConversation) {
   return {
@@ -1439,82 +1398,41 @@ export async function handleInMemoryBackendRequest(options: {
       targetModelVersion = matchedModel.version;
     }
 
-    const resultText = generateNativeResponse(prompt, targetModelVersion);
-    const inputTokens = estimateTokens(prompt);
-    const outputTokens = estimateTokens(resultText);
-    const now = new Date().toISOString();
-
-    if (conversationId) {
-      const conv = store.conversations.get(conversationId);
-      if (conv) {
-        conv.messages.push({
-          id: requestId,
-          role: "assistant",
-          content: resultText,
-          createdAt: now,
-        });
-        conv.updatedAt = now;
-      }
-    }
-
-    store.usageRecords.unshift({
-      requestId,
-      userId: currentUser.id,
-      apiKeyId: callerApiKeyId,
-      status: "completed",
-      inputTokens,
-      outputTokens,
-      totalTokens: inputTokens + outputTokens,
-      modelVersion: targetModelVersion,
-      createdAt: now,
-      completedAt: now,
-    });
-
-    if (path === "v1/native-ai/infer") {
+    const nativeStatus = getInMemoryNativeHealth();
+    if (!nativeStatus.inference_available || !nativeStatus.native_model_loaded) {
+      store.usageRecords.unshift({
+        requestId,
+        userId: currentUser.id,
+        apiKeyId: callerApiKeyId,
+        status: "blocked",
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        modelVersion: targetModelVersion,
+        createdAt: new Date().toISOString(),
+        completedAt: null,
+      });
       return {
-        status: 200,
+        status: 503,
         body: {
-          status: "success",
+          status: "blocked",
+          code: "NATIVE_INFERENCE_BLOCKED",
           request_id: requestId,
           provider: "ZYRQUEN_NATIVE_CORE",
           model_version: targetModelVersion,
-          result: resultText,
+          detail:
+            "BLOCKED: รันไทม์ ZYRQUEN Native Model ยังไม่พร้อมใช้งาน (ไม่มีน้ำหนักโมเดล PyTorch ที่โหลดจริง ห้ามสร้างคำตอบจำลอง)",
         },
       };
     }
 
-    const encoder = new TextEncoder();
-    const words = resultText.split(/(\s+)/).filter((part) => part.length > 0);
-    const stream = new ReadableStream<Uint8Array>({
-      async start(controller) {
-        for (let i = 0; i < words.length; i += 1) {
-          const payload = JSON.stringify({
-            text: words[i],
-            index: i,
-            is_final: false,
-          });
-          controller.enqueue(encoder.encode(`data: ${payload}\n\n`));
-          await new Promise((resolve) => setTimeout(resolve, 12));
-        }
-        const finalPayload = JSON.stringify({
-          text: "",
-          index: words.length,
-          is_final: true,
-        });
-        controller.enqueue(encoder.encode(`data: ${finalPayload}\n\n`));
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-        controller.close();
-      },
-    });
-
     return {
-      status: 200,
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-store",
+      status: 503,
+      body: {
+        status: "blocked",
+        code: "NATIVE_INFERENCE_BLOCKED",
+        detail: "BLOCKED: Native inference runtime is unavailable",
       },
-      body: null,
-      stream,
     };
   }
 
