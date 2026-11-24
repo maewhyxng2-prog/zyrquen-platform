@@ -269,9 +269,6 @@ def run_v10d_closure(
     training_steps: int = 50,
     cpu_threads: int = MAX_CLOSURE_CPU_THREADS,
     requested_by: str = "operator:v10d_closure",
-    approver_user_id: str | None = None,
-    approver_role: str = "admin",
-    approve_training: bool = False,
     experiment_id: str = "v10d-closure-run",
     model_version: str | None = None,
     max_examples: int | None = None,
@@ -394,44 +391,34 @@ def run_v10d_closure(
         )
 
         if wf_run["status"] == "WAITING_APPROVAL":
-            if not (approve_training and approver_user_id):
-                audit = build_v10_closure_audit(
-                    eval_report_path="",
-                    registry_root=str(resolved_registry_root),
-                    dataset_dir=str(resolved_dataset_dir),
-                    tokenizer_path=str(resolved_tokenizer_path),
-                    runtime_health={
-                        "runtime_status": "awaiting_tier2_approval",
-                        "native_model_loaded": False,
-                        "is_trained": False,
-                        "model_version": None,
-                    },
-                )
-                return {
-                    "schema": CLOSURE_RUNNER_SCHEMA,
-                    "checked_at": datetime.now(timezone.utc).isoformat(),
-                    "overall_status": "BLOCKED",
-                    "reason": "Workflow paused at WAITING_APPROVAL; explicit Tier-2 admin approval is required.",
-                    "blockers": ["TIER2_HMAC_APPROVAL_REQUIRED", *list(audit.get("blockers") or [])],
-                    "workflow_run": wf_run,
-                    "v11_unlocked": False,
-                    "v11_gate": audit["v11_gate"],
-                    "closure_audit": audit,
-                }
-
-            pending = [
-                a for a in wf_run.get("approvals", []) if a.get("status") == "pending"
-            ]
-            if not pending:
-                raise V10DClosureError("Workflow WAITING_APPROVAL without pending approval record")
-
-            wf_run = orch.decide_approval_and_resume(
-                pending[0]["id"],
-                approve=True,
-                approver_user_id=approver_user_id,
-                approver_role=approver_role,
-                reason="V10-D controlled CPU closure execution approved by admin",
+            # Fail closed: this CLI cannot authenticate an administrator.
+            # Tier-2 decisions must be issued by the authenticated admin API.
+            audit = build_v10_closure_audit(
+                eval_report_path="",
+                registry_root=str(resolved_registry_root),
+                dataset_dir=str(resolved_dataset_dir),
+                tokenizer_path=str(resolved_tokenizer_path),
+                runtime_health={
+                    "runtime_status": "awaiting_tier2_approval",
+                    "native_model_loaded": False,
+                    "is_trained": False,
+                    "model_version": None,
+                },
             )
+            return {
+                "schema": CLOSURE_RUNNER_SCHEMA,
+                "checked_at": datetime.now(timezone.utc).isoformat(),
+                "overall_status": "BLOCKED",
+                "reason": (
+                    "Workflow paused at WAITING_APPROVAL. This CLI cannot assert admin identity; "
+                    "an authenticated Tier-2 approval integration is required before training."
+                ),
+                "blockers": ["TIER2_HMAC_APPROVAL_REQUIRED", *list(audit.get("blockers") or [])],
+                "workflow_run": wf_run,
+                "v11_unlocked": False,
+                "v11_gate": audit["v11_gate"],
+                "closure_audit": audit,
+            }
 
         if wf_run["status"] != "COMPLETED":
             raise V10DClosureError(
@@ -578,7 +565,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--training-steps", type=int, default=50)
     parser.add_argument("--cpu-threads", type=int, default=2)
     parser.add_argument("--requested-by", type=str, default="cli:close_v10d")
-    parser.add_argument("--approve-as-admin", type=str, default=None, help="Explicit admin user ID authorizing Tier-2 HMAC training execution.")
     parser.add_argument("--experiment-id", type=str, default="v10d-closure-run")
     parser.add_argument("--max-examples", type=int, default=None)
     parser.add_argument("--max-new-tokens", type=int, default=32)
@@ -603,9 +589,6 @@ def main() -> int:
             training_steps=args.training_steps,
             cpu_threads=args.cpu_threads,
             requested_by=args.requested_by,
-            approver_user_id=args.approve_as_admin,
-            approver_role="admin",
-            approve_training=bool(args.approve_as_admin),
             experiment_id=args.experiment_id,
             max_examples=args.max_examples,
             max_new_tokens=args.max_new_tokens,
