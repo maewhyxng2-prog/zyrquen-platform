@@ -50,7 +50,7 @@ def _definition() -> WorkflowDefinition:
 
 
 def _api_process_approve_and_resume(db_path: str, work_dir: str, approval_id: str, result_queue) -> None:
-    """Simulate the separately running API worker after an authenticated decision."""
+    """Simulate the API worker orchestration after its auth layer accepts an admin."""
     os.environ["ZYRQUEN_APPROVAL_SECRET"] = SECRET
     engine = CentralWorkflowOrchestrator(
         db_path=db_path,
