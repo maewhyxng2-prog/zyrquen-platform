@@ -273,6 +273,7 @@ def run_v10d_closure(
     model_version: str | None = None,
     max_examples: int | None = None,
     max_new_tokens: int = 32,
+    resume_run_id: str | None = None,
     _train_fn: Callable[..., dict[str, Any]] | None = None,
     _eval_fn: Callable[..., dict[str, Any]] | None = None,
     _model: Any | None = None,
@@ -292,7 +293,17 @@ def run_v10d_closure(
     resolved_registry_root = (registry_root or (ws / "registry")).expanduser().resolve()
     resolved_tokenizer_path = (tokenizer_path or (ws / "tokenizer" / "tokenizer.json")).expanduser().resolve()
     resolved_eval_dir = (eval_output_dir or (ws / "eval" / "nagi_v10")).expanduser().resolve()
-    resolved_wf_db = (workflow_db or (ws / "workflow" / "v10d_closure.db")).expanduser().resolve()
+    configured_workflow_db = os.getenv("ZYRQUEN_WORKFLOW_DB_PATH", "").strip()
+    if workflow_db is not None and configured_workflow_db:
+        if workflow_db.expanduser().resolve() != Path(configured_workflow_db).expanduser().resolve():
+            raise V10DClosureError(
+                "workflow_db must match ZYRQUEN_WORKFLOW_DB_PATH so the authenticated API "
+                "and V10-D runner operate on the same workflow store."
+            )
+    resolved_wf_db = (
+        workflow_db
+        or (Path(configured_workflow_db) if configured_workflow_db else (ws / "workflow" / "v10d_closure.db"))
+    ).expanduser().resolve()
 
     using_test_doubles = _train_fn is not None and _eval_fn is not None
     if not using_test_doubles:
@@ -344,6 +355,47 @@ def run_v10d_closure(
     resolved_ckpt_dir.mkdir(parents=True, exist_ok=True)
     resolved_registry_root.mkdir(parents=True, exist_ok=True)
 
+    # The API and runner are separate processes. Real V10-D training therefore
+    # requires an explicitly shared SQLite store and HMAC secret; an ephemeral
+    # per-process secret cannot authenticate an approval created by another process.
+    if not using_test_doubles:
+        if not configured_workflow_db:
+            audit = build_v10_closure_audit(
+                eval_report_path="",
+                registry_root=str(resolved_registry_root),
+                dataset_dir=str(resolved_dataset_dir),
+                tokenizer_path=str(resolved_tokenizer_path),
+                runtime_health={"runtime_status": "approval_store_not_shared", "native_model_loaded": False, "is_trained": False, "model_version": None},
+            )
+            return {
+                "schema": CLOSURE_RUNNER_SCHEMA,
+                "checked_at": datetime.now(timezone.utc).isoformat(),
+                "overall_status": "BLOCKED",
+                "reason": "Set ZYRQUEN_WORKFLOW_DB_PATH to a persistent path shared by the API and runner.",
+                "blockers": ["V10D_SHARED_WORKFLOW_DB_REQUIRED", *list(audit.get("blockers") or [])],
+                "v11_unlocked": False,
+                "v11_gate": audit["v11_gate"],
+                "closure_audit": audit,
+            }
+        if not os.getenv("ZYRQUEN_APPROVAL_SECRET", "").strip():
+            audit = build_v10_closure_audit(
+                eval_report_path="",
+                registry_root=str(resolved_registry_root),
+                dataset_dir=str(resolved_dataset_dir),
+                tokenizer_path=str(resolved_tokenizer_path),
+                runtime_health={"runtime_status": "shared_approval_secret_missing", "native_model_loaded": False, "is_trained": False, "model_version": None},
+            )
+            return {
+                "schema": CLOSURE_RUNNER_SCHEMA,
+                "checked_at": datetime.now(timezone.utc).isoformat(),
+                "overall_status": "BLOCKED",
+                "reason": "Set the same strong ZYRQUEN_APPROVAL_SECRET in the API and runner environments.",
+                "blockers": ["V10D_SHARED_APPROVAL_SECRET_REQUIRED", *list(audit.get("blockers") or [])],
+                "v11_unlocked": False,
+                "v11_gate": audit["v11_gate"],
+                "closure_audit": audit,
+            }
+
     # Stage 3: Orchestrated Training with Tier-2 HMAC Approval Gate
     with _open_orchestrator(resolved_wf_db) as orch:
         _register_v10d_closure_workflow(
@@ -381,14 +433,42 @@ def run_v10d_closure(
         if model_version is not None:
             wf_payload["model_version"] = model_version
 
-        wf_run = orch.trigger_workflow(
-            CLOSURE_WORKFLOW_KEY,
-            version=CLOSURE_WORKFLOW_VERSION,
-            trigger_type="manual",
-            payload=wf_payload,
-            requested_by_user_id=requested_by,
-            actor_id=requested_by,
-        )
+        if resume_run_id:
+            wf_run = orch.store.get_run(resume_run_id)
+            if wf_run is None:
+                raise V10DClosureError(f"Cannot resume unknown V10-D workflow run: {resume_run_id}")
+            if wf_run.get("workflow_key") != CLOSURE_WORKFLOW_KEY or wf_run.get("workflow_version") != CLOSURE_WORKFLOW_VERSION:
+                raise V10DClosureError("Resume target is not the expected V10-D closure workflow.")
+            if wf_run.get("trigger_payload") != wf_payload:
+                raise V10DClosureError("Resume payload does not exactly match the original approved run scope.")
+            if wf_run.get("status") != "COMPLETED":
+                audit = build_v10_closure_audit(
+                    eval_report_path="",
+                    registry_root=str(resolved_registry_root),
+                    dataset_dir=str(resolved_dataset_dir),
+                    tokenizer_path=str(resolved_tokenizer_path),
+                    runtime_health={"runtime_status": "awaiting_training_completion", "native_model_loaded": False, "is_trained": False, "model_version": None},
+                )
+                return {
+                    "schema": CLOSURE_RUNNER_SCHEMA,
+                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                    "overall_status": "BLOCKED",
+                    "reason": f"Approved V10-D workflow has not completed (status={wf_run.get('status')}).",
+                    "blockers": ["V10D_TRAINING_WORKFLOW_NOT_COMPLETED", *list(audit.get("blockers") or [])],
+                    "workflow_run": wf_run,
+                    "v11_unlocked": False,
+                    "v11_gate": audit["v11_gate"],
+                    "closure_audit": audit,
+                }
+        else:
+            wf_run = orch.trigger_workflow(
+                CLOSURE_WORKFLOW_KEY,
+                version=CLOSURE_WORKFLOW_VERSION,
+                trigger_type="manual",
+                payload=wf_payload,
+                requested_by_user_id=requested_by,
+                actor_id=requested_by,
+            )
 
         if wf_run["status"] == "WAITING_APPROVAL":
             # Fail closed: this CLI cannot authenticate an administrator.
@@ -568,6 +648,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--experiment-id", type=str, default="v10d-closure-run")
     parser.add_argument("--max-examples", type=int, default=None)
     parser.add_argument("--max-new-tokens", type=int, default=32)
+    parser.add_argument("--resume-run-id", type=str, default=None, help="Resume evaluation for a completed V10-D run after authenticated API approval.")
     return parser.parse_args()
 
 
@@ -592,6 +673,7 @@ def main() -> int:
             experiment_id=args.experiment_id,
             max_examples=args.max_examples,
             max_new_tokens=args.max_new_tokens,
+            resume_run_id=args.resume_run_id,
         )
     except V10DClosureError as exc:
         print(json.dumps({"schema": CLOSURE_RUNNER_SCHEMA, "overall_status": "FAILED", "error": str(exc)}, indent=2))
