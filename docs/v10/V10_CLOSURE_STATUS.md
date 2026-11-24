@@ -114,7 +114,8 @@
 - **Status:** **`PENDING`** *(Mechanism `VERIFIED`; Live run approval not yet issued)*
 
 - Single-use HMAC-SHA256 Tier-2 token enforcement for training execution, stage transition, and `ModelRegistry` promotion/rollback is unit-tested (**`VERIFIED`**).
-- The V10-D CLI no longer accepts `--approve-as-admin` or self-asserted admin identity; it fails closed at `WAITING_APPROVAL`. A regression test rejects the former flag.\n- Live authenticated Admin API approval, shared workflow-store/HMAC-secret continuity with the Colab runner, and safe resume of the paused closure run remain **`BLOCKED / NOT INTEGRATED`**. No training approval has been issued or consumed.
+- The V10-D CLI no longer accepts `--approve-as-admin` or self-asserted admin identity; it fails closed at `WAITING_APPROVAL`. A regression test rejects the former flag.
+- Live authenticated Admin API approval, shared workflow-store/HMAC-secret continuity with the Colab runner, and safe resume of the paused closure run remain **`BLOCKED / NOT INTEGRATED`**. No training approval has been issued or consumed.
 
 ---
 
