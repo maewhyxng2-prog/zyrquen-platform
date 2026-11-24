@@ -4333,6 +4333,87 @@ code {
   line-height: 1.55;
 }
 
+.home-recent-container {
+  display: grid;
+  gap: 12px;
+}
+
+.home-recent-search {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-inset);
+  color: var(--text-muted);
+  padding: 0 12px;
+  transition: border-color 150ms var(--ease-out);
+}
+
+.home-recent-search:focus-within {
+  border-color: var(--blue-bright);
+  color: var(--cyan);
+}
+
+.home-recent-search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+
+.home-recent-search input::placeholder {
+  color: var(--text-muted);
+}
+
+.home-recent-search-clear {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.home-recent-search-clear:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.home-recent-groups {
+  display: grid;
+  max-height: 360px;
+  gap: 14px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.home-recent-group {
+  display: grid;
+  gap: 8px;
+}
+
+.home-recent-group-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
 .home-recent-list,
 .home-capabilities-list {
   display: grid;
@@ -4758,7 +4839,8 @@ code {
     width: 100%;
     align-items: flex-start;
   }
-  .home-prompt-box textarea {
+  .home-prompt-box textarea,
+  .home-recent-search input {
     font-size: 16px;
   }
   .home-prompt-primary {

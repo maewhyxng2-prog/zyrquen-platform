@@ -5,6 +5,7 @@ import {
   KeyboardEvent,
   useCallback,
   useEffect,
+  useMemo,
   useState,
 } from "react";
 import Link from "next/link";
@@ -15,6 +16,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { usePlatformHealth } from "@/hooks/usePlatformHealth";
 import { readSession } from "@/lib/api";
 import { listConversations } from "@/lib/conversation-api";
+import { filterAndGroupConversations } from "@/lib/conversation-groups";
 import type { Conversation, Session } from "@/lib/types";
 
 const quickStarters = [
@@ -86,6 +88,7 @@ export default function HomePage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [conversationsError, setConversationsError] = useState("");
+  const [recentSearch, setRecentSearch] = useState("");
   const [homePrompt, setHomePrompt] = useState("");
   const [trackedUserId, setTrackedUserId] = useState<string | null>(null);
 
@@ -96,8 +99,14 @@ export default function HomePage() {
     setTrackedUserId(targetUserId);
     setConversations([]);
     setConversationsError("");
+    setRecentSearch("");
     setConversationsLoading(Boolean(targetUserId));
   }
+
+  const groupedConversations = useMemo(
+    () => filterAndGroupConversations(conversations, recentSearch),
+    [conversations, recentSearch],
+  );
 
   const syncSession = useCallback(() => {
     readSession()
@@ -129,7 +138,7 @@ export default function HomePage() {
     listConversations(targetUserId)
       .then((items) => {
         if (!active) return;
-        setConversations(items.slice(0, 4));
+        setConversations(items);
       })
       .catch((reason: unknown) => {
         if (!active) return;
@@ -343,29 +352,83 @@ export default function HomePage() {
               </Link>
             </div>
           ) : (
-            <div className="home-recent-list">
-              {conversations.map((conversation) => (
-                <Link
-                  className="home-recent-item"
-                  href={`/workspace?conversation=${encodeURIComponent(conversation.id)}`}
-                  key={conversation.id}
-                >
-                  <span className="home-recent-icon">
-                    <Icon name="message" size={16} />
-                  </span>
-                  <span className="home-recent-copy">
-                    <strong>{conversation.title}</strong>
-                    <small className="tabular-nums">
-                      {conversation.messageCount} ข้อความ ·{" "}
-                      {new Date(conversation.updatedAt).toLocaleString("th-TH", {
-                        dateStyle: "short",
-                        timeStyle: "short",
-                      })}
-                    </small>
-                  </span>
-                  <Icon name="chevron-right" size={16} />
-                </Link>
-              ))}
+            <div className="home-recent-container">
+              <div className="home-recent-search">
+                <label className="sr-only" htmlFor="home-conversation-search">
+                  ค้นหาประวัติบทสนทนา
+                </label>
+                <Icon name="search" size={14} />
+                <input
+                  aria-label="ค้นหาประวัติบทสนทนา"
+                  id="home-conversation-search"
+                  onChange={(event) => setRecentSearch(event.target.value)}
+                  placeholder={`ค้นหาจาก ${conversations.length} บทสนทนา...`}
+                  type="search"
+                  value={recentSearch}
+                />
+                {recentSearch && (
+                  <button
+                    aria-label="ล้างคำค้นหาบทสนทนา"
+                    className="home-recent-search-clear"
+                    onClick={() => setRecentSearch("")}
+                    type="button"
+                  >
+                    <Icon name="close" size={13} />
+                  </button>
+                )}
+              </div>
+
+              {groupedConversations.length === 0 ? (
+                <div className="home-empty-box">
+                  <Icon name="search" size={18} />
+                  <div>
+                    <strong>ไม่พบบทสนทนาที่ตรงกับ &ldquo;{recentSearch.trim()}&rdquo;</strong>
+                    <p>ลองใช้คำค้นอื่น หรือล้างตัวกรองเพื่อดูรายการทั้งหมดตามช่วงเวลา</p>
+                  </div>
+                  <button
+                    className="button button-secondary"
+                    onClick={() => setRecentSearch("")}
+                    type="button"
+                  >
+                    ล้างคำค้นหา
+                  </button>
+                </div>
+              ) : (
+                <div className="home-recent-groups" aria-label="บทสนทนาแยกตามวันที่">
+                  {groupedConversations.map((group) => (
+                    <div className="home-recent-group" key={group.key}>
+                      <div className="home-recent-group-label">
+                        <span>{group.label}</span>
+                        <span className="tabular-nums">{group.items.length}</span>
+                      </div>
+                      <div className="home-recent-list">
+                        {group.items.map((conversation) => (
+                          <Link
+                            className="home-recent-item"
+                            href={`/workspace?conversation=${encodeURIComponent(conversation.id)}`}
+                            key={conversation.id}
+                          >
+                            <span className="home-recent-icon">
+                              <Icon name="message" size={16} />
+                            </span>
+                            <span className="home-recent-copy">
+                              <strong>{conversation.title}</strong>
+                              <small className="tabular-nums">
+                                {conversation.messageCount} ข้อความ ·{" "}
+                                {new Date(conversation.updatedAt).toLocaleString("th-TH", {
+                                  dateStyle: "short",
+                                  timeStyle: "short",
+                                })}
+                              </small>
+                            </span>
+                            <Icon name="chevron-right" size={16} />
+                          </Link>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </Panel>

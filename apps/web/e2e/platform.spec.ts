@@ -203,9 +203,18 @@ test("standard user flow: register, workspace attachments & chat, recent convers
       .first(),
   ).toBeVisible({ timeout: 15_000 });
 
-  // Return to Home and verify the conversation appears in Recent Conversations
+  // Return to Home and verify the conversation appears under date grouping with search filter
   await page.getByRole("link", { name: "หน้าหลัก ZYRQUEN Ω∞" }).click();
   await expect(page).toHaveURL(/\/$/);
+  await expect(page.locator(".home-recent-group-label").first()).toContainText(
+    "วันนี้",
+  );
+  const recentSearch = page.locator("#home-conversation-search");
+  await expect(recentSearch).toBeVisible();
+  await recentSearch.fill("ไม่มีบทสนทนานี้");
+  await expect(page.getByText("ล้างคำค้นหา")).toBeVisible();
+  await page.getByRole("button", { name: "ล้างคำค้นหา", exact: true }).click();
+  await recentSearch.fill("Native Model");
   const recentLink = page.locator(".home-recent-item").first();
   await expect(recentLink).toBeVisible();
   await recentLink.click();
