@@ -193,11 +193,18 @@ def perplexity(loss: float) -> float:
     return math.exp(min(loss, 50.0))
 
 
+def _training_resume_identity(cfg: TrainConfig) -> dict:
+    """Stable optimizer/data sampling settings across segmented resume."""
+    ignored = {"max_steps", "segment_max_steps", "stage_id", "experiment_index"}
+    return {key: value for key, value in cfg.__dict__.items() if key not in ignored}
+
+
 # ---- torch training loop (not run in authoring environment) ----
 def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
           checkpoint_dir: str | Path, log_path: str | Path, device: str = "cpu",
           cost_controller=None, tokenizer_fingerprint: str | None = None,
           dataset_version: str | None = None,
+          dataset_content_sha256: str | None = None,
           runtime_guard=None, disk_reserve_gb: float | None = None,
           cpu_threads: int | None = None, max_checkpoints: int = 3,
           enforce_limits: bool = False) -> dict:
@@ -212,7 +219,8 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
 
     from apps.core.training_infrastructure.monitoring.training_monitor import TrainingMonitor
     from apps.core.training_infrastructure.recovery.checkpoint_recovery import (
-        CheckpointManager, capture_rng_state, restore_rng_state)
+        CheckpointManager, capture_rng_state, restore_rng_state,
+        serialize_python_rng_state, validate_resume_identity)
     from apps.core.workflow.resource_guard import (
         MAX_CPU_THREADS, check_disk_reserve, enforce_cpu_thread_cap)
 
@@ -250,9 +258,21 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
     resumed = ckpts.load_latest()
     if resumed is not None:
         start_step, state = resumed
+        validate_resume_identity(
+            state,
+            expected={
+                "dataset_version": dataset_version,
+                "dataset_content_sha256": dataset_content_sha256,
+                "tokenizer_sha256": tokenizer_fingerprint,
+                "model_config": model.cfg.to_dict(),
+                "training_identity": _training_resume_identity(cfg),
+            },
+        )
+        if state.get("batch_rng") is None or state.get("rng") is None:
+            raise ValueError("resume checkpoint is missing RNG state")
         model.load_state_dict(state["model"])
         optimizer.load_state_dict(state["optimizer"])
-        rng.setstate(state["batch_rng"])
+        restore_python_rng_state(rng, state["batch_rng"])
         restore_rng_state(state["rng"])
 
     initial_parameters = {
@@ -300,9 +320,11 @@ def train(model, train_ids: list[int], val_ids: list[int], cfg: TrainConfig,
             "model": model.state_dict(), "optimizer": optimizer.state_dict(),
             "step": step, "global_step_start": start_step, "experiment_steps": step - start_step,
             "stage_id": cfg.stage_id, "experiment_index": cfg.experiment_index,
-            "batch_rng": rng.getstate(), "rng": capture_rng_state(),
+            "batch_rng": serialize_python_rng_state(rng.getstate()), "rng": capture_rng_state(),
             "config": cfg.__dict__, "model_config": model.cfg.to_dict(),
+            "training_identity": _training_resume_identity(cfg),
             "tokenizer_sha256": tokenizer_fingerprint, "dataset_version": dataset_version,
+            "dataset_content_sha256": dataset_content_sha256,
         })
         checkpoint_saved = True
         return True
@@ -434,6 +456,7 @@ def train_sft(
     cost_controller=None,
     tokenizer_fingerprint: str | None = None,
     dataset_version: str | None = None,
+    dataset_content_sha256: str | None = None,
     prompt_format: str | None = None,
     sep: str | None = None,
     pad_id: int = 0,
@@ -459,6 +482,9 @@ def train_sft(
         CheckpointManager,
         capture_rng_state,
         restore_rng_state,
+        serialize_python_rng_state,
+        restore_python_rng_state,
+        validate_resume_identity,
     )
     from apps.core.workflow.resource_guard import (
         MAX_CPU_THREADS,
@@ -511,9 +537,27 @@ def train_sft(
     resumed = ckpts.load_latest()
     if resumed is not None:
         start_step, state = resumed
+        validate_resume_identity(
+            state,
+            expected={
+                "dataset_version": dataset_version,
+                "dataset_content_sha256": dataset_content_sha256,
+                "tokenizer_sha256": tokenizer_fingerprint,
+                "model_config": model.cfg.to_dict(),
+                "training_identity": _training_resume_identity(cfg),
+                "prompt_format": resolved_format,
+                "sep": resolved_sep,
+            },
+            required_fields=(
+                "dataset_version", "dataset_content_sha256", "tokenizer_sha256",
+                "model_config", "training_identity", "prompt_format", "sep",
+            ),
+        )
+        if state.get("batch_rng") is None or state.get("rng") is None:
+            raise ValueError("resume checkpoint is missing RNG state")
         model.load_state_dict(state["model"])
         optimizer.load_state_dict(state["optimizer"])
-        rng.setstate(state["batch_rng"])
+        restore_python_rng_state(rng, state["batch_rng"])
         restore_rng_state(state["rng"])
 
     initial_parameters = {
@@ -574,12 +618,14 @@ def train_sft(
                 "experiment_steps": step - start_step,
                 "stage_id": cfg.stage_id,
                 "experiment_index": cfg.experiment_index,
-                "batch_rng": rng.getstate(),
+                "batch_rng": serialize_python_rng_state(rng.getstate()),
                 "rng": capture_rng_state(),
                 "config": cfg.__dict__,
                 "model_config": model.cfg.to_dict(),
+                "training_identity": _training_resume_identity(cfg),
                 "tokenizer_sha256": tokenizer_fingerprint,
                 "dataset_version": dataset_version,
+                "dataset_content_sha256": dataset_content_sha256,
                 "prompt_format": resolved_format,
                 "sep": resolved_sep,
             },
