@@ -103,6 +103,16 @@ def validate_resume_identity(
     missing = [key for key in required_fields if key not in state or state[key] is None]
     if missing:
         raise ValueError("resume checkpoint missing identity fields: " + ", ".join(missing))
+    for key in ("dataset_version", "dataset_content_sha256", "tokenizer_sha256"):
+        if key in required_fields:
+            value = state.get(key)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"resume checkpoint has empty identity field: {key}")
+    for key in ("dataset_content_sha256", "tokenizer_sha256"):
+        if key in required_fields:
+            value = state.get(key)
+            if len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value.lower()):
+                raise ValueError(f"resume checkpoint has invalid SHA-256 identity: {key}")
     for key in required_fields:
         if state[key] != expected.get(key):
             raise ValueError(f"resume checkpoint identity mismatch: {key}")
