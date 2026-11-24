@@ -8,6 +8,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+# Importing the API router loads the database safety guard. These tests use
+# the explicitly permitted SQLite-only unit_test environment; they never
+# connect to or mutate a development, test, or production database.
+os.environ.setdefault("ZYRQUEN_ENV", "unit_test")
+os.environ.setdefault("DATABASE_URL", "sqlite://")
+
 from fastapi import HTTPException
 
 from apps.api.routers import workflows
