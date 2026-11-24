@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import sqlite3
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from fastapi import HTTPException
-
-from apps.api.routers.admin import require_admin
+# API imports activate the database safety guard. Explicitly select the\n# SQLite-only unit_test environment before importing any API modules.\nos.environ.setdefault("ZYRQUEN_ENV", "unit_test")\nos.environ.setdefault("DATABASE_URL", "sqlite://")\n\nfrom fastapi import HTTPException\n\nfrom apps.api.routers.admin import require_admin
 from apps.core.workflow.governance import WorkflowGovernance
 from apps.core.workflow.models import ApprovalViolationError, WorkflowStepSpec
 from apps.core.workflow.store import WorkflowStore
