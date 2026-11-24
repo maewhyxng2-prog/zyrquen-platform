@@ -74,7 +74,7 @@
 - **Status:** **`BLOCKED`**
 
 - **Required Checks:** `import torch`, CPU-only thread cap (`threads <= 2`), `use_paid_gpu = False`, real `ZyrquenModel` forward/backward pass, SFT `-100` loss masking execution, `weights_only=True` save/load parity.
-- **Current Finding:** Container does not have `torch` installed (`TIER2_HMAC_APPROVAL_REQUIRED`).
+- **Current Finding (2026-11-24):** Colab reports `torch 2.14.1+cpu`, `CUDA_AVAILABLE=False`, CPU threads=1, CPU count=2; available RAM=11.2 GB and free disk=105.86 GB. This is environment evidence only, not a completed training runtime check.
 
 ---
 
@@ -82,7 +82,7 @@
 - **Status:** **`NOT RUN`**
 
 - **Required Execution:** Dataset generation (`gen_nagi_v10.py`), leakage audit (`audit_leakage_v10.py`), tokenizer fitting (`train_slot_safe_tokenizer`), and real `train_sft` execution via `CentralWorkflowOrchestrator` with finite loss and `eos_hit_rate` telemetry.
-- **Current State:** Zero real training steps executed; no V10 trained model weights exist.
+- **Current State (2026-11-24):** Dataset generation and read-only leakage audit completed: 600 examples (train 480 / validation 60 / test 60); integrity and all reported leakage/unique-answer gates PASS. Manifest SHA-256: `695a70082de2c2bf9fbd9d2189edde2363133fb488ab6e5d56379c93c4ce8f6d`. Workflow `2c6ec297-d611-42a4-bfa3-bc0b418e448c` is `WAITING_APPROVAL`; approval `acca2b76-e259-4371-bd75-b2b6e16d45e0` is pending. Zero real training steps executed; no V10 trained model weights exist.
 
 ---
 
@@ -114,7 +114,7 @@
 - **Status:** **`PENDING`** *(Mechanism `VERIFIED`; Live run approval not yet issued)*
 
 - Single-use HMAC-SHA256 Tier-2 token enforcement for training execution, stage transition, and `ModelRegistry` promotion/rollback is unit-tested (**`VERIFIED`**).
-- Issuance and consumption of live Tier-2 tokens for V10-D training and baseline promotion remain **`PENDING`**.
+- The V10-D CLI no longer accepts `--approve-as-admin` or self-asserted admin identity; it fails closed at `WAITING_APPROVAL`. A regression test rejects the former flag.\n- Live authenticated Admin API approval, shared workflow-store/HMAC-secret continuity with the Colab runner, and safe resume of the paused closure run remain **`BLOCKED / NOT INTEGRATED`**. No training approval has been issued or consumed.
 
 ---
 
@@ -165,7 +165,7 @@
 ## 17. NOT VERIFIED
 - **Status:** **`NOT RUN`** / **`BLOCKED`**
 
-- Real PyTorch CPU forward/backward execution (`ZyrquenModel` + `train_sft`) — **`NOT RUN`** (`TORCH_NOT_INSTALLED`)
+- Real PyTorch CPU forward/backward execution (`ZyrquenModel` + `train_sft`) — **`NOT RUN`** (Tier-2 approval pending; PyTorch CPU import is available in Colab)
 - Real V10 checkpoint training convergence, finite loss trajectory, and `eos_hit_rate` — **`NOT RUN`**
 - Real native inference evaluation report (`zyrquen.v10.evaluation_report.v1`) across splits — **`NOT RUN`**
 - Measured Peak RSS (GB), CPU wall-clock `sec/step`, and live FastAPI + `EvaluationEngine` end-to-end closure check — **`NOT RUN`**
