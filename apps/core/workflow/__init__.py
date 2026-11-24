@@ -32,9 +32,11 @@ from apps.core.workflow.orchestrator import CentralWorkflowOrchestrator
 def create_default_orchestrator() -> CentralWorkflowOrchestrator:
     db_path = Path(os.getenv("ZYRQUEN_WORKFLOW_DB_PATH", "/tmp/zyrquen_workflow.db"))
     scheduler_sec = float(os.getenv("ZYRQUEN_WORKFLOW_SCHEDULER_SEC", "60"))
+    approval_secret = os.getenv("ZYRQUEN_APPROVAL_SECRET", "").strip() or None
     return CentralWorkflowOrchestrator(
         db_path=db_path,
         work_dir=Path.cwd(),
+        approval_secret=approval_secret,
         scheduler_interval_sec=scheduler_sec,
     )
 
