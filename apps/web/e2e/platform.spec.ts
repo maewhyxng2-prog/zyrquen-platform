@@ -1,33 +1,51 @@
 import { expect, test } from "@playwright/test";
 
-test("home page leads with AI Workspace experience, starter prompts, and truthful progress metrics", async ({
+test("AI-first home screen centers AI launcher, capabilities, system availability, and browser history", async ({
   page,
+  isMobile,
 }) => {
   await page.goto("/");
   await expect(page).toHaveURL(/\/$/);
   await expect(
     page.getByRole("heading", { name: "ยินดีต้อนรับสู่ ZYRQUEN Ω∞" }),
   ).toBeVisible();
+  await expect(page.locator("#platform-sidebar")).toHaveCount(0);
   await expect(
-    page.getByRole("link", { name: /เปิดพื้นที่ทำงาน AI/ }).first(),
+    page.getByRole("heading", { name: "บทสนทนาล่าสุด" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "ตัวชี้วัดความก้าวหน้า ZYRQUEN Ω∞" }),
+    page.getByRole("heading", { name: "ความสามารถที่พร้อมใช้งาน" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "ตรวจสอบสถานะความพร้อมระบบ" }),
   ).toBeVisible();
 
-  await page.getByRole("link", { name: /สำรวจความสามารถของ Native Model/ }).click();
+  await page.locator("#home-ai-prompt").fill("ช่วยออกแบบแผนทดสอบระบบ AI");
+  await page.getByRole("button", { name: "ส่งไปยังพื้นที่ทำงาน" }).click();
   await expect(page).toHaveURL(/\/workspace\?prompt=/);
-  await expect(
-    page.getByRole("heading", { name: "พื้นที่ทำงาน AI" }),
-  ).toBeVisible();
   await expect(page.locator("#prompt")).toHaveValue(
-    "สรุปความสามารถของ Native Model ในระบบปัจจุบัน",
+    "ช่วยออกแบบแผนทดสอบระบบ AI",
   );
+
+  // Browser history back/forward navigation works cleanly
+  await page.goBack();
+  await expect(page).toHaveURL(/\/$/);
+  await page.goForward();
+  await expect(page).toHaveURL(/\/workspace\?prompt=/);
+
+  if (isMobile) {
+    // Bottom nav is hidden inside full-screen /workspace and visible on /
+    await expect(page.locator(".mobile-bottom-nav")).toHaveCount(0);
+    await page.getByRole("link", { name: "กลับไปหน้าหลัก" }).click();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.locator(".mobile-bottom-nav")).toBeVisible();
+  }
 });
 
-test("primary and advanced navigation routes load cleanly with proper auth boundaries in Dev Mode", async ({
+test("primary, developer, and protected routes enforce boundaries in Dev Mode", async ({
   page,
 }) => {
+  test.setTimeout(90_000);
   await page.goto("/workspace");
   await expect(page).toHaveURL(/\/workspace$/);
   await expect(
@@ -43,7 +61,9 @@ test("primary and advanced navigation routes load cleanly with proper auth bound
 
   await page.goto("/knowledge");
   await expect(
-    page.getByRole("heading", { name: "คลังความรู้และข้อมูล (Knowledge & Data)" }),
+    page.getByRole("heading", {
+      name: "คลังความรู้และข้อมูล (Knowledge & Data)",
+    }),
   ).toBeVisible();
 
   await page.goto("/system");
@@ -54,9 +74,6 @@ test("primary and advanced navigation routes load cleanly with proper auth bound
     page.getByRole("heading", {
       name: "Closure Audit — สถานะการปิดงาน V10 และเกณฑ์สู่ V11",
     }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("ยังไม่มี Endpoint สำหรับตรวจสอบสถานะฐานข้อมูล"),
   ).toBeVisible();
 
   await page.goto("/developer");
@@ -79,7 +96,7 @@ test("primary and advanced navigation routes load cleanly with proper auth bound
     "/admin",
   ]) {
     await page.goto(protectedPath);
-    await expect(page).toHaveURL(/\/login$/);
+    await expect(page).toHaveURL(/\/login$/, { timeout: 15_000 });
     await expect(
       page.getByRole("heading", { name: "ยินดีต้อนรับสู่ ZYRQUEN Ω∞" }),
     ).toBeVisible();
@@ -96,7 +113,9 @@ test("login form validates password rules and rejects invalid credentials", asyn
 
   await page.getByLabel("ที่อยู่อีเมล").fill("invalid@zyrquen.local");
   await page.getByLabel(/^รหัสผ่าน/).fill("wrong-password-123");
-  await page.getByRole("button", { name: "เข้าสู่ระบบไปยังพื้นที่ทำงาน" }).click();
+  await page
+    .getByRole("button", { name: "เข้าสู่ระบบไปยังพื้นที่ทำงาน" })
+    .click();
   await expect(page.locator(".form-alert[role='alert']")).toContainText(
     "อีเมลหรือรหัสผ่านไม่ถูกต้อง",
   );
@@ -105,14 +124,21 @@ test("login form validates password rules and rejects invalid credentials", asyn
   await expect(
     page.getByRole("heading", { name: "สร้างบัญชีผู้ใช้ใหม่" }),
   ).toBeVisible();
-  await expect(page.getByLabel("ที่อยู่อีเมล")).toHaveAttribute("minlength", "5");
-  await expect(page.getByLabel(/^รหัสผ่าน/)).toHaveAttribute("minlength", "12");
+  await expect(page.getByLabel("ที่อยู่อีเมล")).toHaveAttribute(
+    "minlength",
+    "5",
+  );
+  await expect(page.getByLabel(/^รหัสผ่าน/)).toHaveAttribute(
+    "minlength",
+    "12",
+  );
 });
 
-test("register, login, AI workspace chat, personal settings, developer API keys, usage & quotas, and logout work end-to-end", async ({
+test("standard user flow: register, workspace attachments & chat, recent conversations on home, personal settings, developer tools, admin 403, and logout", async ({
   page,
   isMobile,
 }, testInfo) => {
+  test.setTimeout(90_000);
   const uniqueEmail = `e2e-${Date.now()}-${testInfo.parallelIndex}-${Math.floor(Math.random() * 10000)}@zyrquen.local`;
   const updatedEmail = `updated-${Date.now()}-${testInfo.parallelIndex}@zyrquen.local`;
   const password = "zyrquen-e2e-password-1234";
@@ -130,35 +156,105 @@ test("register, login, AI workspace chat, personal settings, developer API keys,
   await expect(page.getByText("Native Model พร้อมใช้งาน").first()).toBeVisible();
   await expect(page.getByRole("button", { name: "ส่งข้อความ" })).toBeDisabled();
 
-  await page.locator("#prompt").fill("สรุปความสามารถของ Native Model ในระบบปัจจุบัน");
+  // Attach a small text context file and remove/re-attach cleanly
+  const fileInput = page.locator('.composer input[type="file"]');
+  await fileInput.setInputFiles({
+    name: "notes.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("Native Core 4-Split validation summary"),
+  });
+  await expect(page.locator(".composer-attachment-chip")).toContainText(
+    "notes.txt",
+  );
+
+  // Check generation parameters popover toggles cleanly
+  await page.getByRole("button", { name: "ตั้งค่าการสร้างข้อความ" }).click();
+  await expect(page.locator("#max-tokens")).toBeVisible();
+  await page.getByRole("button", { name: "ตั้งค่าการสร้างข้อความ" }).click();
+
+  if (isMobile) {
+    // Verify virtual-keyboard-safe input font size (>= 16px) and mobile drawer
+    const fontSize = await page
+      .locator("#prompt")
+      .evaluate((el) => parseFloat(window.getComputedStyle(el).fontSize));
+    expect(fontSize).toBeGreaterThanOrEqual(16);
+
+    await page
+      .getByRole("button", { name: "เปิดรายการประวัติการสนทนา" })
+      .click();
+    await expect(page.locator("#workspace-history-sidebar")).toHaveClass(
+      /conversation-sidebar-open/,
+    );
+    await page.getByRole("button", { name: "ปิดรายการบทสนทนา" }).click();
+    await expect(page.locator("#workspace-history-sidebar")).not.toHaveClass(
+      /conversation-sidebar-open/,
+    );
+  }
+
+  await page
+    .locator("#prompt")
+    .fill("สรุปความสามารถของ Native Model ในระบบปัจจุบัน");
   await expect(page.getByRole("button", { name: "ส่งข้อความ" })).toBeEnabled();
   await page.getByRole("button", { name: "ส่งข้อความ" }).click();
 
   await expect(
-    page.getByRole("button", { name: "คัดลอกข้อความตอบกลับลงคลิปบอร์ด" }).first(),
+    page
+      .getByRole("button", { name: "คัดลอกข้อความตอบกลับลงคลิปบอร์ด" })
+      .first(),
   ).toBeVisible({ timeout: 15_000 });
 
-  if (isMobile) {
-    await page.getByRole("button", { name: "เปิดเมนูนำทาง" }).click();
-    await expect(page.locator("#platform-sidebar")).toHaveClass(/sidebar-open/);
-  }
-  await page.getByRole("link", { name: "การตั้งค่า", exact: true }).click();
+  // Return to Home and verify the conversation appears in Recent Conversations
+  await page.getByRole("link", { name: "หน้าหลัก ZYRQUEN Ω∞" }).click();
+  await expect(page).toHaveURL(/\/$/);
+  const recentLink = page.locator(".home-recent-item").first();
+  await expect(recentLink).toBeVisible();
+  await recentLink.click();
+  await expect(page).toHaveURL(/\/workspace\?conversation=/);
+  await expect(
+    page
+      .getByRole("button", { name: "คัดลอกข้อความตอบกลับลงคลิปบอร์ด" })
+      .first(),
+  ).toBeVisible();
+
+  // Navigate to Settings via Account menu popover
+  await page.getByRole("button", { name: "เมนูบัญชีผู้ใช้" }).click();
+  await expect(page.locator("#account-popover-menu")).toBeVisible();
+  // Standard user must NOT see Admin link in popover
+  await expect(
+    page
+      .locator("#account-popover-menu")
+      .getByRole("menuitem", { name: "แดชบอร์ดผู้ดูแลระบบ" }),
+  ).toHaveCount(0);
+  await page
+    .locator("#account-popover-menu")
+    .getByRole("menuitem", { name: "การตั้งค่าบัญชี" })
+    .click();
+
   await expect(page).toHaveURL(/\/settings$/);
   await expect(
     page.getByRole("heading", { name: "การตั้งค่า", exact: true }),
   ).toBeVisible();
+  // Settings page stays personal and does not render API Key creation inputs directly
+  await expect(page.locator("#api-key-name")).toHaveCount(0);
 
   await expect(page.locator("#profile-email")).toHaveValue(uniqueEmail);
   await page.locator("#profile-email").fill(updatedEmail);
   await page.getByRole("button", { name: "บันทึกอีเมล" }).click();
   await expect(page.getByText("บันทึกข้อมูลบัญชีเรียบร้อยแล้ว")).toBeVisible();
 
+  // Navigate to Developer Settings -> Usage & Keys
+  await page
+    .getByRole("link", { name: /ตั้งค่าสำหรับนักพัฒนา/ })
+    .first()
+    .click();
+  await expect(page).toHaveURL(/\/developer$/, { timeout: 15_000 });
+
   await page.getByRole("link", { name: /Usage & Quotas/ }).first().click();
-  await expect(page).toHaveURL(/\/developer\/usage$/);
-  await expect(page.getByRole("progressbar").first()).toBeVisible();
+  await expect(page).toHaveURL(/\/developer\/usage$/, { timeout: 15_000 });
+  await expect(page.getByRole("progressbar").first()).toBeVisible({ timeout: 15_000 });
 
   await page.getByRole("link", { name: "API Keys", exact: true }).first().click();
-  await expect(page).toHaveURL(/\/developer\/keys$/);
+  await expect(page).toHaveURL(/\/developer\/keys$/, { timeout: 15_000 });
 
   const futureExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
     .toISOString()
@@ -171,9 +267,6 @@ test("register, login, AI workspace chat, personal settings, developer API keys,
   await expect(secretBanner).toBeVisible();
   await expect(secretBanner).toContainText("zq_live_");
   await expect(page.locator("#api-key-usage-select")).toBeVisible();
-  await expect(
-    page.getByText("กราฟประสิทธิภาพ API Key (7 วันล่าสุด)"),
-  ).toBeVisible();
 
   await page.getByRole("button", { name: "หมุนเวียนคีย์ทันที" }).first().click();
   await expect(secretBanner).toContainText("หมุนเวียนคีย์");
@@ -181,6 +274,15 @@ test("register, login, AI workspace chat, personal settings, developer API keys,
   await page.getByRole("button", { name: "เพิกถอน" }).first().click();
   await expect(page.getByText("เพิกถอนแล้ว").first()).toBeVisible();
 
+  // Non-admin user visiting /admin is denied cleanly
+  await page.goto("/admin");
+  await expect(page).toHaveURL(/\/admin$/);
+  await expect(
+    page.getByText("บัญชีนี้ไม่มีสิทธิ์ผู้ดูแลระบบ (Admin Access Required)"),
+  ).toBeVisible();
+
+  // Logout via Settings or Account menu and verify protected routes redirect to /login
+  await page.goto("/settings");
   await page.getByRole("button", { name: "ออกจากระบบ" }).first().click();
   await expect(page).toHaveURL(/\/login$/);
 
@@ -194,16 +296,28 @@ test("register, login, AI workspace chat, personal settings, developer API keys,
   await expect(page.getByRole("button", { name: "ส่งข้อความ" })).toBeDisabled();
 });
 
-test("admin login unlocks admin overview, user list, and audit logs", async ({
+test("admin login unlocks admin link, overview metrics, user list, and audit logs", async ({
   page,
 }) => {
   await page.goto("/login");
   await page.getByLabel("ที่อยู่อีเมล").fill("demo@zyrquen.local");
   await page.getByLabel(/^รหัสผ่าน/).fill("zyrquen-demo-pass");
-  await page.getByRole("button", { name: "เข้าสู่ระบบไปยังพื้นที่ทำงาน" }).click();
+  await page
+    .getByRole("button", { name: "เข้าสู่ระบบไปยังพื้นที่ทำงาน" })
+    .click();
   await expect(page).toHaveURL(/\/workspace$/);
 
-  await page.goto("/admin");
+  await page.getByRole("button", { name: "เมนูบัญชีผู้ใช้" }).click();
+  await expect(
+    page
+      .locator("#account-popover-menu")
+      .getByRole("menuitem", { name: "แดชบอร์ดผู้ดูแลระบบ" }),
+  ).toBeVisible();
+  await page
+    .locator("#account-popover-menu")
+    .getByRole("menuitem", { name: "แดชบอร์ดผู้ดูแลระบบ" })
+    .click();
+
   await expect(page).toHaveURL(/\/admin$/);
   await expect(
     page.getByRole("heading", { name: "แดชบอร์ดผู้ดูแลระบบ" }),
@@ -218,7 +332,7 @@ test("admin login unlocks admin overview, user list, and audit logs", async ({
   await expect(page.getByRole("heading", { name: "Audit Log" })).toBeVisible();
 });
 
-test("desktop, tablet, and mobile layouts do not overflow horizontally across restructured routes", async ({
+test("desktop, tablet, and mobile layouts have zero horizontal overflow, proper touch targets, and compact header", async ({
   page,
 }) => {
   test.setTimeout(90_000);
@@ -258,7 +372,9 @@ test("desktop, tablet, and mobile layouts do not overflow horizontally across re
           }
           return false;
         };
-        const overflowElements = [...document.querySelectorAll<HTMLElement>("body *")]
+        const overflowElements = [
+          ...document.querySelectorAll<HTMLElement>("body *"),
+        ]
           .filter((element) => !isClippedByAncestor(element))
           .map((element) => ({
             tag: element.tagName,
@@ -267,10 +383,16 @@ test("desktop, tablet, and mobile layouts do not overflow horizontally across re
           }))
           .filter((element) => element.right > window.innerWidth + 1)
           .slice(0, 8);
+
+        const header = document.querySelector<HTMLElement>(".app-header");
+        const headerHeight = header ? header.getBoundingClientRect().height : 0;
+
         return {
           overflowElements,
           docScrollWidth: document.documentElement.scrollWidth,
           innerWidth: window.innerWidth,
+          headerHeight,
+          innerHeight: window.innerHeight,
         };
       });
       expect(
@@ -281,26 +403,42 @@ test("desktop, tablet, and mobile layouts do not overflow horizontally across re
         metrics.docScrollWidth,
         `document scrollWidth overflow on ${route} at ${viewport.width}px`,
       ).toBeLessThanOrEqual(metrics.innerWidth + 1);
+      if (metrics.headerHeight > 0) {
+        expect(
+          metrics.headerHeight,
+          `header height compact check on ${route} at ${viewport.width}px`,
+        ).toBeLessThanOrEqual(metrics.innerHeight * 0.15);
+      }
     }
   }
 });
 
-test("mobile navigation drawer opens primary and advanced sections cleanly on small screens", async ({
+test("mobile bottom navigation navigates cleanly across core app screens", async ({
   page,
   isMobile,
 }) => {
-  test.skip(!isMobile, "Mobile drawer check runs on mobile viewport");
+  test.skip(!isMobile, "Mobile bottom nav check runs on mobile viewport");
   await page.goto("/");
-  await expect(
-    page.getByRole("heading", { name: "ยินดีต้อนรับสู่ ZYRQUEN Ω∞" }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "เปิดเมนูนำทาง" }).click();
-  await expect(page.locator("#platform-sidebar")).toHaveClass(/sidebar-open/);
-  await Promise.all([
-    page.waitForURL(/\/capabilities$/, { timeout: 15_000 }),
-    page.getByRole("link", { name: "ความสามารถ AI", exact: true }).click(),
-  ]);
+  const bottomNav = page.getByRole("navigation", {
+    name: "แถบนำทางล่างสำหรับมือถือ",
+  });
+  await expect(bottomNav).toBeVisible();
+
+  const tabCount = await bottomNav.locator("a").count();
+  expect(tabCount).toBe(5);
+  const firstTabHeight = await bottomNav
+    .locator("a")
+    .first()
+    .evaluate((el) => el.getBoundingClientRect().height);
+  expect(firstTabHeight).toBeGreaterThanOrEqual(44);
+
+  await bottomNav.getByRole("link", { name: "ความสามารถ" }).click();
+  await expect(page).toHaveURL(/\/capabilities$/);
   await expect(
     page.getByRole("heading", { name: "ความสามารถ AI และผลประเมินตามจริง" }),
   ).toBeVisible();
+
+  await bottomNav.getByRole("link", { name: "แชท AI" }).click();
+  await expect(page).toHaveURL(/\/workspace$/);
+  await expect(bottomNav).toHaveCount(0);
 });

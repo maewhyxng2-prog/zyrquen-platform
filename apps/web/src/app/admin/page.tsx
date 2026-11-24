@@ -58,6 +58,13 @@ export default function AdminPage() {
         router.replace("/login");
         return;
       }
+      if (session.role && session.role !== "admin") {
+        setOverview(null);
+        setUsers(null);
+        setAuditLogs(null);
+        setError("บัญชีนี้ไม่มีสิทธิ์ผู้ดูแลระบบ (Admin Access Required)");
+        return;
+      }
       const results = await Promise.allSettled([
         apiRequest<AdminOverview>("admin/overview"),
         apiRequest<AdminUser[]>("admin/users"),

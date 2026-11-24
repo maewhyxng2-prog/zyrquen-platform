@@ -945,7 +945,7 @@ export async function handleInMemoryBackendRequest(options: {
       id,
       email,
       passwordHash: hashPassword(password),
-      role: "admin",
+      role: "user",
       isActive: true,
       createdAt,
     };
@@ -2014,6 +2014,9 @@ export async function handleInMemoryBackendRequest(options: {
   }
 
   if (method === "GET" && path === "admin/overview") {
+    if (currentUser.role !== "admin") {
+      return { status: 403, body: { detail: "Admin access is required." } };
+    }
     const completedUsage = store.usageRecords.filter((r) => r.status === "completed");
     const inputTokens = completedUsage.reduce((acc, r) => acc + r.inputTokens, 0);
     const outputTokens = completedUsage.reduce((acc, r) => acc + r.outputTokens, 0);
@@ -2037,6 +2040,9 @@ export async function handleInMemoryBackendRequest(options: {
   }
 
   if (method === "GET" && path === "admin/users") {
+    if (currentUser.role !== "admin") {
+      return { status: 403, body: { detail: "Admin access is required." } };
+    }
     const users = [...store.usersById.values()]
       .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
       .map((u) => ({
@@ -2050,6 +2056,9 @@ export async function handleInMemoryBackendRequest(options: {
   }
 
   if (method === "GET" && path === "admin/audit-logs") {
+    if (currentUser.role !== "admin") {
+      return { status: 403, body: { detail: "Admin access is required." } };
+    }
     return { status: 200, body: store.auditLogs.slice(0, 100) };
   }
 

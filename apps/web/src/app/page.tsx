@@ -1,184 +1,252 @@
 "use client";
 
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import Link from "next/link";
 import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  ReferenceLine,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
-import { Icon } from "@/components/Icon";
+  FormEvent,
+  KeyboardEvent,
+  useCallback,
+  useEffect,
+  useState,
+} from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { Icon, type IconName } from "@/components/Icon";
 import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
 import { usePlatformHealth } from "@/hooks/usePlatformHealth";
 import { readSession } from "@/lib/api";
-import type { Session } from "@/lib/types";
+import { listConversations } from "@/lib/conversation-api";
+import type { Conversation, Session } from "@/lib/types";
 
 const quickStarters = [
   {
     title: "วิเคราะห์สถาปัตยกรรมและวางแผนระบบ",
     prompt: "ช่วยวิเคราะห์และวางแนวทางแก้ไขปัญหาทางเทคนิค",
     summary: "จัดลำดับปัญหา แยกสมมติฐาน และวางแผนดำเนินการเป็นขั้นตอน",
+    icon: "layers" as IconName,
   },
   {
     title: "สำรวจความสามารถของ Native Model",
     prompt: "สรุปความสามารถของ Native Model ในระบบปัจจุบัน",
     summary: "ตรวจสอบขอบเขตการทำงานของโมเดลหลักและความพร้อมรันไทม์จริง",
+    icon: "cpu" as IconName,
   },
   {
     title: "ทำความเข้าใจการฝึกและชุดข้อมูล",
     prompt: "อธิบายขั้นตอนการทำงานของไปป์ไลน์การฝึกโมเดล",
     summary: "ทบทวนกระบวนการเตรียมชุดข้อมูล 4-Split และการประเมินผล",
+    icon: "book" as IconName,
   },
 ];
 
-type ProgressDatum = {
-  metric: string;
-  score: number;
-  target: number | null;
-  fill: string;
-};
-
-function subscribeClientMount() {
-  return () => {};
-}
-
-function ProgressTooltip({
-  active,
-  payload,
-}: {
-  active?: boolean;
-  payload?: Array<{ payload: ProgressDatum }>;
-}) {
-  if (!active || !payload || payload.length === 0) return null;
-  const item = payload[0]?.payload;
-  if (!item) return null;
-
-  return (
-    <div className="radar-tooltip">
-      <strong>{item.metric}</strong>
-      <div className="radar-tooltip-row">
-        <span>คะแนนปัจจุบัน</span>
-        <strong>{item.score.toFixed(1)}%</strong>
-      </div>
-      {item.target !== null && (
-        <div className="radar-tooltip-row">
-          <span>เป้าหมาย</span>
-          <span>{item.target.toFixed(1)}%</span>
-        </div>
-      )}
-    </div>
-  );
-}
+const coreCapabilities = [
+  {
+    key: "reasoning",
+    title: "Reasoning & Analysis",
+    detail: "วิเคราะห์ปัญหาเชิงโครงสร้าง ตรวจสอบตรรกะ และแยกสมมติฐานอย่างเป็นระบบ",
+    prompt: "ช่วยวิเคราะห์ปัญหาทางตรรกะและโครงสร้างระบบแบบเป็นขั้นตอน",
+    icon: "sparkles" as IconName,
+  },
+  {
+    key: "planning",
+    title: "Planning & Verification",
+    detail: "วางแผนดำเนินการและตรวจสอบความถูกต้องด้วย Approval & Validation Gates",
+    prompt: "ช่วยวางแผนการทำงานและเกณฑ์ตรวจสอบความถูกต้องสำหรับโปรเจกต์",
+    icon: "check-circle" as IconName,
+  },
+  {
+    key: "knowledge",
+    title: "Knowledge & Context",
+    detail: "เชื่อมโยงความรู้จากชุดข้อมูล 4-Split และตรวจจับความขัดแย้งก่อนตอบ",
+    prompt: "อธิบายหลักการจัดโครงสร้างความรู้และการตรวจสอบข้อมูลของ ZYRQUEN",
+    icon: "book" as IconName,
+  },
+  {
+    key: "evaluation",
+    title: "Scientific Evaluation",
+    detail: "ประเมิน Generalization บนชุดข้อมูล Unseen และ OOD อย่างโปร่งใส",
+    prompt: "อธิบายเกณฑ์วัดผล Generalization และ Zero-Regression ของ Native Model",
+    icon: "gauge" as IconName,
+  },
+];
 
 export default function HomePage() {
+  const router = useRouter();
   const {
     apiHealth,
     nativeHealth,
     apiError,
     nativeError,
-    loading,
+    loading: healthLoading,
     lastChecked,
     refresh,
   } = usePlatformHealth();
+
   const [session, setSession] = useState<Session | null>(null);
-  const chartMounted = useSyncExternalStore(
-    subscribeClientMount,
-    () => true,
-    () => false,
-  );
+  const [sessionReady, setSessionReady] = useState(false);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversationsLoading, setConversationsLoading] = useState(false);
+  const [conversationsError, setConversationsError] = useState("");
+  const [homePrompt, setHomePrompt] = useState("");
+  const [trackedUserId, setTrackedUserId] = useState<string | null>(null);
+
+  const targetUserId =
+    sessionReady && session?.authenticated ? (session.userId ?? null) : null;
+
+  if (targetUserId !== trackedUserId) {
+    setTrackedUserId(targetUserId);
+    setConversations([]);
+    setConversationsError("");
+    setConversationsLoading(Boolean(targetUserId));
+  }
 
   const syncSession = useCallback(() => {
     readSession()
-      .then((current) => setSession(current))
-      .catch(() => setSession(null));
+      .then((current) => {
+        setSession(current);
+        setSessionReady(true);
+      })
+      .catch(() => {
+        setSession(null);
+        setSessionReady(true);
+      });
   }, []);
 
   useEffect(() => {
     syncSession();
     window.addEventListener("zyrquen:session-change", syncSession);
-    return () => window.removeEventListener("zyrquen:session-change", syncSession);
+    return () =>
+      window.removeEventListener("zyrquen:session-change", syncSession);
   }, [syncSession]);
+
+  useEffect(() => {
+    let active = true;
+    if (!targetUserId) {
+      return () => {
+        active = false;
+      };
+    }
+
+    listConversations(targetUserId)
+      .then((items) => {
+        if (!active) return;
+        setConversations(items.slice(0, 4));
+      })
+      .catch((reason: unknown) => {
+        if (!active) return;
+        setConversations([]);
+        setConversationsError(
+          reason instanceof Error
+            ? reason.message
+            : "ไม่สามารถโหลดประวัติบทสนทนาล่าสุดได้",
+        );
+      })
+      .finally(() => {
+        if (active) setConversationsLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [targetUserId]);
+
+  function launchWorkspace(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+    const trimmed = homePrompt.trim();
+    if (trimmed) {
+      router.push(`/workspace?prompt=${encodeURIComponent(trimmed)}`);
+      return;
+    }
+    router.push("/workspace");
+  }
+
+  function onPromptKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      launchWorkspace();
+    }
+  }
 
   const runtimeReady = Boolean(nativeHealth?.inference_available);
   const serviceReady = apiHealth?.status === "healthy";
+  const measuredCapabilities = (nativeHealth?.capabilities ?? []).filter(
+    (item) => item.status === "measured",
+  );
+  const versionText =
+    nativeHealth?.platform_version || nativeHealth?.model_version || null;
 
-  const runtimeLabel =
-    loading && !nativeHealth
-      ? "กำลังตรวจสอบรันไทม์"
-      : runtimeReady
-        ? "Native Model พร้อมประมวลผล"
-        : nativeError
-          ? "ตรวจสอบรันไทม์ไม่สำเร็จ"
-          : "รอความพร้อม Native Model";
+  const availabilityLabel =
+    healthLoading && !nativeHealth
+      ? "กำลังตรวจสอบระบบ"
+      : runtimeReady && serviceReady
+        ? "Native AI พร้อมใช้งาน"
+        : nativeError || apiError
+          ? "ตรวจสอบความพร้อมบางส่วนไม่สำเร็จ"
+          : serviceReady
+            ? "เชื่อมต่อแล้ว · รอความพร้อม Native Model"
+            : "กำลังรอสถานะระบบ";
 
-  const runtimeTone =
-    loading && !nativeHealth
+  const availabilityTone =
+    healthLoading && !nativeHealth
       ? ("neutral" as const)
-      : runtimeReady
+      : runtimeReady && serviceReady
         ? ("good" as const)
         : ("warn" as const);
 
   return (
-    <div className="page-stack">
-      <section aria-label="จุดเริ่มต้นใช้งาน ZYRQUEN Ω∞" className="home-hero panel">
-        <div className="home-hero-grid">
-          <div className="home-hero-copy">
-            <div className="eyebrow">
+    <div className="page-stack home-app-stack">
+      <section aria-label="จุดเริ่มต้นใช้งาน ZYRQUEN Ω∞" className="home-launcher panel">
+        <div className="home-launcher-top">
+          <div className="home-identity">
+            <span className="home-eyebrow">
               <Icon name="sparkles" size={14} />
-              <span>NATIVE GENERAL INTELLIGENCE PLATFORM</span>
-            </div>
+              <span>ZYRQUEN Ω∞ · NATIVE AI APPLICATION</span>
+            </span>
             <h1>ยินดีต้อนรับสู่ ZYRQUEN Ω∞</h1>
-            <p className="home-hero-lead">
-              แพลตฟอร์มปัญญาประดิษฐ์ที่พัฒนาสถาปัตยกรรม Native Model ขึ้นเอง เพื่อการสนทนา
-              การให้เหตุผล การวางแผน และการตรวจสอบผลลัพธ์อย่างโปร่งใส
+            <p className="home-lead">
+              {session?.authenticated
+                ? `สวัสดี ${session.email || "ผู้ใช้งาน"} — พร้อมเริ่มต้นสนทนา วิเคราะห์ และวางแผนงานร่วมกับ Native Model ของคุณ`
+                : "ผู้ช่วยปัญญาประดิษฐ์สถาปัตยกรรม Native Core สำหรับการสนทนา การให้เหตุผล และการวางแผนเชิงโครงสร้าง"}
             </p>
-            <div className="home-hero-actions">
-              <Link className="button button-primary home-hero-cta" href="/workspace">
-                <Icon name="sparkles" size={16} />
-                เปิดพื้นที่ทำงาน AI
-                <Icon name="arrow-right" size={16} />
-              </Link>
-              <Link className="button button-secondary" href="/capabilities">
-                <Icon name="layers" size={16} />
-                สำรวจความสามารถ AI
-              </Link>
-              {!session?.authenticated && (
-                <Link className="text-link" href="/login">
-                  เข้าสู่ระบบบัญชีของคุณ
-                  <Icon name="arrow-up-right" size={15} />
-                </Link>
-              )}
-            </div>
-            <div className="home-runtime-strip">
-              <StatusBadge icon="cpu" tone={runtimeTone}>
-                {runtimeLabel}
-              </StatusBadge>
-              <span className="home-runtime-meta">
-                {session?.authenticated
-                  ? `เข้าสู่ระบบแล้ว · ${session.email || "บัญชีที่ยืนยันตัวตนแล้ว"}`
-                  : "พร้อมสำรวจพื้นที่ทำงาน AI และภาพรวมความสามารถของระบบ"}
-              </span>
-              {lastChecked && (
-                <span className="home-runtime-meta tabular-nums">
-                  · อัปเดต {lastChecked.toLocaleTimeString("th-TH")}
-                </span>
-              )}
-            </div>
           </div>
 
-          <div className="home-starter-column">
-            <div className="home-starter-head">
-              <span className="metric-label">เริ่มต้นสนทนาทันที</span>
+          <Link
+            aria-label="ตรวจสอบสถานะความพร้อมระบบ"
+            className="home-availability-pill"
+            href="/system"
+          >
+            <StatusBadge icon="cpu" tone={availabilityTone}>
+              {availabilityLabel}
+            </StatusBadge>
+            <span className="home-availability-meta tabular-nums">
+              {versionText ? `${versionText} · ` : ""}
+              {lastChecked
+                ? `อัปเดต ${lastChecked.toLocaleTimeString("th-TH", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}`
+                : "ดูรายละเอียดระบบ"}
+            </span>
+          </Link>
+        </div>
+
+        <form className="home-prompt-box" onSubmit={launchWorkspace}>
+          <label className="sr-only" htmlFor="home-ai-prompt">
+            พิมพ์คำถามหรือคำสั่งเพื่อเริ่มต้นสนทนาในพื้นที่ทำงาน AI
+          </label>
+          <textarea
+            id="home-ai-prompt"
+            maxLength={4096}
+            onChange={(event) => setHomePrompt(event.target.value)}
+            onKeyDown={onPromptKeyDown}
+            placeholder="พิมพ์คำถาม วิเคราะห์โค้ด หรือวางแผนงานกับ ZYRQUEN Ω∞..."
+            rows={2}
+            value={homePrompt}
+          />
+          <div className="home-prompt-actions">
+            <div className="home-prompt-secondary">
               <button
                 className="home-refresh-link"
-                disabled={loading}
+                disabled={healthLoading}
                 onClick={() => {
                   void refresh();
                   syncSession();
@@ -186,393 +254,179 @@ export default function HomePage() {
                 type="button"
               >
                 <Icon name="activity" size={14} />
-                {loading ? "กำลังตรวจ..." : "รีเฟรชสถานะ"}
+                <span>{healthLoading ? "กำลังตรวจ..." : "อัปเดตสถานะ"}</span>
+              </button>
+              {!session?.authenticated && sessionReady && (
+                <Link className="text-link" href="/login">
+                  เข้าสู่ระบบ
+                  <Icon name="arrow-up-right" size={14} />
+                </Link>
+              )}
+            </div>
+
+            <div className="home-prompt-primary">
+              <Link className="button button-secondary" href="/workspace">
+                <Icon name="message" size={15} />
+                <span>เปิดพื้นที่ทำงาน AI</span>
+              </Link>
+              <button className="button button-primary" type="submit">
+                <Icon name="send" size={15} />
+                <span>{homePrompt.trim() ? "ส่งไปยังพื้นที่ทำงาน" : "เริ่มสนทนา"}</span>
               </button>
             </div>
-            <div className="home-starter-list">
-              {quickStarters.map((starter) => (
+          </div>
+        </form>
+
+        <div className="home-starter-row" aria-label="คำสั่งแนะนำเริ่มต้น">
+          {quickStarters.map((starter) => (
+            <Link
+              className="home-starter-card"
+              href={`/workspace?prompt=${encodeURIComponent(starter.prompt)}`}
+              key={starter.title}
+            >
+              <span className="home-starter-icon">
+                <Icon name={starter.icon} size={16} />
+              </span>
+              <span className="home-starter-card-copy">
+                <strong>{starter.title}</strong>
+                <small>{starter.summary}</small>
+              </span>
+              <Icon name="arrow-up-right" size={16} />
+            </Link>
+          ))}
+        </div>
+      </section>
+
+      <div className="home-two-col">
+        <Panel className="home-section-panel">
+          <div className="panel-heading">
+            <div>
+              <div className="eyebrow">RECENT CONVERSATIONS</div>
+              <h2>บทสนทนาล่าสุด</h2>
+            </div>
+            <Link className="text-link" href="/workspace">
+              ทั้งหมด
+              <Icon name="arrow-right" size={14} />
+            </Link>
+          </div>
+
+          {!sessionReady || conversationsLoading ? (
+            <div className="home-empty-box" role="status">
+              <Icon name="history" size={18} />
+              <span>กำลังโหลดบทสนทนาล่าสุด...</span>
+            </div>
+          ) : !session?.authenticated ? (
+            <div className="home-empty-box">
+              <Icon name="lock" size={18} />
+              <div>
+                <strong>เข้าสู่ระบบเพื่อซิงก์บทสนทนา</strong>
+                <p>ประวัติการสนทนาจะถูกบันทึกแยกตามบัญชีเพื่อให้เปิดต่อได้ทันทีทุกอุปกรณ์</p>
+              </div>
+              <Link className="button button-secondary" href="/login">
+                เข้าสู่ระบบ
+              </Link>
+            </div>
+          ) : conversationsError ? (
+            <div className="home-empty-box" role="alert">
+              <Icon name="close" size={18} />
+              <span>{conversationsError}</span>
+            </div>
+          ) : conversations.length === 0 ? (
+            <div className="home-empty-box">
+              <Icon name="message" size={18} />
+              <div>
+                <strong>ยังไม่มีประวัติการสนทนา</strong>
+                <p>พิมพ์คำสั่งด้านบนหรือเปิดพื้นที่ทำงาน AI เพื่อเริ่มบทสนทนาแรกของคุณ</p>
+              </div>
+              <Link className="button button-primary" href="/workspace">
+                เริ่มบทสนทนาใหม่
+              </Link>
+            </div>
+          ) : (
+            <div className="home-recent-list">
+              {conversations.map((conversation) => (
                 <Link
-                  className="home-starter-card"
-                  href={`/workspace?prompt=${encodeURIComponent(starter.prompt)}`}
-                  key={starter.title}
+                  className="home-recent-item"
+                  href={`/workspace?conversation=${encodeURIComponent(conversation.id)}`}
+                  key={conversation.id}
                 >
-                  <div className="home-starter-card-copy">
-                    <strong>{starter.title}</strong>
-                    <small>{starter.summary}</small>
-                  </div>
-                  <Icon name="arrow-up-right" size={16} />
+                  <span className="home-recent-icon">
+                    <Icon name="message" size={16} />
+                  </span>
+                  <span className="home-recent-copy">
+                    <strong>{conversation.title}</strong>
+                    <small className="tabular-nums">
+                      {conversation.messageCount} ข้อความ ·{" "}
+                      {new Date(conversation.updatedAt).toLocaleString("th-TH", {
+                        dateStyle: "short",
+                        timeStyle: "short",
+                      })}
+                    </small>
+                  </span>
+                  <Icon name="chevron-right" size={16} />
                 </Link>
               ))}
             </div>
-          </div>
-        </div>
-      </section>
-
-      <section aria-label="โครงสร้างหลักของแพลตฟอร์ม" className="home-pillars-grid">
-        <Panel className="home-pillar-card">
-          <div className="metric-topline">
-            <span className="metric-icon metric-icon-cyan">
-              <Icon name="message" />
-            </span>
-            <StatusBadge tone={runtimeTone}>{runtimeReady ? "พร้อมสนทนา" : "รอโมเดล"}</StatusBadge>
-          </div>
-          <h2>พื้นที่ทำงาน AI</h2>
-          <p>
-            พื้นที่สนทนาหลักสำหรับส่งคำสั่ง รับคำตอบแบบสตรีมมิงจาก Native Model
-            ปรับพารามิเตอร์ และจัดการประวัติการสนทนาที่บันทึกแยกตามบัญชีผู้ใช้
-          </p>
-          <div className="panel-link-row">
-            <Link className="text-link" href="/workspace">
-              ไปยังพื้นที่ทำงาน AI
-              <Icon name="arrow-right" size={15} />
-            </Link>
-          </div>
+          )}
         </Panel>
 
-        <Panel className="home-pillar-card">
-          <div className="metric-topline">
-            <span className="metric-icon metric-icon-blue">
-              <Icon name="sparkles" />
-            </span>
-            <StatusBadge
-              tone={
-                nativeHealth?.progress_metrics?.evaluation_status === "evaluated"
-                  ? "good"
-                  : "neutral"
-              }
-            >
-              {nativeHealth?.progress_metrics?.evaluation_status === "evaluated"
-                ? "มีผลประเมิน"
-                : "ตรวจวัดตามจริง"}
-            </StatusBadge>
-          </div>
-          <h2>ความสามารถของระบบ</h2>
-          <p>
-            ติดตามความสามารถด้านการให้เหตุผล การวางแผน การตรวจสอบความถูกต้อง
-            และผลประเมิน Generalization ที่วัดจากรันไทม์จริงโดยไม่สร้างตัวเลขจำลอง
-          </p>
-          <div className="panel-link-row">
-            <Link className="text-link" href="/capabilities">
-              ดูความสามารถระบบ
-              <Icon name="arrow-right" size={15} />
-            </Link>
-          </div>
-        </Panel>
-
-        <Panel className="home-pillar-card">
-          <div className="metric-topline">
-            <span className="metric-icon metric-icon-violet">
-              <Icon name="book" />
-            </span>
-            <StatusBadge tone="info">Data Provenance</StatusBadge>
-          </div>
-          <h2>คลังความรู้และข้อมูล</h2>
-          <p>
-            จัดการแหล่งที่มาของชุดข้อมูล ตรวจสอบความครบถ้วนแบบ 4-Split (Train / Validation
-            / Unseen / OOD) และการป้องกัน Data Leakage ด้วย SHA-256
-          </p>
-          <div className="panel-link-row">
-            <Link className="text-link" href="/knowledge">
-              สำรวจคลังความรู้และข้อมูล
-              <Icon name="arrow-right" size={15} />
-            </Link>
-          </div>
-        </Panel>
-      </section>
-
-      <section aria-label="การติดตามความคืบหน้า ZYRQUEN Ω∞">
-        <Panel className="progress-monitoring-panel">
+        <Panel className="home-section-panel">
           <div className="panel-heading">
             <div>
-              <div className="eyebrow">
-                การติดตามความก้าวหน้า
-                {(nativeHealth?.platform_version || nativeHealth?.model_version)
-                  ? ` · ${nativeHealth.platform_version || nativeHealth.model_version}`
-                  : ""}
-              </div>
-              <h2>ตัวชี้วัดความก้าวหน้า ZYRQUEN Ω∞</h2>
+              <div className="eyebrow">AVAILABLE CAPABILITIES</div>
+              <h2>ความสามารถที่พร้อมใช้งาน</h2>
             </div>
-            <StatusBadge
-              tone={
-                nativeError
-                  ? "warn"
-                  : nativeHealth?.progress_metrics?.evaluation_status === "evaluated"
-                    ? "good"
-                    : "neutral"
-              }
-            >
-              {loading && !nativeHealth
-                ? "กำลังตรวจสอบ"
-                : nativeError
-                  ? "ไม่สามารถเชื่อมต่อรันไทม์"
-                  : nativeHealth?.progress_metrics?.evaluation_status === "evaluated"
-                    ? "มีผลประเมินจริง"
-                    : "รอข้อมูลผลประเมินจริง"}
-            </StatusBadge>
+            <Link className="text-link" href="/capabilities">
+              รายละเอียด
+              <Icon name="arrow-right" size={14} />
+            </Link>
           </div>
 
-          {(() => {
-            const pm = nativeHealth?.progress_metrics ?? null;
-            const genScore = pm?.generalization_score ?? null;
-            const genTarget =
-              typeof pm?.generalization_target === "number"
-                ? pm.generalization_target
-                : null;
-            const relScore = pm?.relational_reasoning_success_rate ?? null;
-            const relTarget =
-              typeof pm?.relational_reasoning_target === "number"
-                ? pm.relational_reasoning_target
-                : null;
-            const hasAnyMetric = genScore !== null || relScore !== null;
-
-            if (!hasAnyMetric) {
-              return (
-                <div className="unavailable-block">
-                  <strong>
-                    {loading && !nativeHealth
-                      ? "กำลังตรวจสอบค่า Generalization Score และ Relational Reasoning Success Rate"
-                      : nativeError
-                        ? "ไม่สามารถดึงตัวชี้วัดจากรันไทม์ได้"
-                        : "ยังไม่มีค่าชี้วัดความก้าวหน้าที่ผ่านการประเมินจริง"}
-                  </strong>
-                  <p>
-                    {nativeError ||
-                      "ระบบจะแสดงตัวเลขและกราฟความก้าวหน้าเฉพาะเมื่อ Native Model ผ่านการวัดผล Generalization Score และ Relational Reasoning Success Rate จริงเท่านั้น โดยจะไม่แสดงข้อมูลจำลอง"}
-                  </p>
-                </div>
+          <div className="home-capabilities-list">
+            {coreCapabilities.map((cap) => {
+              const matched = measuredCapabilities.find((item) =>
+                item.key.toLowerCase().includes(cap.key),
               );
-            }
-
-            const chartData: ProgressDatum[] = [
-              ...(genScore !== null
-                ? [
-                    {
-                      metric: "Generalization Score",
-                      score: Math.min(100, Math.max(0, genScore)),
-                      target: genTarget,
-                      fill: "#22d3ee",
-                    },
-                  ]
-                : []),
-              ...(relScore !== null
-                ? [
-                    {
-                      metric: "Relational Reasoning",
-                      score: Math.min(100, Math.max(0, relScore)),
-                      target: relTarget,
-                      fill: "#3b82f6",
-                    },
-                  ]
-                : []),
-            ];
-
-            const sharedTarget =
-              genTarget !== null && relTarget !== null && genTarget === relTarget
-                ? genTarget
-                : genTarget ?? relTarget;
-
-            return (
-              <>
-                <div className="progress-metrics-grid">
-                  <div className="progress-metric-block">
-                    <div className="progress-metric-head">
-                      <span className="metric-label">GENERALIZATION SCORE</span>
-                      {genTarget !== null && (
-                        <span className="progress-target tabular-nums">
-                          เป้าหมาย {genTarget.toFixed(1)}%
-                        </span>
-                      )}
-                    </div>
-                    <div className="progress-metric-value tabular-nums">
-                      {genScore !== null ? `${genScore.toFixed(1)}%` : "ไม่ระบุ"}
-                    </div>
-                    {genScore !== null && (
-                      <div
-                        aria-label="แถบความคืบหน้า Generalization Score"
-                        className="progress-track"
-                      >
-                        <div
-                          className="progress-fill"
-                          style={{
-                            width: `${Math.min(100, Math.max(0, genScore))}%`,
-                          }}
-                        />
-                        {genTarget !== null && (
-                          <span
-                            className="progress-target-marker"
-                            style={{
-                              left: `${Math.min(100, Math.max(0, genTarget))}%`,
-                            }}
-                            title={`เป้าหมาย ${genTarget.toFixed(1)}%`}
-                          />
-                        )}
-                      </div>
-                    )}
-                    <p className="progress-metric-note">
-                      {pm?.metrics_source
-                        ? `แหล่งข้อมูลผลประเมิน: ${pm.metrics_source}`
-                        : "ค่าที่รายงานจากระบบประเมินผล"}
-                    </p>
-                  </div>
-
-                  <div className="progress-metric-block">
-                    <div className="progress-metric-head">
-                      <span className="metric-label">
-                        RELATIONAL REASONING SUCCESS RATE
-                      </span>
-                      {relTarget !== null && (
-                        <span className="progress-target tabular-nums">
-                          เป้าหมาย {relTarget.toFixed(1)}%
-                        </span>
-                      )}
-                    </div>
-                    <div className="progress-metric-value tabular-nums">
-                      {relScore !== null ? `${relScore.toFixed(1)}%` : "ไม่ระบุ"}
-                    </div>
-                    {relScore !== null && (
-                      <div
-                        aria-label="แถบความคืบหน้า Relational Reasoning Success Rate"
-                        className="progress-track"
-                      >
-                        <div
-                          className="progress-fill progress-fill-blue"
-                          style={{
-                            width: `${Math.min(100, Math.max(0, relScore))}%`,
-                          }}
-                        />
-                        {relTarget !== null && (
-                          <span
-                            className="progress-target-marker"
-                            style={{
-                              left: `${Math.min(100, Math.max(0, relTarget))}%`,
-                            }}
-                            title={`เป้าหมาย ${relTarget.toFixed(1)}%`}
-                          />
-                        )}
-                      </div>
-                    )}
-                    <p className="progress-metric-note">
-                      {pm?.metrics_source
-                        ? `แหล่งข้อมูลผลประเมิน: ${pm.metrics_source}`
-                        : "ค่าที่รายงานจากระบบประเมินผล"}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="progress-chart-box">
-                  <div className="progress-chart-head">
-                    <span className="metric-label">
-                      PROGRESS COMPARISON · NATIVE EVALUATION
+              return (
+                <Link
+                  className="home-capability-row"
+                  href={`/workspace?prompt=${encodeURIComponent(cap.prompt)}`}
+                  key={cap.key}
+                >
+                  <span className="home-capability-icon">
+                    <Icon name={cap.icon} size={16} />
+                  </span>
+                  <span className="home-capability-copy">
+                    <strong>{cap.title}</strong>
+                    <small>{cap.detail}</small>
+                  </span>
+                  {matched && matched.score !== null ? (
+                    <span className="home-capability-score tabular-nums">
+                      {matched.score.toFixed(1)}%
                     </span>
-                    {sharedTarget !== null && (
-                      <span className="progress-target tabular-nums">
-                        เส้นอ้างอิงเป้าหมาย {sharedTarget.toFixed(1)}%
-                      </span>
-                    )}
-                  </div>
-                  <div
-                    className="progress-chart-stage"
-                    role="img"
-                    aria-label="กราฟเปรียบเทียบค่าตัวชี้วัดความก้าวหน้าจากระบบประเมินผล"
-                  >
-                    {chartMounted ? (
-                      <ResponsiveContainer width="100%" height={176}>
-                        <BarChart
-                          data={chartData}
-                          layout="vertical"
-                          margin={{ top: 8, right: 20, left: 8, bottom: 4 }}
-                        >
-                          <CartesianGrid
-                            stroke="#1e2943"
-                            strokeDasharray="3 3"
-                            horizontal={false}
-                          />
-                          <XAxis
-                            type="number"
-                            domain={[0, 100]}
-                            stroke="#64748b"
-                            tick={{ fill: "#94a3b8", fontSize: 11 }}
-                            tickFormatter={(val: number) => `${val}%`}
-                            tickLine={false}
-                            axisLine={{ stroke: "#1e2943" }}
-                          />
-                          <YAxis
-                            type="category"
-                            dataKey="metric"
-                            width={150}
-                            stroke="#64748b"
-                            tick={{ fill: "#eef2fa", fontSize: 12 }}
-                            tickLine={false}
-                            axisLine={false}
-                          />
-                          <Tooltip
-                            cursor={{ fill: "rgba(59, 130, 246, 0.08)" }}
-                            content={<ProgressTooltip />}
-                          />
-                          {sharedTarget !== null && (
-                            <ReferenceLine
-                              x={sharedTarget}
-                              stroke="#8b5cf6"
-                              strokeDasharray="4 4"
-                              strokeWidth={2}
-                            />
-                          )}
-                          <Bar
-                            dataKey="score"
-                            radius={[0, 6, 6, 0]}
-                            maxBarSize={28}
-                          >
-                            {chartData.map((entry) => (
-                              <Cell key={entry.metric} fill={entry.fill} />
-                            ))}
-                          </Bar>
-                        </BarChart>
-                      </ResponsiveContainer>
-                    ) : (
-                      <div className="settings-usage-skeleton" />
-                    )}
-                  </div>
-                </div>
-              </>
-            );
-          })()}
+                  ) : (
+                    <Icon name="arrow-up-right" size={15} />
+                  )}
+                </Link>
+              );
+            })}
+          </div>
 
-          <div className="panel-link-row home-panel-links">
-            <Link className="text-link" href="/capabilities">
-              ตรวจสอบความสามารถและโมเดล
-              <Icon name="arrow-right" size={15} />
-            </Link>
-            <Link className="text-link" href="/system">
-              ตรวจสอบสถานะระบบและ Closure Audit
-              <Icon name="arrow-right" size={15} />
+          <div className="home-capability-footer">
+            <span className="home-runtime-meta">
+              {nativeHealth?.progress_metrics?.evaluation_status === "evaluated"
+                ? `ผลประเมินล่าสุด: Generalization ${
+                    nativeHealth.progress_metrics.generalization_score?.toFixed(1) ?? "—"
+                  }%`
+                : "ความสามารถทุกด้านทำงานบนสถาปัตยกรรม Native Core โดยไม่สร้างคะแนนจำลอง"}
+            </span>
+            <Link className="text-link" href="/knowledge">
+              คลังความรู้และข้อมูล
+              <Icon name="arrow-right" size={14} />
             </Link>
           </div>
         </Panel>
-      </section>
-
-      <section aria-label="สรุปความพร้อมรันไทม์และบัญชี" className="home-status-footer">
-        <div className="home-status-item">
-          <Icon name="cpu" size={16} />
-          <span>
-            รันไทม์ Native Model:{" "}
-            <strong>{runtimeReady ? "พร้อมประมวลผล" : nativeHealth?.runtime_status || "รอความพร้อม"}</strong>
-          </span>
-        </div>
-        <div className="home-status-item">
-          <Icon name="server" size={16} />
-          <span>
-            บริการหลัก:{" "}
-            <strong>{serviceReady ? "ออนไลน์" : apiError ? "ตรวจสอบไม่สำเร็จ" : "กำลังตรวจสอบ"}</strong>
-          </span>
-        </div>
-        <div className="home-status-item">
-          <Icon name="shield" size={16} />
-          <span>
-            บัญชี:{" "}
-            <strong>{session?.authenticated ? session.email || "เข้าสู่ระบบแล้ว" : "โหมดผู้เยี่ยมชม"}</strong>
-          </span>
-        </div>
-      </section>
+      </div>
     </div>
   );
 }

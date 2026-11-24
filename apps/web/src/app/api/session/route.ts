@@ -68,6 +68,7 @@ function buildSessionResponse(
   const user = payload as {
     id?: unknown;
     email?: unknown;
+    role?: unknown;
     is_active?: unknown;
   };
 
@@ -83,6 +84,7 @@ function buildSessionResponse(
         authenticated: false,
         email: null,
         userId: null,
+        role: null,
         verified: false,
         error: "ข้อมูลเซสชันจากบริการยืนยันตัวตนไม่สมบูรณ์",
       },
@@ -97,6 +99,7 @@ function buildSessionResponse(
       authenticated: true,
       userId: user.id,
       email: user.email.trim().toLowerCase(),
+      role: typeof user.role === "string" ? user.role.trim().toLowerCase() : null,
       verified: true,
     },
     { headers: { "Cache-Control": "no-store" } },
@@ -114,6 +117,7 @@ export async function GET(request: NextRequest) {
         authenticated: false,
         email: null,
         userId: null,
+        role: null,
         verified: true,
       },
       { headers: { "Cache-Control": "no-store" } },

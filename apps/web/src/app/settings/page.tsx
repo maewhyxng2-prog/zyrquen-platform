@@ -46,6 +46,7 @@ export default function SettingsPage() {
           const unavailableSession = {
             authenticated: false,
             email: null,
+            role: null,
             error: "ไม่สามารถตรวจสอบสถานะเซสชันปัจจุบันได้",
           };
           sessionRef.current = unavailableSession;
@@ -162,6 +163,7 @@ export default function SettingsPage() {
       const nextSession = { ...sessionRef.current, email: nextProfile.email };
       sessionRef.current = nextSession;
       setSession(nextSession);
+      window.dispatchEvent(new Event("zyrquen:session-change"));
       setProfileSuccess("บันทึกข้อมูลบัญชีเรียบร้อยแล้ว");
     } catch (reason) {
       if (sessionRef.current?.userId !== ownerId) return;
@@ -187,6 +189,7 @@ export default function SettingsPage() {
       const signedOutSession = {
         authenticated: false,
         email: null,
+        role: null,
         verified: true,
       };
       sessionRef.current = signedOutSession;
@@ -219,7 +222,7 @@ export default function SettingsPage() {
       <div className="page-stack">
         <PageHeader
           description="จัดการข้อมูลบัญชีผู้ใช้ การตั้งค่าพื้นที่ทำงาน และประวัติการสนทนาส่วนตัว"
-          eyebrow="แพลตฟอร์ม / การตั้งค่า"
+          eyebrow="ACCOUNT / การตั้งค่า"
           icon="settings"
           title="การตั้งค่า"
         />
@@ -230,14 +233,14 @@ export default function SettingsPage() {
           <div>
             <strong>
               {!sessionReady
-                ? "กำลังตรวจสอบเซสชันจาก Backend..."
+                ? "กำลังตรวจสอบเซสชัน..."
                 : session?.expired
                   ? "เซสชันหมดอายุแล้ว"
                   : "จำเป็นต้องเข้าสู่ระบบเพื่อเข้าถึงการตั้งค่าบัญชี"}
             </strong>
             <p>
               {!sessionReady
-                ? "ระบบกำลังยืนยันตัวตนกับบริการ ZYRQUEN เพื่อปกป้องข้อมูลบัญชีของคุณ"
+                ? "ระบบกำลังยืนยันตัวตนเพื่อปกป้องข้อมูลบัญชีของคุณ"
                 : session?.error ||
                   "กรุณาเข้าสู่ระบบด้วยบัญชีของคุณก่อนจัดการการตั้งค่าและประวัติการสนทนา"}
             </p>
@@ -256,12 +259,13 @@ export default function SettingsPage() {
   const profileIsLoading =
     profileLoading || !belongsToAccount(profileOwnerId, session.userId);
   const profileSaving = profileSavingUserId === session.userId;
+  const isAdmin = session.role === "admin";
 
   return (
     <div className="page-stack">
       <PageHeader
-        description="จัดการข้อมูลบัญชีผู้ใช้ การเข้าถึงเซสชัน และประวัติการสนทนาในพื้นที่ทำงาน AI"
-        eyebrow="แพลตฟอร์ม / การตั้งค่า"
+        description="จัดการข้อมูลบัญชีผู้ใช้ การเข้าถึงเซสชัน และความเป็นส่วนตัวของประวัติการสนทนา"
+        eyebrow="ACCOUNT / การตั้งค่า"
         icon="settings"
         title="การตั้งค่า"
       />
@@ -269,17 +273,17 @@ export default function SettingsPage() {
         <Panel>
           <div className="panel-heading">
             <div>
-              <div className="eyebrow">การตั้งค่าบัญชี</div>
-              <h2>ข้อมูลบัญชีและเซสชัน</h2>
+              <div className="eyebrow">บัญชีผู้ใช้</div>
+              <h2>โปรไฟล์และเซสชัน</h2>
             </div>
-            <span className="metric-icon">
-              <Icon name="user" />
-            </span>
+            <StatusBadge tone={isAdmin ? "info" : "good"}>
+              {isAdmin ? "ผู้ดูแลระบบ" : "ผู้ใช้งาน"}
+            </StatusBadge>
           </div>
           <div className="settings-info">
-            <span>สถานะบัญชี</span>
+            <span>บัญชีที่ใช้งานอยู่</span>
             <code>{session.email || "เข้าสู่ระบบแล้ว"}</code>
-            <p>อัปเดตอีเมลประจำบัญชี ตรวจสอบสถานะเซสชัน และออกจากระบบเมื่อใช้งานเสร็จสิ้น</p>
+            <p>อัปเดตอีเมลประจำบัญชี หรือออกจากระบบบนอุปกรณ์ปัจจุบัน</p>
           </div>
           {!session.userId ? (
             <p className="form-alert form-alert-error" role="alert">
@@ -342,7 +346,7 @@ export default function SettingsPage() {
         <Panel>
           <div className="panel-heading">
             <div>
-              <div className="eyebrow">ข้อมูลเฉพาะบัญชี</div>
+              <div className="eyebrow">ความเป็นส่วนตัวและข้อมูล</div>
               <h2>ประวัติการสนทนาในพื้นที่ทำงาน AI</h2>
             </div>
             <span className="metric-icon">
@@ -350,11 +354,11 @@ export default function SettingsPage() {
             </span>
           </div>
           <div className="settings-info">
-            <span>ตำแหน่งจัดเก็บ</span>
-            <code>Backend · แยกตามบัญชี ({session.email})</code>
+            <span>ขอบเขตการจัดเก็บ</span>
+            <code>แยกเฉพาะบัญชี ({session.email})</code>
             <p>
-              บทสนทนาและข้อความทั้งหมดถูกจัดเก็บบนเซิร์ฟเวอร์โดยผูกกับบัญชีของคุณเท่านั้น
-              ไม่ปะปนกับผู้ใช้อื่น
+              บทสนทนาและข้อความทั้งหมดถูกจัดเก็บแยกตามบัญชีผู้ใช้บนเซิร์ฟเวอร์
+              และโทเค็นยืนยันตัวตนถูกเก็บในคุกกี้ฝั่งเซิร์ฟเวอร์แบบ HTTP-only
             </p>
           </div>
           <button
@@ -363,7 +367,7 @@ export default function SettingsPage() {
             onClick={() => void clearConversationHistory()}
             type="button"
           >
-            <Icon name="close" size={16} />{" "}
+            <Icon name="trash" size={16} />{" "}
             {clearing ? "กำลังล้างประวัติ..." : "ล้างประวัติการสนทนาของบัญชีนี้"}
           </button>
           {cleared && (
@@ -381,85 +385,48 @@ export default function SettingsPage() {
         <Panel className="settings-panel-wide">
           <div className="panel-heading">
             <div>
-              <div className="eyebrow">นักพัฒนาและเครื่องมือขั้นสูง</div>
-              <h2>API Management, API Keys, Developer Console และ Usage &amp; Quotas</h2>
+              <div className="eyebrow">เครื่องมือเพิ่มเติม</div>
+              <h2>สถานะระบบและตั้งค่าสำหรับนักพัฒนา</h2>
             </div>
             <span className="metric-icon metric-icon-cyan">
-              <Icon name="code" />
+              <Icon name="sliders" />
             </span>
           </div>
-          <p className="panel-body-copy">
-            ฟังก์ชันการจัดการ API Keys, การตรวจสอบปริมาณการใช้งานและโควตา (Usage &amp; Quotas),
-            คอนโซลควบคุม Workflow / Model Registry รวมถึงแดชบอร์ดผู้ดูแลระบบ
-            ถูกจัดหมวดหมู่แยกไว้ในส่วนนักพัฒนาเพื่อให้หน้าตั้งค่าบัญชีสะอาดและใช้งานง่ายขึ้น
-          </p>
-          <div className="developer-handoff-grid">
-            <Link className="developer-handoff-card" href="/developer">
-              <div>
-                <strong>API Management</strong>
-                <small>Endpoint ฝั่งเซิร์ฟเวอร์และสัญญาการเชื่อมต่อ</small>
-              </div>
-              <Icon name="arrow-up-right" size={16} />
+          <div className="settings-link-list">
+            <Link className="settings-link-row" href="/system">
+              <span className="settings-link-icon">
+                <Icon name="activity" size={17} />
+              </span>
+              <span className="settings-link-copy">
+                <strong>สถานะระบบ (System Availability)</strong>
+                <small>ตรวจสอบความพร้อมของ Native Model และ Closure Audit</small>
+              </span>
+              <Icon name="chevron-right" size={16} />
             </Link>
-            <Link className="developer-handoff-card" href="/developer/keys">
-              <div>
-                <strong>API Keys</strong>
-                <small>สร้าง หมุนเวียน และจัดการคีย์เชื่อมต่อ</small>
-              </div>
-              <Icon name="arrow-up-right" size={16} />
-            </Link>
-            <Link className="developer-handoff-card" href="/developer/usage">
-              <div>
-                <strong>Usage &amp; Quotas</strong>
-                <small>ติดตามโทเค็นและขีดจำกัดการใช้งาน</small>
-              </div>
-              <Icon name="arrow-up-right" size={16} />
-            </Link>
-            <Link className="developer-handoff-card" href="/developer/console">
-              <div>
-                <strong>Developer Console</strong>
-                <small>Workflow Engine และ Training Pipeline</small>
-              </div>
-              <Icon name="arrow-up-right" size={16} />
-            </Link>
-          </div>
-        </Panel>
 
-        <Panel>
-          <div className="panel-heading">
-            <div>
-              <div className="eyebrow">ผู้ดูแลระบบ</div>
-              <h2>แดชบอร์ดผู้ดูแลแพลตฟอร์ม</h2>
-            </div>
-            <span className="metric-icon metric-icon-violet">
-              <Icon name="shield" />
-            </span>
-          </div>
-          <p className="panel-body-copy">
-            ข้อมูลภาพรวมผู้ดูแล บัญชีผู้ใช้ และ Audit Log เปิดให้เข้าถึงเฉพาะบัญชีที่มีสิทธิ์ผู้ดูแลจาก Backend
-          </p>
-          <Link className="button button-secondary" href="/admin">
-            เปิดแดชบอร์ดผู้ดูแลระบบ
-          </Link>
-        </Panel>
+            <Link className="settings-link-row" href="/developer">
+              <span className="settings-link-icon">
+                <Icon name="code" size={17} />
+              </span>
+              <span className="settings-link-copy">
+                <strong>ตั้งค่าสำหรับนักพัฒนา (Developer Settings)</strong>
+                <small>จัดการ API Keys, Usage &amp; Quotas, Workflow และ Model Registry</small>
+              </span>
+              <Icon name="chevron-right" size={16} />
+            </Link>
 
-        <Panel>
-          <div className="panel-heading">
-            <div>
-              <div className="eyebrow">คำแนะนำการใช้งาน</div>
-              <h2>ความเป็นส่วนตัวและความปลอดภัย</h2>
-            </div>
-            <StatusBadge tone="info">เปิดให้ใช้งาน</StatusBadge>
-          </div>
-          <div className="guidance-list">
-            <div className="guidance-group">
-              <strong>การปกป้องบัญชี</strong>
-              <ul>
-                <li>โทเค็นการเข้าสู่ระบบถูกจัดเก็บในคุกกี้ฝั่งเซิร์ฟเวอร์แบบ HTTP-only</li>
-                <li>สามารถอัปเดตอีเมลหรือล้างประวัติการสนทนาเฉพาะบัญชีได้ตลอดเวลา</li>
-                <li>ควรออกจากระบบทุกครั้งหลังใช้งานบนอุปกรณ์สาธารณะ</li>
-              </ul>
-            </div>
+            {isAdmin && (
+              <Link className="settings-link-row" href="/admin">
+                <span className="settings-link-icon settings-link-icon-violet">
+                  <Icon name="shield" size={17} />
+                </span>
+                <span className="settings-link-copy">
+                  <strong>แดชบอร์ดผู้ดูแลระบบ (Admin)</strong>
+                  <small>จัดการผู้ใช้ทั้งหมด โควตา และตรวจสอบ Audit Log</small>
+                </span>
+                <Icon name="chevron-right" size={16} />
+              </Link>
+            )}
           </div>
         </Panel>
       </div>

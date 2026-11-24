@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   PlatformHealthProvider,
@@ -16,40 +16,58 @@ import { StatusBadge } from "./StatusBadge";
 type NavItem = {
   href: string;
   label: string;
+  mobileLabel: string;
   icon: IconName;
   exact?: boolean;
 };
 
-const primaryNavigation: NavItem[] = [
-  { href: "/", label: "หน้าหลัก", icon: "home", exact: true },
-  { href: "/workspace", label: "พื้นที่ทำงาน AI", icon: "message" },
-  { href: "/capabilities", label: "ความสามารถ AI", icon: "sparkles" },
-  { href: "/knowledge", label: "คลังความรู้และข้อมูล", icon: "book" },
-  { href: "/system", label: "สถานะระบบ", icon: "activity" },
-  { href: "/settings", label: "การตั้งค่า", icon: "settings" },
+const appNavigation: NavItem[] = [
+  {
+    href: "/",
+    label: "หน้าหลัก",
+    mobileLabel: "หน้าหลัก",
+    icon: "home",
+    exact: true,
+  },
+  {
+    href: "/workspace",
+    label: "พื้นที่ทำงาน AI",
+    mobileLabel: "แชท AI",
+    icon: "sparkles",
+  },
+  {
+    href: "/capabilities",
+    label: "ความสามารถ",
+    mobileLabel: "ความสามารถ",
+    icon: "layers",
+  },
+  {
+    href: "/knowledge",
+    label: "คลังความรู้",
+    mobileLabel: "ความรู้",
+    icon: "book",
+  },
+  {
+    href: "/settings",
+    label: "การตั้งค่า",
+    mobileLabel: "ตั้งค่า",
+    icon: "settings",
+  },
 ];
 
-const advancedNavigation: NavItem[] = [
-  { href: "/developer", label: "API Management", icon: "code", exact: true },
-  { href: "/developer/keys", label: "API Keys", icon: "key" },
-  { href: "/developer/console", label: "Developer Console", icon: "terminal" },
-  { href: "/developer/usage", label: "Usage & Quotas", icon: "layers" },
-  { href: "/admin", label: "ผู้ดูแลระบบ", icon: "shield" },
-];
-
-const titles: Record<string, string> = {
-  "/": "หน้าหลัก",
-  "/workspace": "พื้นที่ทำงาน AI",
-  "/capabilities": "ความสามารถ AI",
-  "/knowledge": "คลังความรู้และข้อมูล",
-  "/system": "สถานะระบบ",
-  "/settings": "การตั้งค่า",
-  "/developer": "API Management",
-  "/developer/keys": "API Keys",
-  "/developer/console": "Developer Console",
-  "/developer/usage": "Usage & Quotas",
-  "/admin": "ผู้ดูแลระบบ",
-  "/login": "การเข้าถึงบัญชี",
+const routeMeta: Record<string, { title: string; subtitle?: string }> = {
+  "/": { title: "หน้าหลัก" },
+  "/workspace": { title: "พื้นที่ทำงาน AI" },
+  "/capabilities": { title: "ความสามารถ AI" },
+  "/knowledge": { title: "คลังความรู้และข้อมูล" },
+  "/system": { title: "สถานะระบบ" },
+  "/settings": { title: "การตั้งค่าบัญชี" },
+  "/developer": { title: "นักพัฒนา · API Management" },
+  "/developer/keys": { title: "นักพัฒนา · API Keys" },
+  "/developer/console": { title: "นักพัฒนา · Developer Console" },
+  "/developer/usage": { title: "นักพัฒนา · Usage & Quotas" },
+  "/admin": { title: "ผู้ดูแลระบบ" },
+  "/login": { title: "การเข้าถึงบัญชี" },
 };
 
 function isNavItemActive(pathname: string, item: NavItem): boolean {
@@ -57,10 +75,6 @@ function isNavItemActive(pathname: string, item: NavItem): boolean {
     return pathname === item.href;
   }
   return pathname === item.href || pathname.startsWith(`${item.href}/`);
-}
-
-function isAdvancedRoute(pathname: string): boolean {
-  return pathname.startsWith("/developer") || pathname.startsWith("/admin");
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -77,63 +91,34 @@ function AppShellInner({ children }: { children: ReactNode }) {
   const {
     apiHealth,
     nativeHealth,
-    apiError,
-    nativeError,
     loading: healthLoading,
     platformVersion,
-    platformStage,
     modelVersion,
   } = usePlatformHealth();
-  const topbarVersion = platformVersion || modelVersion;
 
-  const connectionOk =
-    apiHealth?.status === "healthy" && Boolean(nativeHealth?.inference_available);
-  const connectionHasError = Boolean(apiError || nativeError);
-  const connectionIndicatorClass = connectionOk
-    ? "connection-indicator connection-indicator-ready"
-    : connectionHasError
-      ? "connection-indicator connection-indicator-warn"
-      : "connection-indicator";
-  const connectionSummary =
-    healthLoading && !apiHealth
-      ? "กำลังตรวจสอบสถานะระบบ"
-      : connectionOk
-        ? "Native AI พร้อมใช้งาน"
-        : connectionHasError
-          ? "ตรวจสอบการเชื่อมต่อบางส่วนไม่สำเร็จ"
-          : apiHealth?.status === "healthy"
-            ? "ระบบเชื่อมต่อแล้ว · รอความพร้อม Native Model"
-            : "ตรวจสอบความพร้อมของระบบ";
-
-  const [collapsed, setCollapsed] = useState(false);
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const [advancedOpen, setAdvancedOpen] = useState(() =>
-    isAdvancedRoute(pathname),
-  );
+  const [accountOpen, setAccountOpen] = useState(false);
   const [prevPathname, setPrevPathname] = useState(pathname);
   const [session, setSession] = useState<Session | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   const [accountError, setAccountError] = useState("");
+  const accountMenuRef = useRef<HTMLDivElement>(null);
 
   const authPage = pathname === "/login";
+  const workspacePage = pathname === "/workspace";
+  const isAdmin = Boolean(session?.authenticated && session?.role === "admin");
+  const currentTitle = routeMeta[pathname]?.title ?? "ZYRQUEN Ω∞";
+  const runtimeReady =
+    apiHealth?.status === "healthy" && Boolean(nativeHealth?.inference_available);
+  const versionTag = platformVersion || modelVersion;
 
   if (pathname !== prevPathname) {
     setPrevPathname(pathname);
-    if (mobileOpen) {
-      setMobileOpen(false);
-    }
-    if (isAdvancedRoute(pathname) && !advancedOpen) {
-      setAdvancedOpen(true);
+    if (accountOpen) {
+      setAccountOpen(false);
     }
   }
 
   useEffect(() => {
-    const collapseTimer = window.setTimeout(() => {
-      setCollapsed(
-        window.localStorage.getItem("zyrquen.sidebar-collapsed") === "true",
-      );
-    }, 0);
-
     const refreshSession = () => {
       fetch("/api/session", { cache: "no-store" })
         .then((response) => (response.ok ? response.json() : null))
@@ -145,54 +130,42 @@ function AppShellInner({ children }: { children: ReactNode }) {
     window.addEventListener("zyrquen:session-change", refreshSession);
 
     return () => {
-      window.clearTimeout(collapseTimer);
       window.removeEventListener("zyrquen:session-change", refreshSession);
     };
   }, []);
 
   useEffect(() => {
-    const mediaQuery = window.matchMedia("(min-width: 701px)");
-    const handleViewportChange = (event: MediaQueryListEvent) => {
-      if (event.matches) {
-        setMobileOpen(false);
+    if (!accountOpen) return;
+
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      if (
+        accountMenuRef.current &&
+        !accountMenuRef.current.contains(event.target as Node)
+      ) {
+        setAccountOpen(false);
       }
     };
-    mediaQuery.addEventListener("change", handleViewportChange);
-    return () => {
-      mediaQuery.removeEventListener("change", handleViewportChange);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!mobileOpen) return;
-
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setMobileOpen(false);
+        setAccountOpen(false);
       }
     };
 
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("touchstart", handlePointerDown);
     window.addEventListener("keydown", handleKeyDown);
     return () => {
-      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("touchstart", handlePointerDown);
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [mobileOpen]);
-
-  function toggleCollapsed() {
-    setCollapsed((current) => {
-      const next = !current;
-      window.localStorage.setItem("zyrquen.sidebar-collapsed", String(next));
-      return next;
-    });
-  }
+  }, [accountOpen]);
 
   async function signOut() {
     setSigningOut(true);
     setAccountError("");
+    setAccountOpen(false);
 
     try {
       const response = await fetch("/api/logout", {
@@ -205,6 +178,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
       setSession({
         authenticated: false,
         email: null,
+        role: null,
         verified: true,
       });
       window.dispatchEvent(new Event("zyrquen:session-change"));
@@ -234,272 +208,327 @@ function AppShellInner({ children }: { children: ReactNode }) {
     <div
       className={[
         "app-shell",
-        collapsed ? "shell-collapsed" : "",
         authPage ? "shell-auth" : "",
-        mobileOpen ? "shell-mobile-open" : "",
+        workspacePage ? "shell-workspace" : "",
       ]
         .filter(Boolean)
         .join(" ")}
     >
       {!authPage && (
-        <>
-          {mobileOpen && (
-            <button
-              type="button"
-              aria-label="ปิดการนำทาง"
-              className="mobile-scrim"
-              onClick={() => setMobileOpen(false)}
-            />
-          )}
+        <header className="app-header">
+          <div className="app-header-left">
+            {workspacePage && (
+              <Link
+                aria-label="กลับไปหน้าหลัก"
+                className="app-back-button"
+                href="/"
+              >
+                <Icon name="arrow-left" size={18} />
+              </Link>
+            )}
 
-          <aside
-            id="platform-sidebar"
-            className={`sidebar${mobileOpen ? " sidebar-open" : ""}`}
-            aria-label="แถบเมนูหลัก"
-          >
             <Link
               aria-label="หน้าหลัก ZYRQUEN Ω∞"
-              className="brand-lockup"
+              className="app-brand"
               href="/"
-              onClick={() => setMobileOpen(false)}
             >
               <Image
                 alt=""
-                className="brand-mark"
-                height={40}
+                className="app-brand-mark"
+                height={32}
                 priority
                 src="/zyrquen-icon.svg"
                 unoptimized
-                width={40}
+                width={32}
               />
-              <span className="brand-copy">
+              <span className="app-brand-text">
                 <strong>ZYRQUEN Ω∞</strong>
-                <small>NATIVE AI PLATFORM</small>
               </span>
             </Link>
 
-            <div className="nav-section-label">แพลตฟอร์ม</div>
+            <span aria-hidden="true" className="app-header-divider" />
 
-            <nav aria-label="การนำทางหลัก" className="primary-nav">
-              {primaryNavigation.map((item) => {
-                const active = isNavItemActive(pathname, item);
-                const featured = item.href === "/workspace";
-
-                return (
-                  <Link
-                    key={item.href}
-                    aria-current={active ? "page" : undefined}
-                    className={`nav-link${
-                      featured ? " nav-link-featured" : ""
-                    }${active ? " nav-link-active" : ""}`}
-                    href={item.href}
-                    onClick={() => setMobileOpen(false)}
-                    title={collapsed ? item.label : undefined}
-                  >
-                    <Icon name={item.icon} size={18} />
-                    <span>{item.label}</span>
-                  </Link>
-                );
-              })}
-            </nav>
-
-            <div className="sidebar-advanced-group">
-              <button
-                aria-controls="sidebar-advanced-nav"
-                aria-expanded={advancedOpen}
-                className={`sidebar-advanced-toggle${
-                  isAdvancedRoute(pathname)
-                    ? " sidebar-advanced-toggle-active"
-                    : ""
-                }`}
-                onClick={() => setAdvancedOpen((current) => !current)}
-                title={collapsed ? "นักพัฒนา & ขั้นสูง" : undefined}
-                type="button"
-              >
-                <span className="sidebar-advanced-toggle-label">
-                  <Icon name="code" size={16} />
-                  <span>นักพัฒนา &amp; ขั้นสูง</span>
-                </span>
-                <Icon
-                  className={`sidebar-advanced-chevron${
-                    advancedOpen ? " sidebar-advanced-chevron-open" : ""
-                  }`}
-                  name="chevron-down"
-                  size={15}
-                />
-              </button>
-
-              {advancedOpen && (
-                <nav
-                  aria-label="การนำทางขั้นสูงและนักพัฒนา"
-                  className="primary-nav sidebar-advanced-nav"
-                  id="sidebar-advanced-nav"
-                >
-                  {advancedNavigation.map((item) => {
-                    const active = isNavItemActive(pathname, item);
-
-                    return (
-                      <Link
-                        key={item.href}
-                        aria-current={active ? "page" : undefined}
-                        className={`nav-link nav-link-advanced${
-                          active ? " nav-link-active" : ""
-                        }`}
-                        href={item.href}
-                        onClick={() => setMobileOpen(false)}
-                        title={collapsed ? item.label : undefined}
-                      >
-                        <Icon name={item.icon} size={17} />
-                        <span>{item.label}</span>
-                      </Link>
-                    );
-                  })}
-                </nav>
+            <div className="app-context-title">
+              <span>{currentTitle}</span>
+              {versionTag && (
+                <small className="app-version-tag">{versionTag}</small>
               )}
             </div>
+          </div>
 
-            <div className="sidebar-bottom">
-              <div className="sidebar-connection">
-                <span className={connectionIndicatorClass} />
-
-                <span className="connection-copy">
-                  <strong>รันไทม์ NATIVE AI</strong>
-                  <small>{connectionSummary}</small>
-                </span>
-              </div>
-
-              <button
-                type="button"
-                aria-label={collapsed ? "ขยายแถบด้านข้าง" : "ยุบแถบด้านข้าง"}
-                aria-expanded={!collapsed}
-                className="collapse-button"
-                onClick={toggleCollapsed}
-                title={collapsed ? "ขยายแถบด้านข้าง" : "ยุบแถบด้านข้าง"}
-              >
-                <Icon
-                  name={collapsed ? "panel-open" : "panel-close"}
-                  size={17}
-                />
-                <span>{collapsed ? "ขยาย" : "ยุบแถบด้านข้าง"}</span>
-              </button>
-            </div>
-          </aside>
-        </>
-      )}
-
-      <div aria-hidden={mobileOpen || undefined} className="main-column">
-        {!authPage && (
-          <header className="topbar">
-            <div className="topbar-left">
-              <button
-                type="button"
-                aria-label={mobileOpen ? "ปิดเมนูนำทาง" : "เปิดเมนูนำทาง"}
-                aria-expanded={mobileOpen}
-                aria-controls="platform-sidebar"
-                className="mobile-menu-button"
-                onClick={() => setMobileOpen((current) => !current)}
-              >
-                <Icon name={mobileOpen ? "close" : "menu"} size={20} />
-              </button>
-
-              <div className="breadcrumb">
-                <span>ZYRQUEN Ω∞</span>
-                {topbarVersion && (
-                  <span
-                    className="topbar-version"
-                    title={platformStage ?? undefined}
-                  >
-                    {topbarVersion}
-                  </span>
-                )}
-                <Icon name="chevron-right" size={13} />
-                <strong>{titles[pathname] || "แพลตฟอร์ม"}</strong>
-              </div>
-            </div>
-
-            <div className="topbar-right">
-              {pathname !== "/workspace" && (
+          <nav aria-label="การนำทางหลัก" className="app-header-nav">
+            {appNavigation.map((item) => {
+              const active = isNavItemActive(pathname, item);
+              return (
                 <Link
-                  className="button button-primary topbar-workspace-cta"
-                  href="/workspace"
+                  key={item.href}
+                  aria-current={active ? "page" : undefined}
+                  className={`app-header-link${
+                    active ? " app-header-link-active" : ""
+                  }`}
+                  href={item.href}
                 >
-                  <Icon name="sparkles" size={15} />
-                  เปิดพื้นที่ทำงาน AI
+                  <Icon name={item.icon} size={15} />
+                  <span>{item.label}</span>
                 </Link>
-              )}
+              );
+            })}
+          </nav>
 
-              {session?.authenticated ? (
-                <div className="account-menu">
-                  <span className="account-avatar">
-                    {(session.email || "U").slice(0, 1).toUpperCase()}
-                  </span>
+          <div className="app-header-right" ref={accountMenuRef}>
+            {!workspacePage && (
+              <Link
+                className="button button-primary app-header-workspace-btn"
+                href="/workspace"
+              >
+                <Icon name="sparkles" size={15} />
+                <span>เปิดพื้นที่ทำงาน</span>
+              </Link>
+            )}
 
-                  <span className="account-copy">
-                    <strong>{session.email || "เข้าสู่ระบบแล้ว"}</strong>
-                    <small>เซสชันที่ได้รับการยืนยัน</small>
-                  </span>
-
-                  <button
-                    type="button"
-                    aria-label="ออกจากระบบ"
-                    className="icon-button signout-button"
-                    disabled={signingOut}
-                    onClick={() => void signOut()}
-                    title="ออกจากระบบ"
-                  >
-                    <Icon name="logout" size={16} />
-                  </button>
-                </div>
-              ) : (
+            {session?.authenticated ? (
+              <button
+                aria-controls="account-popover-menu"
+                aria-expanded={accountOpen}
+                aria-haspopup="menu"
+                aria-label="เมนูบัญชีผู้ใช้"
+                className={`account-trigger${accountOpen ? " account-trigger-open" : ""}`}
+                onClick={() => setAccountOpen((open) => !open)}
+                type="button"
+              >
+                <span className="account-avatar">
+                  {(session.email || "U").slice(0, 1).toUpperCase()}
+                </span>
+                <span className="account-trigger-label">
+                  {session.email || "บัญชีผู้ใช้"}
+                </span>
+                <Icon name="chevron-down" size={14} />
+              </button>
+            ) : (
+              <div className="app-header-guest-actions">
                 <Link className="topbar-login" href="/login">
                   เข้าสู่ระบบ
-                  <Icon name="arrow-up-right" size={14} />
                 </Link>
-              )}
-            </div>
-          </header>
-        )}
+                <button
+                  aria-controls="account-popover-menu"
+                  aria-expanded={accountOpen}
+                  aria-haspopup="menu"
+                  aria-label="เมนูระบบและนักพัฒนา"
+                  className="app-more-button"
+                  onClick={() => setAccountOpen((open) => !open)}
+                  type="button"
+                >
+                  <Icon name="more" size={18} />
+                </button>
+              </div>
+            )}
 
-        {accountError && (
-          <div className="topbar-error" role="alert">
-            {accountError}
+            {accountOpen && (
+              <div
+                aria-label="เมนูด่วนบัญชีและเครื่องมือ"
+                className="account-popover"
+                id="account-popover-menu"
+                role="menu"
+              >
+                <div className="account-popover-header">
+                  {session?.authenticated ? (
+                    <>
+                      <span className="account-avatar account-avatar-lg">
+                        {(session.email || "U").slice(0, 1).toUpperCase()}
+                      </span>
+                      <div className="account-popover-identity">
+                        <strong>{session.email}</strong>
+                        <small>
+                          {isAdmin ? "ผู้ดูแลระบบ (Admin)" : "บัญชีผู้ใช้งาน"}
+                        </small>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="account-popover-identity">
+                      <strong>โหมดผู้เยี่ยมชม</strong>
+                      <small>เข้าสู่ระบบเพื่อบันทึกประวัติและการตั้งค่า</small>
+                    </div>
+                  )}
+                </div>
+
+                <div className="account-popover-runtime">
+                  <span
+                    className={`connection-indicator${
+                      runtimeReady
+                        ? " connection-indicator-ready"
+                        : healthLoading
+                          ? ""
+                          : " connection-indicator-warn"
+                    }`}
+                  />
+                  <span>
+                    {runtimeReady
+                      ? "Native AI พร้อมใช้งาน"
+                      : healthLoading
+                        ? "กำลังตรวจสอบรันไทม์..."
+                        : "ตรวจสอบความพร้อมระบบ"}
+                  </span>
+                </div>
+
+                <div className="account-popover-group">
+                  <Link
+                    className="account-popover-item"
+                    href="/workspace"
+                    onClick={() => setAccountOpen(false)}
+                    role="menuitem"
+                  >
+                    <Icon name="sparkles" size={16} />
+                    <span>พื้นที่ทำงาน AI</span>
+                  </Link>
+                  <Link
+                    className="account-popover-item"
+                    href="/system"
+                    onClick={() => setAccountOpen(false)}
+                    role="menuitem"
+                  >
+                    <Icon name="activity" size={16} />
+                    <span>สถานะระบบ</span>
+                  </Link>
+                  {session?.authenticated && (
+                    <Link
+                      className="account-popover-item"
+                      href="/settings"
+                      onClick={() => setAccountOpen(false)}
+                      role="menuitem"
+                    >
+                      <Icon name="settings" size={16} />
+                      <span>การตั้งค่าบัญชี</span>
+                    </Link>
+                  )}
+                </div>
+
+                <div className="account-popover-group account-popover-group-separated">
+                  <span className="account-popover-section-title">
+                    เครื่องมือขั้นสูง
+                  </span>
+                  <Link
+                    className="account-popover-item"
+                    href="/developer"
+                    onClick={() => setAccountOpen(false)}
+                    role="menuitem"
+                  >
+                    <Icon name="code" size={16} />
+                    <span>ตั้งค่าสำหรับนักพัฒนา (Developer)</span>
+                  </Link>
+                  {isAdmin && (
+                    <Link
+                      className="account-popover-item"
+                      href="/admin"
+                      onClick={() => setAccountOpen(false)}
+                      role="menuitem"
+                    >
+                      <Icon name="shield" size={16} />
+                      <span>แดชบอร์ดผู้ดูแลระบบ</span>
+                    </Link>
+                  )}
+                </div>
+
+                {session?.authenticated ? (
+                  <div className="account-popover-group account-popover-group-separated">
+                    <button
+                      className="account-popover-item account-popover-danger"
+                      disabled={signingOut}
+                      onClick={() => void signOut()}
+                      role="menuitem"
+                      type="button"
+                    >
+                      <Icon name="logout" size={16} />
+                      <span>{signingOut ? "กำลังออกจากระบบ..." : "ออกจากระบบ"}</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="account-popover-group account-popover-group-separated">
+                    <Link
+                      className="account-popover-item account-popover-primary"
+                      href="/login"
+                      onClick={() => setAccountOpen(false)}
+                      role="menuitem"
+                    >
+                      <Icon name="lock" size={16} />
+                      <span>เข้าสู่ระบบ / สมัครสมาชิก</span>
+                    </Link>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
-        )}
+        </header>
+      )}
 
-        {authPage && (
-          <header className="auth-topbar">
-            <Link
-              aria-label="หน้าหลัก ZYRQUEN"
-              className="brand-lockup"
-              href="/"
-            >
-              <Image
-                alt=""
-                className="brand-mark"
-                height={40}
-                priority
-                src="/zyrquen-icon.svg"
-                unoptimized
-                width={40}
-              />
-              <span className="brand-copy">
-                <strong>ZYRQUEN Ω∞</strong>
-                <small>NATIVE AI PLATFORM</small>
-              </span>
-            </Link>
+      {accountError && (
+        <div className="topbar-error" role="alert">
+          {accountError}
+        </div>
+      )}
 
-            <StatusBadge icon="shield" tone="info">
-              การเข้าถึงที่ปลอดภัย
-            </StatusBadge>
-          </header>
-        )}
+      {authPage && (
+        <header className="auth-topbar">
+          <Link
+            aria-label="หน้าหลัก ZYRQUEN"
+            className="brand-lockup"
+            href="/"
+          >
+            <Image
+              alt=""
+              className="brand-mark"
+              height={36}
+              priority
+              src="/zyrquen-icon.svg"
+              unoptimized
+              width={36}
+            />
+            <span className="brand-copy">
+              <strong>ZYRQUEN Ω∞</strong>
+              <small>NATIVE AI PLATFORM</small>
+            </span>
+          </Link>
 
-        <main
-          className={authPage ? "main-content auth-content" : "main-content"}
+          <StatusBadge icon="shield" tone="info">
+            การเข้าถึงที่ปลอดภัย
+          </StatusBadge>
+        </header>
+      )}
+
+      <main
+        className={
+          authPage
+            ? "main-content auth-content"
+            : workspacePage
+              ? "main-content main-content-workspace"
+              : "main-content main-content-with-tabbar"
+        }
+      >
+        {children}
+      </main>
+
+      {!authPage && !workspacePage && (
+        <nav
+          aria-label="แถบนำทางล่างสำหรับมือถือ"
+          className="mobile-bottom-nav"
         >
-          {children}
-        </main>
-      </div>
+          {appNavigation.map((item) => {
+            const active = isNavItemActive(pathname, item);
+            return (
+              <Link
+                key={item.href}
+                aria-current={active ? "page" : undefined}
+                className={`mobile-tab-item${
+                  active ? " mobile-tab-item-active" : ""
+                }`}
+                href={item.href}
+              >
+                <Icon name={item.icon} size={19} />
+                <span>{item.mobileLabel}</span>
+              </Link>
+            );
+          })}
+        </nav>
+      )}
     </div>
   );
 }

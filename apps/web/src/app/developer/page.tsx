@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { DeveloperNav } from "@/components/DeveloperNav";
 import { Icon } from "@/components/Icon";
@@ -7,6 +8,8 @@ import { PageHeader } from "@/components/PageHeader";
 import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
 import { usePlatformHealth } from "@/hooks/usePlatformHealth";
+import { readSession } from "@/lib/api";
+import type { Session } from "@/lib/types";
 
 const endpointDirectory = [
   {
@@ -50,9 +53,15 @@ const endpointDirectory = [
 export default function DeveloperApiManagementPage() {
   const { apiHealth, nativeHealth, apiError, nativeError, loading, refresh } =
     usePlatformHealth();
+  const [session, setSession] = useState<Session | null>(null);
+
+  useEffect(() => {
+    readSession().then(setSession).catch(() => setSession(null));
+  }, []);
 
   const apiHealthy = apiHealth?.status === "healthy";
   const nativeReady = Boolean(nativeHealth?.inference_available);
+  const isAdmin = Boolean(session?.authenticated && session?.role === "admin");
 
   return (
     <div className="page-stack">
@@ -168,13 +177,15 @@ export default function DeveloperApiManagementPage() {
           </div>
           <Icon name="arrow-up-right" size={16} />
         </Link>
-        <Link className="developer-handoff-card panel" href="/admin">
-          <div>
-            <strong>Admin Dashboard</strong>
-            <small>จัดการผู้ใช้ทั้งหมด นโยบายโควตา และตรวจสอบ Audit Logs</small>
-          </div>
-          <Icon name="arrow-up-right" size={16} />
-        </Link>
+        {isAdmin && (
+          <Link className="developer-handoff-card panel" href="/admin">
+            <div>
+              <strong>Admin Dashboard</strong>
+              <small>จัดการผู้ใช้ทั้งหมด นโยบายโควตา และตรวจสอบ Audit Logs</small>
+            </div>
+            <Icon name="arrow-up-right" size={16} />
+          </Link>
+        )}
       </div>
 
       <Panel>
