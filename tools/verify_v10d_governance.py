@@ -105,6 +105,10 @@ def run() -> int:
         bool(local_path_fp)
         and local_path_fp == api_process.get("workflow_db_path_sha256")
     )
+    checks["api_runner_db_file_identity_match"] = (
+        bool(local_db.get("file_identity"))
+        and local_db.get("file_identity") == api_process.get("workflow_db_file_identity")
+    )
     checks["api_runner_secret_fingerprint_match"] = (
         bool(local_secret_fp)
         and local_secret_fp == api_process.get("approval_secret_fingerprint")
@@ -112,6 +116,7 @@ def run() -> int:
     output["api_process"] = {
         "pid": api_process.get("pid"),
         "workflow_db_path_sha256": api_process.get("workflow_db_path_sha256"),
+        "workflow_db_file_identity": api_process.get("workflow_db_file_identity"),
         "approval_secret_fingerprint": api_process.get("approval_secret_fingerprint"),
         "overall_status": api.get("overall_status"),
         "checks": api_checks,
