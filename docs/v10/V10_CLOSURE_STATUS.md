@@ -184,3 +184,11 @@
 - It does not generate data, train a tokenizer, create checkpoint/registry directories, write reports, issue approvals, or invoke training.
 - Missing trained checkpoints and registry artifacts are expected before the inaugural training run; the preflight checks target paths for symlink safety instead of requiring trained artifacts to exist.
 - `READY_FOR_AUTHORIZED_TRAINING_REVIEW` is not Tier-2 approval. Real training, checkpoint integrity, evaluation, and measured runtime resource telemetry remain NOT RUN.
+
+
+## 19. V10-D Runner/API HMAC Consistency Finding
+- **Status:** **FIX IMPLEMENTED — REGRESSION TEST ADDED; COLAB VALIDATION PENDING**
+- Inspection found that `tools/close_v10d.py::_open_orchestrator` constructed a second `CentralWorkflowOrchestrator` without passing `ZYRQUEN_APPROVAL_SECRET`. The runner could therefore use a process-local secret different from the authenticated API even when both processes had the same environment variable configured.
+- Fixed in commit `c6ffa01394be04a9615b569e8e14b42a4a52df55`: the runner now requires a shared secret of at least 32 characters and passes it explicitly to the orchestrator.
+- Regression test added in commit `f692c3dd763d7e9ccb60b185148e3df90e8e6c09`: asserts the exact shared secret is passed to the runner orchestrator and missing secret fails closed.
+- This is a source-level correction pending Colab test execution. It does not approve or start training.
