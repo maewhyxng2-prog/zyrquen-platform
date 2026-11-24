@@ -46,7 +46,7 @@ def get_workflow_engine() -> CentralWorkflowOrchestrator:
             if not os.getenv("ZYRQUEN_APPROVAL_SECRET", "").strip():
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="V10-D approval requires a configured shared ZY RQUEN_APPROVAL_SECRET.",
+                    detail="V10-D approval requires a configured shared ZYRQUEN_APPROVAL_SECRET.",
                 )
         _ENGINE = create_default_orchestrator()
         if v10d_enabled:
