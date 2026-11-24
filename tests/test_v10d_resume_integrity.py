@@ -33,7 +33,10 @@ class TestV10DResumeIntegrity(unittest.TestCase):
         validate_resume_identity(state, expected=expected)
         for field in expected:
             altered = dict(state)
-            altered[field] = {"changed": True} if isinstance(state[field], dict) else "different"
+            if field in {"dataset_content_sha256", "tokenizer_sha256"}:
+                altered[field] = "e" * 64
+            else:
+                altered[field] = {"changed": True} if isinstance(state[field], dict) else "different"
             with self.subTest(field=field):
                 with self.assertRaisesRegex(ValueError, "identity mismatch"):
                     validate_resume_identity(altered, expected=expected)
