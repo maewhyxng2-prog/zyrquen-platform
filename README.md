@@ -31,7 +31,7 @@ ZYRQUEN Ω∞ เป็นโครงการวิจัยและวิศ
 | **v7** | Baseline Foundation (`TinyNGI` 2-layer LSTM) | ผ่านการทดลองฐาน (`FROZEN`) | `tools/train_nagi_500_v7.py` |
 | **v8** | Attention + Pointer-Copy (`BiGRU + Bahdanau + p_gen`) | ปิดการทดลองแล้ว (`FROZEN`) | [`docs/V8_SUMMARY.md`](docs/V8_SUMMARY.md), [`docs/V8_EXPERIMENT_CLOSURE_REPORT.md`](docs/V8_EXPERIMENT_CLOSURE_REPORT.md) |
 | **v9** | **Generalization** — Unseen Entity & OOD Template | **`CLOSED_FAIL` — retained as measured baseline** | [`docs/V9_EXPERIMENT_CLOSURE_REPORT.md`](docs/V9_EXPERIMENT_CLOSURE_REPORT.md) |
-| **v10** | Relational & Multi-step Reasoning | **Preparation only; V10-D runtime closure BLOCKED** | [`docs/v10/V10_CLOSURE_STATUS.md`](docs/v10/V10_CLOSURE_STATUS.md) |
+| **v10** | Relational & Multi-step Reasoning | **Preparation only; V10-D runtime closure BLOCKED** | [`docs/v10/V10_CLOSURE_STATUS.md`](docs/v10/V10_CLOSURE_STATUS.md), [`docs/v10/V10_V9_FAILURE_RESPONSE_PLAN.md`](docs/v10/V10_V9_FAILURE_RESPONSE_PLAN.md) |
 | **v11** | Knowledge Integration | **BLUEPRINT ONLY — LOCKED until V10 runtime closure PASS** | [`docs/v11/README.md`](docs/v11/README.md) |
 | **v12** | Adaptive Learning | **BLUEPRINT ONLY — LOCKED until V10 and V11 gates PASS** | [`docs/v12/README.md`](docs/v12/README.md) |
 | **v13** | Planning & Decomposition | แผนขั้นถัดไป | [`docs/PHASE_16_SPEC.md`](docs/PHASE_16_SPEC.md) |
