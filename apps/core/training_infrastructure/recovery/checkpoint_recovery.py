@@ -10,7 +10,6 @@ from typing import Any, Callable
 SCHEMA = "zyrquen.checkpoint-manifest.v1"
 logger = logging.getLogger(__name__)
 
-
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -18,26 +17,21 @@ def _sha256(path: Path) -> str:
             h.update(chunk)
     return h.hexdigest()
 
-
 def _torch_save(obj: Any, path: str) -> None:
-    import torch
-    torch.save(obj, path)
-
+    import 【entity-torch¦canonical_name=torch】
+    【entity-torch¦canonical_name=torch】.save(obj, path)
 
 def _safe_torch_load(path: str) -> Any:
-    import torch
-    return torch.load(path, map_location="cpu", weights_only=True)
-
+    import 【entity-torch¦canonical_name=torch】
+    return 【entity-torch¦canonical_name=torch】.load(path, map_location="cpu", weights_only=True)
 
 def _unsafe_torch_load(path: str) -> Any:
-    import torch
-    return torch.load(path, map_location="cpu", weights_only=False)
-
+    import 【entity-torch¦canonical_name=torch】
+    return 【entity-torch¦canonical_name=torch】.load(path, map_location="cpu", weights_only=False)
 
 def _torch_load(path: str) -> Any:
     """Default checkpoint loader enforces weights_only=True."""
     return _safe_torch_load(path)
-
 
 def _normalize_python_rng_state(raw_state: Any) -> tuple:
     if not isinstance(raw_state, (tuple, list)) or len(raw_state) != 3:
@@ -46,7 +40,6 @@ def _normalize_python_rng_state(raw_state: Any) -> tuple:
     if not isinstance(version, int) or not isinstance(internal_state, (tuple, list)):
         raise ValueError("invalid Python RNG internal state in checkpoint")
     return (version, tuple(internal_state), gauss_next)
-
 
 def serialize_python_rng_state(raw_state: Any | None = None) -> list:
     """Serialize Python RNG tuples as primitive lists accepted by torch weights_only."""
@@ -57,10 +50,8 @@ def serialize_python_rng_state(raw_state: Any | None = None) -> list:
         return [serialize_python_rng_state(item) if isinstance(item, (tuple, list)) else item for item in raw]
     return raw
 
-
 def restore_python_rng_state(rng: random.Random, raw_state: Any) -> None:
     rng.setstate(_normalize_python_rng_state(raw_state))
-
 
 def capture_rng_state() -> dict:
     state = {"python": serialize_python_rng_state()}
@@ -73,7 +64,6 @@ def capture_rng_state() -> dict:
         pass
     return state
 
-
 def restore_rng_state(state: dict) -> None:
     if not isinstance(state, dict) or "python" not in state:
         raise ValueError("checkpoint RNG state is missing 'python'")
@@ -83,7 +73,6 @@ def restore_rng_state(state: dict) -> None:
         torch.set_rng_state(state["torch"])
         if "cuda" in state and torch.cuda.is_available():
             torch.cuda.set_rng_state_all(state["cuda"])
-
 
 def validate_resume_identity(
     state: Any,
@@ -100,23 +89,34 @@ def validate_resume_identity(
     """Fail closed unless checkpoint data/model/training identity matches this run."""
     if not isinstance(state, dict):
         raise ValueError("resume checkpoint payload must be a mapping")
-    missing = [key for key in required_fields if key not in state or state[key] is None]
+    _optional_identity = ("dataset_version", "dataset_content_sha256", "tokenizer_sha256")
+    missing = []
+    for key in required_fields:
+        if key in _optional_identity:
+            if expected.get(key) is not None and (key not in state or state[key] is None):
+                missing.append(key)
+        else:
+            if key not in state or state[key] is None:
+                missing.append(key)
     if missing:
         raise ValueError("resume checkpoint missing identity fields: " + ", ".join(missing))
     for key in ("dataset_version", "dataset_content_sha256", "tokenizer_sha256"):
         if key in required_fields:
+            if expected.get(key) is None and state.get(key) is None:
+                continue
             value = state.get(key)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"resume checkpoint has empty identity field: {key}")
     for key in ("dataset_content_sha256", "tokenizer_sha256"):
         if key in required_fields:
+            if expected.get(key) is None and state.get(key) is None:
+                continue
             value = state.get(key)
             if len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value.lower()):
                 raise ValueError(f"resume checkpoint has invalid SHA-256 identity: {key}")
     for key in required_fields:
-        if state[key] != expected.get(key):
+        if state.get(key) != expected.get(key):
             raise ValueError(f"resume checkpoint identity mismatch: {key}")
-
 
 class CheckpointManager:
     """Atomic checkpoints + SHA-256 manifest. The caller supplies the state dict
