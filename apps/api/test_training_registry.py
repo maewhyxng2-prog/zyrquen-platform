@@ -259,4 +259,3 @@ def test_concurrent_workers_do_not_collide_on_native_versions(training_env, tmp_
         assert registry.verify(ver)
         expected_parent = None if i == 0 else f"ZYRQUEN-Native-0.1.{i - 1}"
         assert registry.get(ver)["parent"] == expected_parent
-

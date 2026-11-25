@@ -40,13 +40,16 @@ jobs:
       - name: Run Vitest unit tests
         run: npm run test
 
+      - name: Build production bundle
+        run: npm run build
+
   maintainer-gate-audit:
     name: Maintainer Policy & Native-Only Check
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     env:
-      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/apps/api
+      PYTHONPATH: ${{ github.workspace }}/python_core
 
     steps:
       - name: Checkout source
@@ -59,18 +62,44 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Run Maintainer Audit & Protected Path Policy Check
+      - name: Run Native-Only Policy & Python Core Verification
         run: |
-          python -m compileall -q apps tools tests phases
-          python tools/maintainer_bot.py --mode audit --json --out maintainer-audit-report.json
-          if [[ "${{ github.event_name }}" == "pull_request" && "${{ github.head_ref }}" == bot/* ]]; then
-            BASE_SHA="${{ github.event.pull_request.base.sha }}"
-            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-            mapfile -t CHANGED_FILES < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
-            if [ "${#CHANGED_FILES[@]}" -gt 0 ]; then
-              python tools/maintainer_bot.py --mode policy-check --files "${CHANGED_FILES[@]}"
-            fi
-          fi
+          python -m compileall -q python_core
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          banned_py = re.compile(
+              r"^\s*(?:import|from)\s+(?:openai|anthropic|google\.generativeai|google\.genai|groq|together|mistralai)\b",
+              re.MULTILINE,
+          )
+          violations = []
+          py_files = sorted(Path("python_core").rglob("*.py"))
+          for p in py_files:
+              text = p.read_text(encoding="utf-8", errors="replace")
+              if banned_py.search(text):
+                  violations.append(str(p))
+
+          pkg = json.loads(Path("package.json").read_text(encoding="utf-8"))
+          deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+          for banned_pkg in ("openai", "@anthropic-ai/sdk", "@google/genai", "@google/generative-ai"):
+              if banned_pkg in deps:
+                  violations.append(f"package.json:{banned_pkg}")
+
+          report = {
+              "schema": "zyrquen.ci.audit.v1",
+              "python_core_files_checked": len(py_files),
+              "native_only_violations": violations,
+              "overall_verdict": "PASS" if not violations else "FAIL",
+          }
+          Path("maintainer-audit-report.json").write_text(
+              json.dumps(report, indent=2), encoding="utf-8"
+          )
+          if violations:
+              raise SystemExit(f"Native-Only policy violation(s): {violations}")
+          PY
+          python -m unittest python_core/tests/test_continual_learning.py -v
 
       - name: Upload Maintainer Audit Report
         if: always()

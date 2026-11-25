@@ -233,3 +233,78 @@ def test_list_evaluation_runs_enforces_ownership(eval_client):
     assert res_b.json()["total"] == 1
     assert res_b.json()["items"][0]["user_id"] == str(user_b.id)
 
+
+def test_evaluation_persists_completed_and_failed_runs(
+    eval_client, tmp_path, monkeypatch
+):
+    from apps.api.routers import evaluation as evaluation_router
+
+    test_client, session_factory, _, user_a, _ = eval_client
+    ds_root, ckpt_dir, checksum = _create_verified_dataset_and_checkpoint(tmp_path)
+    monkeypatch.setenv("ZYRQUEN_EVALUATION_CHECKPOINT_DIR", str(ckpt_dir))
+    monkeypatch.setenv("ZYRQUEN_DATASET_ROOT", str(ds_root))
+
+    captured_kwargs = {}
+
+    def fake_run_evaluation(self, model_version, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {
+            "schema": "zyrquen.native_inference_evaluation.v1",
+            "model_version": model_version,
+            "dataset_version": "0.1.0",
+            "dataset_content_hash": checksum,
+            "inference_status": "PASS",
+            "metrics": {
+                "exact_match": 0.75,
+                "examples_evaluated": 20,
+                "tokens_evaluated": 420,
+            },
+            "splits": {"test": {"evaluated": 20, "correct": 15, "exact_match": 0.75}},
+        }
+
+    monkeypatch.setattr(evaluation_router.EvaluationEngine, "run_evaluation", fake_run_evaluation)
+
+    ok_resp = test_client.post(
+        "/v1/evaluation/runs",
+        json={
+            "model_version": "v0.1.0",
+            "dataset_id": "pilot-v1",
+            "dataset_checksum": checksum,
+        },
+    )
+    assert ok_resp.status_code == 200
+    assert captured_kwargs.get("run_inference") is True
+    body = ok_resp.json()
+    run_id = body["run"]["id"]
+    assert body["run"]["status"] == "completed"
+    assert body["run"]["sample_count"] == 20
+    assert body["run"]["token_count"] == 420
+    assert body["run"]["metrics"]["exact_match"] == 0.75
+
+    fetched = test_client.get(f"/v1/evaluation/runs/{run_id}")
+    assert fetched.status_code == 200
+    assert fetched.json()["status"] == "completed"
+
+    # Empty/missing metrics must be rejected (422) and persisted as 'failed' in DB
+    monkeypatch.setattr(
+        evaluation_router.EvaluationEngine,
+        "run_evaluation",
+        lambda self, model_version, **kwargs: {"metrics": {}},
+    )
+    fail_resp = test_client.post(
+        "/v1/evaluation/runs",
+        json={
+            "model_version": "v0.1.0",
+            "dataset_id": "pilot-v1",
+            "dataset_checksum": checksum,
+        },
+    )
+    assert fail_resp.status_code == 422
+
+    with session_factory() as db:
+        runs = db.query(EvaluationRun).filter(EvaluationRun.user_id == user_a.id).all()
+        statuses = sorted(r.status for r in runs)
+        assert statuses == ["completed", "failed"]
+        failed_run = next(r for r in runs if r.status == "failed")
+        assert "metrics" in (failed_run.error_message or "").lower()
+

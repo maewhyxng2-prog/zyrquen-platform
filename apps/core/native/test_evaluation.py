@@ -189,4 +189,3 @@ def test_metrics_reject_invalid_inputs():
             assert False
         except ValueError:
             pass
-

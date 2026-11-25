@@ -186,6 +186,24 @@ def test_training_start_enforces_tier2_approval_when_artifacts_configured(api_cl
         vocab_size=BASE_VOCAB + 8,
     ).save(tok)
 
+    monkeypatch.setattr(training_router.jobs._orchestrator, "dataset_dir", None)
+    monkeypatch.setattr(training_router.jobs._orchestrator, "tokenizer_path", None)
+
+    # Even when dataset/tokenizer paths are NOT configured, missing/forged approval MUST be rejected (403), never 503 bypass
+    unconfigured_no_approval = client.post(
+        "/training/runs",
+        json={"dataset_version": "0.1.0"},
+    )
+    assert unconfigured_no_approval.status_code == 403
+    assert "approval_id is required" in unconfigured_no_approval.json()["detail"]
+
+    unconfigured_forged = client.post(
+        "/training/runs",
+        json={"dataset_version": "0.1.0", "approval_id": "forged-id"},
+    )
+    assert unconfigured_forged.status_code == 403
+    assert "Tier-2 training approval rejected" in unconfigured_forged.json()["detail"]
+
     monkeypatch.setattr(training_router.jobs._orchestrator, "dataset_dir", ds)
     monkeypatch.setattr(training_router.jobs._orchestrator, "tokenizer_path", tok)
     monkeypatch.setattr(training_router.jobs._orchestrator, "training_root", tmp_path / "runs")
@@ -254,6 +272,48 @@ def test_training_start_enforces_tier2_approval_when_artifacts_configured(api_cl
             approver_role="admin",
             reason="API gate test",
         )
+
+        # Wrong dataset scope must be rejected with 403
+        wrong_scope = client.post(
+            "/training/runs",
+            json={"dataset_version": "9.9.9", "approval_id": approved["id"]},
+        )
+        assert wrong_scope.status_code == 403
+        assert isolated_engine.store.get_approval(approved["id"])["status"] == "approved"
+
+        # Approval bound to non-training step handler must be rejected with 403
+        bad_step_run, _ = isolated_engine.store.create_run(
+            workflow_key="dataset.governed_ingest",
+            workflow_version="1.0.0",
+            trigger_type="manual",
+            trigger_payload={},
+            steps=[{"step_key": "wrong_step", "handler_key": "dataset.ingest"}],
+            requested_by_user_id=str(user.id),
+        )
+        wrong_step_pending = isolated_engine.governance.ensure_pending_approval(
+            run_id=bad_step_run["id"],
+            step=WorkflowStepSpec(
+                step_key="wrong_step",
+                handler_key="dataset.ingest",
+                description="Wrong step",
+                tier="tier2_approval",
+                action_type="training.execute",
+            ),
+            requested_by_user_id=str(user.id),
+            scope="dataset:0.1.0",
+        )
+        wrong_step_approved = isolated_engine.governance.decide_approval(
+            wrong_step_pending["id"],
+            approve=True,
+            approver_user_id=str(user.id),
+            approver_role="admin",
+            reason="Wrong step probe",
+        )
+        wrong_step_resp = client.post(
+            "/training/runs",
+            json={"dataset_version": "0.1.0", "approval_id": wrong_step_approved["id"]},
+        )
+        assert wrong_step_resp.status_code == 403
 
         # 503 during prepare() preserves approved status without burning single-use token
         resp_503 = client.post(
@@ -338,6 +398,7 @@ def test_training_readiness_enforces_v11_four_split_and_leakage_detection(api_cl
     assert res_leaked["dataset"]["leakage_check"]["passed"] is False
 
     # 3. Clean V11 4-split dataset passes DataAdapter verification, leakage check, and orchestrator preflight
+    #    but MUST remain status='not_ready' without an active signed Tier-2 training.execute approval.
     ds_clean = _build_v11_dataset(tmp_path / "ds_v11_clean", leak=False)
     monkeypatch.setenv("ZYRQUEN_DATASET_DIR", str(ds_clean))
     res_clean = client.get("/training/readiness").json()
@@ -347,3 +408,234 @@ def test_training_readiness_enforces_v11_four_split_and_leakage_detection(api_cl
     assert res_clean["tokenizer"]["valid"] is True
     assert res_clean["preflight"]["passed"] is True
     assert res_clean["preflight"]["resource_limits_checked"] is True
+    assert res_clean["approval_ready"] is False
+    assert res_clean["status"] == "not_ready"
+
+
+def test_training_readiness_requires_active_signed_approval_for_ready_status(api_client, monkeypatch):
+    from apps.api.routers import workflows as workflows_router
+    from apps.core.workflow import CentralWorkflowOrchestrator, WorkflowStepSpec
+
+    client, _, user, tmp_path = api_client
+    tok = tmp_path / "tokenizer.json"
+    ZyrquenTokenizer.train(["rule TR_E11 ok " * 10], vocab_size=BASE_VOCAB + 8).save(tok)
+    ds_clean = _build_v11_dataset(tmp_path / "ds_v11_ready", leak=False)
+    monkeypatch.setenv("ZYRQUEN_TOKENIZER_PATH", str(tok))
+    monkeypatch.setenv("ZYRQUEN_DATASET_DIR", str(ds_clean))
+    monkeypatch.setattr(training_router.jobs._orchestrator, "training_root", tmp_path / "runs")
+
+    isolated_engine = CentralWorkflowOrchestrator(
+        db_path=tmp_path / "wf-ready.db",
+        work_dir=tmp_path / "wf-ready-work",
+        approval_secret="unit-test-approval-secret-minimum-32-chars",
+    )
+    monkeypatch.setattr(workflows_router, "_ENGINE", isolated_engine)
+    monkeypatch.setattr(training_router, "get_workflow_engine", lambda: isolated_engine)
+    try:
+        before = client.get("/training/readiness").json()
+        assert before["approval_ready"] is False
+        assert before["status"] == "not_ready"
+
+        # Approval bound to a DIFFERENT dataset version must NOT mark readiness ready
+        other_run, _ = isolated_engine.store.create_run(
+            workflow_key="training.native_controlled_run",
+            workflow_version="1.0.0",
+            trigger_type="manual",
+            trigger_payload={},
+            steps=[{"step_key": "execute_training", "handler_key": "training.execute"}],
+            requested_by_user_id=str(user.id),
+        )
+        other_pending = isolated_engine.governance.ensure_pending_approval(
+            run_id=other_run["id"],
+            step=WorkflowStepSpec(
+                step_key="execute_training",
+                handler_key="training.execute",
+                description="Execute training for other dataset",
+                tier="tier2_approval",
+                action_type="training.execute",
+            ),
+            requested_by_user_id=str(user.id),
+            scope="dataset:other_version",
+        )
+        isolated_engine.governance.decide_approval(
+            other_pending["id"],
+            approve=True,
+            approver_user_id=str(user.id),
+            approver_role="admin",
+            reason="Mismatched dataset probe",
+        )
+        mismatch_readiness = client.get("/training/readiness").json()
+        assert mismatch_readiness["dataset"]["dataset_version"] == "nagi_v11"
+        assert mismatch_readiness["approval_ready"] is False
+        assert mismatch_readiness["status"] == "not_ready"
+
+        wf_run, _ = isolated_engine.store.create_run(
+            workflow_key="training.native_controlled_run",
+            workflow_version="1.0.0",
+            trigger_type="manual",
+            trigger_payload={},
+            steps=[{"step_key": "execute_training", "handler_key": "training.execute"}],
+            requested_by_user_id=str(user.id),
+        )
+        pending = isolated_engine.governance.ensure_pending_approval(
+            run_id=wf_run["id"],
+            step=WorkflowStepSpec(
+                step_key="execute_training",
+                handler_key="training.execute",
+                description="Execute training",
+                tier="tier2_approval",
+                action_type="training.execute",
+            ),
+            requested_by_user_id=str(user.id),
+            scope="dataset:nagi_v11",
+        )
+        isolated_engine.governance.decide_approval(
+            pending["id"],
+            approve=True,
+            approver_user_id=str(user.id),
+            approver_role="admin",
+            reason="Readiness test approval",
+        )
+        after = client.get("/training/readiness").json()
+        assert after["approval_secret_configured"] is True
+        assert after["approval_ready"] is True
+        assert after["approved_training_approvals"] == 1
+        assert after["status"] == "ready"
+    finally:
+        isolated_engine.shutdown(wait=True)
+
+
+def test_dataset_ingest_enforces_provenance_leakage_and_no_overwrite(api_client, monkeypatch):
+    from apps.api.routers import datasets as datasets_router
+    from apps.api.routers import workflows as workflows_router
+    from apps.core.workflow import CentralWorkflowOrchestrator
+
+    client, _, user, tmp_path = api_client
+    root = tmp_path / "datasets_ingest_root"
+    root.mkdir()
+    monkeypatch.setenv("ZYRQUEN_DATASET_ROOT", str(root))
+
+    isolated_engine = CentralWorkflowOrchestrator(
+        db_path=tmp_path / "wf-ingest.db",
+        work_dir=tmp_path / "wf-ingest-work",
+        approval_secret="unit-test-approval-secret-minimum-32-chars",
+    )
+    monkeypatch.setattr(workflows_router, "_ENGINE", isolated_engine)
+    monkeypatch.setattr(datasets_router, "get_workflow_engine", lambda: isolated_engine)
+    try:
+        base_splits = {
+            "train": [{"input": "rule TR_E11", "target": "ok TR_E11"}],
+            "validation": [{"input": "rule VA_E22", "target": "ok VA_E22"}],
+            "unseen": [{"input": "rule UN_E33", "target": "ok UN_E33"}],
+            "ood": [{"input": "rule OO_E44", "target": "ok OO_E44"}],
+        }
+
+        # Missing Approval Gate ticket must be rejected with 403
+        missing_ticket = client.post(
+            "/v1/datasets/ingest",
+            json={
+                "dataset_version": "1.0.0",
+                "source_name": "verified_field_notes",
+                "license": "CC-BY-4.0",
+                "provenance": "human_curated_native_corpus",
+                "splits": base_splits,
+            },
+        )
+        assert missing_ticket.status_code == 403
+        assert not (root / "1.0.0").exists()
+
+        # Forged Approval Gate ticket must be rejected with 403
+        forged_ticket = client.post(
+            "/v1/datasets/ingest",
+            json={
+                "dataset_version": "1.0.0",
+                "source_name": "verified_field_notes",
+                "license": "CC-BY-4.0",
+                "provenance": "human_curated_native_corpus",
+                "approval_id": "forged-ticket-id",
+                "splits": base_splits,
+            },
+        )
+        assert forged_ticket.status_code == 403
+        assert not (root / "1.0.0").exists()
+
+        # Issue and approve a valid Tier-2 dataset.ingest ticket
+        wf_run = isolated_engine.trigger_workflow(
+            "dataset.governed_ingest",
+            payload={"dataset_version": "1.0.0"},
+            requested_by_user_id=str(user.id),
+            actor_id=user.email,
+        )
+        ticket_id = wf_run["pending_approval_id"]
+        isolated_engine.governance.decide_approval(
+            ticket_id,
+            approve=True,
+            approver_user_id=str(user.id),
+            approver_role="admin",
+            reason="Dataset ingest API test",
+        )
+
+        # Reject synthetic/external provenance without consuming the valid ticket
+        bad_prov = client.post(
+            "/v1/datasets/ingest",
+            json={
+                "dataset_version": "1.0.0",
+                "source_name": "synthetic_source",
+                "license": "CC-BY-4.0",
+                "provenance": "generated_by_gpt",
+                "approval_id": ticket_id,
+                "splits": base_splits,
+            },
+        )
+        assert bad_prov.status_code == 422
+        assert not (root / "1.0.0").exists()
+        assert isolated_engine.store.get_approval(ticket_id)["status"] == "approved"
+
+        # Reject cross-split entity leakage without persisting or burning the ticket
+        leaked = client.post(
+            "/v1/datasets/ingest",
+            json={
+                "dataset_version": "1.0.0",
+                "source_name": "verified_field_notes",
+                "license": "CC-BY-4.0",
+                "provenance": "human_curated_native_corpus",
+                "approval_id": ticket_id,
+                "splits": {
+                    "train": [{"input": "rule TR_E11", "target": "ok TR_E11"}],
+                    "validation": [{"input": "rule VA_E22", "target": "ok VA_E22"}],
+                    "unseen": [{"input": "rule TR_E11 extra", "target": "ok TR_E11"}],
+                    "ood": [{"input": "rule OO_E44", "target": "ok OO_E44"}],
+                },
+            },
+        )
+        assert leaked.status_code == 422
+        assert not (root / "1.0.0").exists()
+        assert isolated_engine.store.get_approval(ticket_id)["status"] == "approved"
+
+        # Clean V11 4-split dataset succeeds, marks status='ready', and consumes single-use ticket
+        clean_payload = {
+            "dataset_version": "1.0.0",
+            "source_name": "verified_field_notes",
+            "license": "CC-BY-4.0",
+            "provenance": "human_curated_native_corpus",
+            "approval_id": ticket_id,
+            "splits": base_splits,
+        }
+        created = client.post("/v1/datasets/ingest", json=clean_payload)
+        assert created.status_code == 201
+        body = created.json()
+        assert body["verified"] is True
+        assert body["status"] == "ready"
+        assert body["approval_gate_verified"] is True
+        assert body["four_split_compliant"] is True
+        assert body["v11_leakage_check"]["passed"] is True
+        assert body["licensed_sources_count"] == 1
+        assert isolated_engine.store.get_approval(ticket_id)["status"] == "consumed"
+
+        # Re-using consumed ticket must be rejected with 403
+        reused = client.post("/v1/datasets/ingest", json=clean_payload)
+        assert reused.status_code == 403
+    finally:
+        isolated_engine.shutdown(wait=True)
+
+

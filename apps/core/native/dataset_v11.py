@@ -14,7 +14,15 @@ from apps.core.native.dataset import (
     resolve_dataset_splits,
     verify_dataset_manifest,
 )
-from apps.core.native.sft import extract_entities
+try:
+    from apps.core.native.sft import extract_entities
+except ModuleNotFoundError:
+    _V11_ENTITY_FALLBACK_RE = re.compile(
+        r"\b(?:(?:TR|VA|TE|UN|OO)_E[0-9A-Za-z_]+|(?:node|item|step)_(?:tr|va|te|un|oo)_[0-9A-Za-z_]+|rec_(?:tr|va|te|un|oo)_e[0-9A-Za-z_]+)\b"
+    )
+
+    def extract_entities(text: str) -> list[str]:
+        return _V11_ENTITY_FALLBACK_RE.findall(text)
 
 
 class DatasetLeakageError(ValueError):

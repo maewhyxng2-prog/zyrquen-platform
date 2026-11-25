@@ -4,14 +4,12 @@ on:
   push:
     branches: ["main"]
     paths:
-      - "tools/**"
-      - "apps/core/native/**"
+      - "python_core/**"
       - ".github/workflows/data-quality.yml"
   pull_request:
     branches: ["main"]
     paths:
-      - "tools/**"
-      - "apps/core/native/**"
+      - "python_core/**"
       - ".github/workflows/data-quality.yml"
   workflow_dispatch:
 
@@ -24,57 +22,37 @@ concurrency:
 
 jobs:
   audit-tool-validation:
-    name: Dataset Audit Tool Validation
+    name: Dataset Leakage & Fixture Isolation Audit
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
+    env:
+      PYTHONPATH: ${{ github.workspace }}/python_core
 
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Validate audit tool availability
+      - name: Validate leakage & continual curriculum checks
         run: |
-          if [ ! -f tools/audit_leakage_v9.py ]; then
-            echo "::error::Dataset audit tool is missing"
+          python -m py_compile python_core/continual_learning.py python_core/tests/benchmark_fixtures.py
+          python - <<'PY'
+          from tests.benchmark_fixtures import verify_fixture_isolation
+
+          iso = verify_fixture_isolation()
+          assert iso["isolated"], f"Train/eval overlap detected: {iso['overlaps']}"
+          print("Fixture isolation verified:", iso)
+          PY
+
+      - name: Check private datasets are not committed
+        run: |
+          if git ls-files --error-unmatch data/ >/dev/null 2>&1; then
+            echo "::error::Runtime data directory must not be tracked by Git"
             exit 1
           fi
-
-          python -m py_compile tools/audit_leakage_v9.py
-
-      - name: Validate audit tool interface
-        run: |
-          python tools/audit_leakage_v9.py --help
-
-      - name: Check dataset is not committed
-        run: |
-          if git ls-files --error-unmatch data/nagi_v9/ >/dev/null 2>&1; then
-            echo "::error::Private v9 dataset must not be tracked by Git"
-            exit 1
-          fi
-
           echo "Private dataset tracking check passed."
-
-  dataset-availability:
-    name: Private Dataset Availability
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-
-      - name: Report dataset availability
-        run: |
-          if [ ! -d data/nagi_v9 ]; then
-            echo "BLOCKED: Private v9 dataset is not available in GitHub Actions."
-            echo "No dataset audit was executed."
-            exit 0
-          fi
-
-          echo "Dataset directory detected."
-          echo "Full integrity audit requires the approved local dataset environment."

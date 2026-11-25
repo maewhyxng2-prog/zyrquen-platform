@@ -1,6 +1,6 @@
 # ZYRQUEN Ω∞
 
-![ZYRQUEN logo](apps/web/public/zyrquen-logo.svg)
+![ZYRQUEN logo](public/zyrquen-logo.svg)
 
 ZYRQUEN Ω∞ เป็นโครงการวิจัยและวิศวกรรมระยะยาวเพื่อพัฒนาแพลตฟอร์ม AI และระบบ **Native General Intelligence (NGI)** ที่เรียนรู้ ให้เหตุผล วางแผน ตรวจสอบ และพัฒนาความสามารถได้ด้วยตนเองบนโครงสร้างพื้นฐานอิสระ (ไม่ใช่ Chatbot-only และไม่นำโมเดลภายนอกมาควบคุมหลัก)
 
@@ -95,3 +95,4 @@ npm run test
 npm run lint
 npm run typecheck
 npm run build
+```

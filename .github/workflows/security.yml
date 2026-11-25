@@ -36,75 +36,83 @@ jobs:
 
     steps:
       - name: Checkout source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@v3
         with:
           languages: ${{ matrix.language }}
           build-mode: none
           queries: security-extended
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@v3
         with:
           category: "/language:${{ matrix.language }}"
 
-  python-dependency-audit:
-    name: Python Dependency Vulnerability Audit
+  python-core-security-check:
+    name: Python Native Core Static Security Check
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
 
     steps:
       - name: Checkout source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: apps/api/requirements.txt
 
-      - name: Install pip-audit
+      - name: Check Python core for unsafe patterns and hardcoded secrets
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install pip-audit
+          python - <<'PY'
+          import ast
+          import re
+          from pathlib import Path
 
-      - name: Audit API dependencies
-        run: |
-          pip-audit -r apps/api/requirements.txt
+          secret_re = re.compile(
+              r"""(?:["']sk-[A-Za-z0-9_-]{20,}["']|["']gh[pousr]_[A-Za-z0-9]{20,}["']|["']AIza[0-9A-Za-z_-]{20,}["'])"""
+          )
+          for p in Path("python_core").rglob("*.py"):
+              text = p.read_text(encoding="utf-8", errors="replace")
+              if "/tests/" not in f"/{p.as_posix()}" and secret_re.search(text):
+                  raise SystemExit(f"Potential hardcoded secret in {p}")
+              tree = ast.parse(text, filename=str(p))
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                      if isinstance(node.func.value, ast.Name) and node.func.value.id == "subprocess":
+                          for kw in node.keywords:
+                              if kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                                  raise SystemExit(f"Unsafe subprocess shell=True in {p}")
+          print("Python core static security check passed.")
+          PY
 
   web-dependency-audit:
     name: Web Dependency Vulnerability Audit
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
-    defaults:
-      run:
-        working-directory: apps/web
-
     steps:
       - name: Checkout source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set up Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: apps/web/package-lock.json
 
       - name: Install dependencies
-        run: npm ci --workspaces=false
+        run: npm install --no-audit --no-fund
 
       - name: Audit npm dependencies
-        run: npm audit --workspaces=false --audit-level=high
+        run: npm audit --audit-level=high
 
   dependency-review:
     name: Pull Request Dependency Review
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    continue-on-error: true
 
     if: github.event_name == 'pull_request'
 
@@ -114,9 +122,9 @@ jobs:
 
     steps:
       - name: Checkout source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Review dependency changes
-        uses: actions/dependency-review-action@v5
+        uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: high

@@ -24,6 +24,7 @@ from apps.core.training_infrastructure.recovery.checkpoint_recovery import (
 )
 from apps.core.training.orchestrator import TrainingUnavailable
 from apps.core.workflow import ApprovalViolationError
+from apps.core.workflow.governance import _scope_matches
 from apps.api.database import SessionLocal, get_db
 from apps.api.models import User
 from apps.api.routers.workflows import get_workflow_engine
@@ -92,40 +93,51 @@ def require_training_admin(
     return current_user
 
 
-def _verify_training_approval_readonly(engine, approval_id: str) -> dict:
-    """Verify Tier-2 approval status, action binding, expiry, and HMAC signature without consuming."""
-    approval = engine.governance.store.get_approval(approval_id)
-    if approval is None:
-        raise ApprovalViolationError(f"Approval request not found: {approval_id}")
-    if approval.get("action_type") != "training.execute":
-        raise ApprovalViolationError(
-            f"Approval {approval_id} action_type={approval.get('action_type')!r} "
-            "does not match required 'training.execute'."
-        )
-    if approval.get("status") != "approved":
-        raise ApprovalViolationError(
-            f"Approval {approval_id} is not in 'approved' state (status={approval.get('status')!r})."
-        )
-    try:
-        expires_at = datetime.fromisoformat(str(approval["expires_at"]))
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ApprovalViolationError(
-            f"Approval {approval_id} has invalid expiration timestamp."
-        ) from exc
-    if expires_at <= datetime.now(timezone.utc):
-        raise ApprovalViolationError(f"Approval {approval_id} has expired.")
-
-    expected_sig = engine.governance._compute_signature(
-        approval_id=approval["id"],
-        run_id=approval["run_id"],
-        step_key=approval["step_key"],
-        action_type=approval["action_type"],
-        scope=approval["scope"],
-        expires_at=approval["expires_at"],
+def _verify_training_approval_readonly(
+    engine,
+    approval_id: str,
+    *,
+    dataset_version: str | None = None,
+) -> dict:
+    """Verify Tier-2 approval status, workflow run/step binding, dataset scope, expiry, and HMAC signature without consuming."""
+    expected_scope = f"dataset:{dataset_version}" if dataset_version else None
+    approval = engine.governance.verify_approval_readonly(
+        approval_id,
+        expected_action_type="training.execute",
+        expected_scope=expected_scope,
     )
-    provided_sig = str(approval.get("signature_hmac") or "")
-    if not provided_sig or not hmac.compare_digest(expected_sig, provided_sig):
-        raise ApprovalViolationError(f"Approval HMAC signature invalid for {approval_id}.")
+
+    run_id = str(approval.get("run_id") or "").strip()
+    wf_run = engine.store.get_run(run_id) if run_id else None
+    if wf_run is None:
+        raise ApprovalViolationError(
+            f"Approval {approval_id} references unknown workflow run {run_id!r}."
+        )
+    if str(wf_run.get("status") or "").lower() in {"cancelled", "rejected", "failed"}:
+        raise ApprovalViolationError(
+            f"Approval {approval_id} belongs to inactive workflow run {run_id} (status={wf_run.get('status')!r})."
+        )
+
+    step_key = str(approval.get("step_key") or "").strip()
+    steps = wf_run.get("steps") or []
+    matched_step = next(
+        (s for s in steps if str(s.get("step_key") or "") == step_key),
+        None,
+    )
+    if matched_step is None:
+        raise ApprovalViolationError(
+            f"Approval {approval_id} step_key={step_key!r} is not present in workflow run {run_id}."
+        )
+    step_handler = str(matched_step.get("handler_key") or "")
+    step_action = str(matched_step.get("action_type") or "")
+    if step_handler != "training.execute" and step_action != "training.execute":
+        raise ApprovalViolationError(
+            f"Approval {approval_id} step {step_key!r} is bound to {step_handler or step_action!r}, not 'training.execute'."
+        )
+    if expected_scope and not _scope_matches(str(approval.get("scope") or ""), expected_scope):
+        raise ApprovalViolationError(
+            f"Approval {approval_id} scope={approval.get('scope')!r} does not authorize {expected_scope!r}."
+        )
     return approval
 
 
@@ -140,66 +152,74 @@ def start_training(
     db: Session = Depends(get_db),
 ):
     try:
-        # Preserve HTTP 503 when dataset/tokenizer paths are not yet configured;
-        # once configured, enforce Tier-2 HMAC workflow approval before execution.
-        if (
-            jobs._orchestrator.dataset_dir is not None
-            and jobs._orchestrator.tokenizer_path is not None
-        ):
-            approval_id = (request.approval_id or "").strip()
-            if not approval_id:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Tier-2 workflow approval_id is required to execute native training.",
-                )
-            engine = get_workflow_engine()
-            try:
-                _verify_training_approval_readonly(engine, approval_id)
-            except ApprovalViolationError as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Tier-2 training approval rejected: {exc}",
-                ) from exc
-
-            if jobs.is_busy():
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="A training job is already active.",
-                )
-            training_cfg = request.training.model_dump()
-            model_cfg = request.model.model_dump()
-            prepared = jobs._orchestrator.prepare(
+        # Unconditionally enforce Tier-2 HMAC workflow approval before any dispatch/submission path.
+        approval_id = (request.approval_id or "").strip()
+        if not approval_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Tier-2 workflow approval_id is required to execute native training.",
+            )
+        engine = get_workflow_engine()
+        try:
+            _verify_training_approval_readonly(
+                engine,
+                approval_id,
                 dataset_version=request.dataset_version,
-                training_values=training_cfg,
-                model_values=model_cfg,
+            )
+        except ApprovalViolationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Tier-2 training approval rejected: {exc}",
+            ) from exc
+
+        if (
+            jobs._orchestrator.dataset_dir is None
+            or jobs._orchestrator.tokenizer_path is None
+        ):
+            raise TrainingUnavailable(
+                "Native training dataset directory and tokenizer path are not configured."
             )
 
-            try:
-                return jobs.submit_prepared(
-                    db,
-                    owner_id=current_user.id,
-                    dataset_version=request.dataset_version,
-                    training_config=training_cfg,
-                    model_config=model_cfg,
-                    prepared=prepared,
-                    before_enqueue=lambda: engine.governance.verify_and_consume_by_id(
-                        approval_id,
-                        expected_action_type="training.execute",
-                    ),
-                )
-            except ApprovalViolationError as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Tier-2 training approval rejected: {exc}",
-                ) from exc
-
-        return jobs.submit(
-            db,
-            owner_id=current_user.id,
+        if jobs.is_busy():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A training job is already active.",
+            )
+        training_cfg = request.training.model_dump()
+        model_cfg = request.model.model_dump()
+        prepared = jobs._orchestrator.prepare(
             dataset_version=request.dataset_version,
-            training_config=request.training.model_dump(),
-            model_config=request.model.model_dump(),
+            training_values=training_cfg,
+            model_values=model_cfg,
         )
+
+        def _consume_bound_approval():
+            _verify_training_approval_readonly(
+                engine,
+                approval_id,
+                dataset_version=request.dataset_version,
+            )
+            return engine.governance.verify_and_consume_by_id(
+                approval_id,
+                expected_action_type="training.execute",
+                expected_scope=f"dataset:{request.dataset_version}",
+            )
+
+        try:
+            return jobs.submit_prepared(
+                db,
+                owner_id=current_user.id,
+                dataset_version=request.dataset_version,
+                training_config=training_cfg,
+                model_config=model_cfg,
+                prepared=prepared,
+                before_enqueue=_consume_bound_approval,
+            )
+        except ApprovalViolationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Tier-2 training approval rejected: {exc}",
+            ) from exc
     except TrainingJobBusy as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -271,30 +291,45 @@ def get_training_readiness(
     approval_secret_configured = bool(os.getenv("ZYRQUEN_APPROVAL_SECRET", "").strip())
     approved_training_approvals = 0
     pending_training_approvals = 0
+    resolved_ds_version = ds_report.get("dataset_version")
     try:
         engine = get_workflow_engine()
+        approval_secret_configured = approval_secret_configured or bool(
+            getattr(engine.governance, "_has_explicit_secret", False)
+        )
         approved_list = engine.governance.store.list_approvals(status="approved", limit=100)
         pending_list = engine.governance.store.list_approvals(status="pending", limit=100)
         now = datetime.now(timezone.utc)
-        approved_training_approvals = sum(
-            1
-            for item in approved_list
-            if item.get("action_type") == "training.execute"
-            and datetime.fromisoformat(item["expires_at"]) > now
-        )
-        pending_training_approvals = sum(
-            1
-            for item in pending_list
-            if item.get("action_type") == "training.execute"
-            and datetime.fromisoformat(item["expires_at"]) > now
-        )
+        for item in approved_list:
+            if item.get("action_type") != "training.execute":
+                continue
+            try:
+                _verify_training_approval_readonly(
+                    engine,
+                    item["id"],
+                    dataset_version=resolved_ds_version,
+                )
+                approved_training_approvals += 1
+            except (ApprovalViolationError, KeyError, TypeError, ValueError):
+                continue
+        for item in pending_list:
+            if item.get("action_type") != "training.execute":
+                continue
+            try:
+                if datetime.fromisoformat(item["expires_at"]) > now:
+                    pending_training_approvals += 1
+            except (KeyError, TypeError, ValueError):
+                continue
     except (OSError, ValueError, KeyError, TypeError):
         pass
 
+    if not approval_secret_configured:
+        reasons.append("ZYRQUEN_APPROVAL_SECRET is not configured for Tier-2 HMAC verification.")
     if approved_training_approvals == 0:
-        reasons.append("No active signed Tier-2 approval token for training.execute (required before dispatch).")
+        reasons.append("No active signed Tier-2 approval token for training.execute matching the configured dataset (required before dispatch).")
 
     configured = dataset_configured and tokenizer_configured and admin_configured
+    approval_ready = approval_secret_configured and approved_training_approvals > 0
     all_ready = (
         dataset_verified
         and four_split_present
@@ -304,6 +339,7 @@ def get_training_readiness(
         and worker_ready
         and not worker_busy
         and admin_configured
+        and approval_ready
     )
     status_value = (
         "ready"
@@ -326,6 +362,7 @@ def get_training_readiness(
         "admin_allowlist_configured": admin_configured,
         "is_training_admin": is_training_admin,
         "tier2_approval_required": True,
+        "approval_ready": approval_ready,
         "approval_secret_configured": approval_secret_configured,
         "approved_training_approvals": approved_training_approvals,
         "pending_training_approvals": pending_training_approvals,

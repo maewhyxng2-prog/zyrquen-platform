@@ -14,4 +14,3 @@ __all__ = [
     "calculate_perplexity",
     "calculate_token_accuracy",
 ]
-

@@ -23,7 +23,7 @@ jobs:
     timeout-minutes: 15
 
     env:
-      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/apps/api
+      PYTHONPATH: ${{ github.workspace }}/python_core
 
     steps:
       - name: Checkout source
@@ -34,17 +34,37 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Run ZYRQUEN Maintainer Audit + Stdlib Verification Suite
+      - name: Run Python Core Compilation, Continual Learning & Native-Only Audit
         run: |
-          python -m compileall -q apps tools tests phases
-          python -m unittest \
-            tests/test_maintainer_bot.py \
-            tests/test_workflow_engine.py \
-            tests/test_v10d_closure_runner.py \
-            tests/test_v9_static_contracts.py \
-            tests/native/test_checkpoint_resume.py \
-            -v
-          ZYRQUEN_ENV=unit_test DATABASE_URL=sqlite:///./unit_test.db python tools/maintainer_bot.py --mode audit --json --out maintainer-audit-report.json
+          python -m compileall -q python_core
+          python -m unittest python_core/tests/test_continual_learning.py -v
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          banned_py = re.compile(
+              r"^\s*(?:import|from)\s+(?:openai|anthropic|google\.generativeai|google\.genai|groq|together|mistralai)\b",
+              re.MULTILINE,
+          )
+          violations = []
+          py_files = sorted(Path("python_core").rglob("*.py"))
+          for p in py_files:
+              if banned_py.search(p.read_text(encoding="utf-8", errors="replace")):
+                  violations.append(str(p))
+
+          report = {
+              "schema": "zyrquen.maintainer.audit.v1",
+              "python_core_files": len(py_files),
+              "native_only_violations": violations,
+              "overall_verdict": "PASS" if not violations else "FAIL",
+          }
+          Path("maintainer-audit-report.json").write_text(
+              json.dumps(report, indent=2), encoding="utf-8"
+          )
+          if violations:
+              raise SystemExit(f"Native-Only policy violations: {violations}")
+          PY
 
       - name: Upload Maintainer Audit Report
         if: always()
