@@ -2851,7 +2851,7 @@ describe('ZYRQUEN ประสบการณ์แอปพลิเคชั�
     // 2. Projects (โปรเจกต์)
     fireEvent.click(screen.getAllByRole('button', { name: 'โปรเจกต์' })[0]);
     expect(await screen.findByText('โปรเจกต์วิเคราะห์ระบบ')).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('ชื่อโปรเจกต์'), {
+    fireEvent.change(screen.getByPlaceholderText('ชื่อโปรเจกต์'), {
       target: { value: 'โปรเจกต์สร้าง API' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'สร้างและเปิดโปรเจกต์' }));
@@ -3654,6 +3654,7 @@ describe('ZYRQUEN ประสบการณ์แอปพลิเคชั�
     av.unmount();
   });
 });
+
 
 
 
