@@ -50,3 +50,6 @@ public/assets/aistudio/*.jpg
 public/assets/aistudio/*.png
 model_registry/
 tokenizers/
+
+# Editor backup files
+*.save

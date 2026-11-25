@@ -20,6 +20,7 @@ from apps.api.routers.usage import router as usage_router
 from apps.api.routers.api_access import router as api_access_router
 from apps.api.routers.admin import router as admin_router
 from apps.api.routers.datasets import router as datasets_router
+from apps.api.routers.ingestion import router as ingestion_router
 from apps.api.routers.workflows import get_workflow_engine, router as workflows_router
 from apps.api import api_access_models  # noqa: F401
 from apps.api import usage_models  # noqa: F401
@@ -170,6 +171,7 @@ app.include_router(usage_router)
 app.include_router(api_access_router)
 app.include_router(admin_router)
 app.include_router(datasets_router)
+app.include_router(ingestion_router)
 app.include_router(workflows_router)
 
 

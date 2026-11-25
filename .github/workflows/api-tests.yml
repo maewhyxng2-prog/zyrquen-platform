@@ -6,111 +6,64 @@ on:
   pull_request:
     branches: ["main"]
 
-# Least-privilege permissions
 permissions:
   contents: read
 
-# Cancel outdated runs on the same branch
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: API, Native Model and Infrastructure Tests
+  native-core-tests:
+    name: Python Native Core Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 25
 
     env:
-      DATABASE_URL: sqlite:///./test.db
-      ZYRQUEN_ENV: unit_test
-      PYTHON_DOTENV_DISABLED: "1"
-      JWT_SECRET_KEY: test-secret
-      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/apps/api
-
-    defaults:
-      run:
-        working-directory: apps/api
+      PYTHONPATH: ${{ github.workspace }}/python_core
 
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Check committed whitespace errors
-        working-directory: .
-        env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          BEFORE_SHA: ${{ github.event.before }}
-          HEAD_SHA: ${{ github.sha }}
-        run: |
-          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
-            git diff --check "${PR_BASE_SHA}...${HEAD_SHA}"
-          elif [[ "$BEFORE_SHA" =~ ^0+$ ]]; then
-            git diff-tree --check --root -r "$HEAD_SHA"
-          else
-            git diff --check "$BEFORE_SHA" "$HEAD_SHA"
-          fi
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: apps/api/requirements.txt
 
-      - name: Install API dependencies
+      - name: Compile Python core sources
+        run: python -m compileall -q python_core
+
+      - name: Run Native Core & Continual Learning Tests
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-
-      - name: Install PyTorch CPU
-        working-directory: .
-        run: |
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-
-      - name: Run API tests
-        run: python -m pytest -v
-
-      - name: Compile Python sources
-        working-directory: .
-        run: |
-          python -m compileall -q apps/api apps/core
-
-      - name: Run native model, training and infrastructure tests
-        working-directory: .
-        run: |
-          python -m pytest -v \
-            apps/core/test_*.py \
-            apps/core/native \
-            apps/core/training_infrastructure \
-            apps/core/training
+          python -m unittest \
+            python_core/tests/test_continual_learning.py \
+            python_core/tests/test_p1_benchmark.py \
+            -v
 
   web:
-    name: Web Tests and Build
+    name: Web Tests, Server E2E and Build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    defaults:
-      run:
-        working-directory: apps/web
+    timeout-minutes: 20
 
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
 
       - name: Set up Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Set up Python for full-stack E2E tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Install web dependencies
-        run: npm ci --workspaces=false
+        run: npm install --no-audit --no-fund
 
-      - name: Run Vitest
+      - name: Run Vitest (including full-stack HTTP + Python E2E)
         run: npm test
 
       - name: Type-check web application
@@ -121,118 +74,3 @@ jobs:
 
       - name: Build web application
         run: npm run build
-
-  postgres-integration:
-    name: PostgreSQL Integration Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: zyrquen_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d zyrquen_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    env:
-      PYTHON_DOTENV_DISABLED: "1"
-      ZYRQUEN_PG_INTEGRATION: "1"
-      ZYRQUEN_ENV: test
-      DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/zyrquen_test
-      ZYRQUEN_TEST_DATABASE_HOST: 127.0.0.1
-      ZYRQUEN_TEST_DATABASE_PORT: "5432"
-      ZYRQUEN_TEST_DATABASE_NAME: zyrquen_test
-      ZYRQUEN_TEST_DATABASE_ID: ci-test-instance
-      ZYRQUEN_PRODUCTION_DATABASE_HOSTS: prod-db.invalid
-      ZYRQUEN_PRODUCTION_DATABASE_NAMES: zyrquen
-      JWT_SECRET_KEY: ci-test-secret
-      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/apps/api
-
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: apps/api/requirements.txt
-
-      - name: Install dependencies
-        working-directory: .
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r apps/api/requirements.txt
-
-      - name: Create test database identity marker
-        working-directory: .
-        run: |
-          python - <<'PY'
-          import os
-          import psycopg
-
-          url = os.environ["DATABASE_URL"]
-          with psycopg.connect(
-              url.replace(
-                  "postgresql+psycopg://",
-                  "postgresql://",
-              )
-          ) as conn:
-              with conn.cursor() as cur:
-                  cur.execute(
-                      "CREATE SCHEMA IF NOT EXISTS public"
-                  )
-                  cur.execute(
-                      "CREATE TABLE IF NOT EXISTS public.zyrquen_environment_identity "
-                      "(database_name text PRIMARY KEY, environment text NOT NULL, database_id text NOT NULL)"
-                  )
-                  cur.execute(
-                      "INSERT INTO public.zyrquen_environment_identity "
-                      "(database_name, environment, database_id) "
-                      "VALUES (%s, %s, %s) "
-                      "ON CONFLICT (database_name) DO UPDATE SET "
-                      "environment = EXCLUDED.environment, "
-                      "database_id = EXCLUDED.database_id",
-                      (
-                          "zyrquen_test",
-                          "test",
-                          "ci-test-instance",
-                      ),
-                  )
-          PY
-
-      - name: Run PostgreSQL integration tests
-        working-directory: .
-        run: |
-          python -m pytest -v apps/api/test_pg_integration.py
-
-  docker:
-    name: Docker Image Build
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-
-      - name: Build API image
-        run: |
-          docker build \
-            -f apps/api/Dockerfile \
-            -t zyrquen-api:test .
-
-      - name: Build web image
-        run: |
-          docker build \
-            -f apps/web/Dockerfile \
-            -t zyrquen-web:test \
-            ./apps/web

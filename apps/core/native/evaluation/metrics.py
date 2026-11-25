@@ -16,4 +16,3 @@ def calculate_token_accuracy(preds: Sequence[int], targets: Sequence[int]) -> fl
         raise ValueError("preds and targets must be non-empty and of equal length")
     matches = sum(1 for pred, target in zip(preds, targets) if pred == target)
     return matches / len(targets)
-

@@ -8,7 +8,13 @@ from sqlalchemy.orm import Session
 from apps.api.database import get_db
 from apps.api.evaluation_models import EvaluationRun
 from apps.api.evaluation_schemas import EvaluationRunCreate
-from apps.api.evaluation_service import list_evaluation_runs
+from apps.api.evaluation_service import (
+    complete_evaluation_run,
+    create_evaluation_run,
+    fail_evaluation_run,
+    list_evaluation_runs,
+    mark_evaluation_run_running,
+)
 from apps.api.models import User
 from apps.api.security import get_current_user
 from apps.core.native.evaluation import (
@@ -58,6 +64,17 @@ def _configured_checkpoint_dir() -> Path | None:
     return path if path.is_dir() else None
 
 
+def _configured_tokenizer_path() -> Path | None:
+    raw = (
+        os.getenv("ZYRQUEN_EVALUATION_TOKENIZER_PATH", "").strip()
+        or os.getenv("ZYRQUEN_TOKENIZER_PATH", "").strip()
+    )
+    if not raw:
+        return None
+    path = Path(raw).resolve()
+    return path if path.is_file() and not path.is_symlink() else None
+
+
 def _resolve_dataset_dir(dataset_id: str) -> Path | None:
     raw_root = os.getenv("ZYRQUEN_DATASET_ROOT", "").strip()
     if not raw_root:
@@ -75,10 +92,11 @@ def _resolve_dataset_dir(dataset_id: str) -> Path | None:
 
 
 @router.post("/runs")
-async def trigger_evaluation(
+def trigger_evaluation(
     payload: EvaluationRunCreate | None = Body(default=None),
     model_version: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     if payload is None:
         raise HTTPException(
@@ -100,7 +118,10 @@ async def trigger_evaluation(
             },
         )
 
+    run = create_evaluation_run(db, current_user.id, payload)
+    run = mark_evaluation_run_running(db, run.id)
     engine = EvaluationEngine(checkpoint_dir=checkpoint_dir)
+    tokenizer_path = _configured_tokenizer_path()
     try:
         engine.verify_dataset(
             dataset_dir,
@@ -114,20 +135,39 @@ async def trigger_evaluation(
             payload.model_version,
             dataset_dir=dataset_dir,
             dataset_checksum=payload.dataset_checksum,
+            run_inference=True,
+            tokenizer_path=tokenizer_path,
         )
-        return {"message": "Evaluation completed", "results": results}
-    except EvaluationEvidenceError as exc:
+        if not isinstance(results, dict) or not isinstance(results.get("metrics"), dict) or not results.get("metrics"):
+            raise EvaluationEvidenceError(
+                "Evaluation failed to produce valid non-empty metrics."
+            )
+        run = complete_evaluation_run(db, run.id, results=results)
+        return {
+            "message": "Evaluation completed",
+            "run": _serialize_run(run),
+            "results": results,
+        }
+    except (EvaluationEvidenceError, ValueError) as exc:
+        fail_evaluation_run(db, run.id, error_message=str(exc))
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         ) from exc
     except EvaluationNotConfiguredError as exc:
+        fail_evaluation_run(db, run.id, error_message=str(exc))
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
                 "status": "not_configured",
                 "detail": str(exc),
             },
+        ) from exc
+    except Exception as exc:
+        fail_evaluation_run(db, run.id, error_message=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Evaluation failed unexpectedly.",
         ) from exc
 
 
@@ -178,4 +218,3 @@ async def get_evaluation_run(
             detail="Forbidden",
         )
     return _serialize_run(run)
-

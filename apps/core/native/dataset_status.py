@@ -6,20 +6,44 @@ without fabricating dataset readiness or returning raw document payloads.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from apps.core.native.dataset import (
+    SCHEMA,
     V11_SPLITS,
+    _sha256_file,
+    clean_text,
     detect_dataset_format,
+    redact_pii,
     resolve_dataset_splits,
     verify_dataset_manifest,
 )
-from apps.core.native.dataset_v11 import DataAdapter
+from apps.core.dataset_leakage_detector import (
+    DatasetLeakageDetector,
+    SemanticHashLeakageError,
+)
+from apps.core.native.dataset_v11 import DataAdapter, DatasetLeakageError
+from apps.core.workflow import ApprovalViolationError, create_default_orchestrator
 
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_DISALLOWED_PROVENANCE_TOKENS = (
+    "fake",
+    "mock",
+    "fabricated",
+    "synthetic_llm",
+    "external_llm",
+    "gpt",
+    "openai",
+    "claude",
+    "gemini",
+)
 
 
 def validate_dataset_version(version: str) -> str:
@@ -120,6 +144,7 @@ def inspect_dataset_directory(
     ]
 
     leakage_summary: dict[str, Any] = {"status": "NOT RUN"}
+    semantic_summary: dict[str, Any] = {"status": "NOT RUN"}
     if check_v11_leakage and four_split_compliant:
         try:
             adapter = DataAdapter(resolved_dir, verify_on_init=False)
@@ -130,13 +155,44 @@ def inspect_dataset_directory(
                 "passed": leak_report.passed,
                 "violations": leak_report.violations,
             }
-        except (OSError, ValueError) as exc:
+            splits_data = adapter.load_all_splits()
+            sem_report = DatasetLeakageDetector().check_entries(
+                splits_data,
+                check_internal_splits=True,
+                raise_on_leakage=False,
+            )
+            semantic_summary = sem_report.to_dict()
+        except (OSError, ValueError, SemanticHashLeakageError) as exc:
             leakage_summary = {"status": "FAIL", "passed": False, "error": str(exc)}
+            semantic_summary = {"status": "FAIL", "passed": False, "error": str(exc)}
+
+    leakage_failed = (
+        leakage_summary.get("status") == "FAIL"
+        or semantic_summary.get("status") == "FAIL"
+    )
+    approval_gate = manifest.get("approval_gate") if isinstance(manifest.get("approval_gate"), dict) else None
+    approval_gate_verified = bool(
+        approval_gate
+        and approval_gate.get("verified") is True
+        and str(approval_gate.get("approval_id") or "").strip()
+    )
+    manifest_status = str(manifest.get("status") or "").strip().lower()
+    if leakage_failed:
+        resolved_status = "leakage_failed"
+    elif manifest_status == "pending_approval":
+        resolved_status = "pending_approval"
+    elif manifest_status == "ready" and approval_gate_verified:
+        resolved_status = "ready"
+    else:
+        resolved_status = "verified"
 
     return {
         "exists": True,
         "verified": True,
-        "status": "verified" if leakage_summary.get("status") != "FAIL" else "leakage_failed",
+        "status": resolved_status,
+        "training_ready": bool(not leakage_failed and (approval_gate_verified or manifest_status == "")),
+        "approval_gate_verified": approval_gate_verified,
+        "approval_gate": approval_gate,
         "version": manifest.get("version"),
         "schema": manifest.get("schema"),
         "format": fmt,
@@ -151,6 +207,7 @@ def inspect_dataset_directory(
         "licensed_sources_count": len(licensed_sources),
         "licensed_sources": licensed_sources,
         "v11_leakage_check": leakage_summary,
+        "semantic_leakage_check": semantic_summary,
     }
 
 
@@ -199,6 +256,9 @@ def get_datasets_pipeline_status(
                     datasets.append(info)
 
     any_verified = any(bool(d.get("verified")) for d in datasets)
+    any_ready = any(bool(d.get("verified")) and bool(d.get("training_ready", True)) for d in datasets)
+    any_pending = any(d.get("status") == "pending_approval" for d in datasets)
+    any_leakage_failed = any(d.get("status") == "leakage_failed" for d in datasets)
     four_split_compliant = bool(
         active_record
         and active_record.get("verified")
@@ -206,16 +266,29 @@ def get_datasets_pipeline_status(
     ) if active_record is not None else any(
         bool(d.get("verified")) and bool(d.get("four_split_compliant")) for d in datasets
     )
-    status_label = "ready" if any_verified else ("invalid" if datasets else "not_configured")
+    if any_ready:
+        status_label = "ready"
+        detail_msg = "Dataset manifest and SHA-256 integrity verified."
+    elif any_leakage_failed:
+        status_label = "leakage_failed"
+        detail_msg = "Dataset failed leakage verification."
+    elif any_pending:
+        status_label = "pending_approval"
+        detail_msg = "Dataset is verified but awaiting Approval Gate before ready status."
+    elif any_verified:
+        status_label = "verified"
+        detail_msg = "Dataset manifest verified."
+    elif datasets:
+        status_label = "invalid"
+        detail_msg = "Configured dataset path has no valid verified manifest."
+    else:
+        status_label = "not_configured"
+        detail_msg = "Configured dataset path has no valid verified manifest."
     return {
         "configured": True,
         "status": status_label,
         "four_split_compliant": four_split_compliant,
-        "detail": (
-            "Dataset manifest and SHA-256 integrity verified."
-            if any_verified
-            else "Configured dataset path has no valid verified manifest."
-        ),
+        "detail": detail_msg,
         "active_dataset": active_record,
         "datasets": datasets,
     }
@@ -259,6 +332,7 @@ def inspect_v11_training_dataset_readiness(dataset_dir: str | Path | None) -> di
         return {
             "configured": False,
             "verified": False,
+            "dataset_version": None,
             "format": None,
             "four_split_enforced": True,
             "required_splits": list(V11_SPLITS),
@@ -275,6 +349,7 @@ def inspect_v11_training_dataset_readiness(dataset_dir: str | Path | None) -> di
         return {
             "configured": False,
             "verified": False,
+            "dataset_version": None,
             "format": None,
             "four_split_enforced": True,
             "required_splits": list(V11_SPLITS),
@@ -288,6 +363,7 @@ def inspect_v11_training_dataset_readiness(dataset_dir: str | Path | None) -> di
     resolved_dir = raw_dir.resolve()
     verified = False
     four_split_present = False
+    dataset_version: str | None = None
     dataset_splits: list[str] = []
     dataset_format: str | None = None
     split_counts: dict[str, int] = {}
@@ -299,6 +375,7 @@ def inspect_v11_training_dataset_readiness(dataset_dir: str | Path | None) -> di
 
     try:
         manifest = verify_dataset_manifest(resolved_dir)
+        dataset_version = str(manifest.get("version") or "").strip() or None
         splits = resolve_dataset_splits(manifest)
         dataset_splits = list(splits)
         dataset_format = detect_dataset_format(resolved_dir)
@@ -324,6 +401,7 @@ def inspect_v11_training_dataset_readiness(dataset_dir: str | Path | None) -> di
     return {
         "configured": True,
         "verified": verified,
+        "dataset_version": dataset_version,
         "format": dataset_format,
         "four_split_enforced": True,
         "required_splits": list(V11_SPLITS),
@@ -449,3 +527,237 @@ def inspect_training_preflight_readiness(
         "max_cpu_batch_size": MAX_CPU_BATCH_SIZE,
         "reasons": reasons,
     }
+
+
+def _validate_provenance_and_license(source_name: str, license_str: str, provenance: str) -> tuple[str, str, str]:
+    clean_source = str(source_name or "").strip()
+    clean_license = str(license_str or "").strip()
+    clean_provenance = str(provenance or "").strip()
+    if not clean_source:
+        raise ValueError("source_name is required for dataset provenance.")
+    if not clean_license:
+        raise ValueError("license is required for dataset provenance.")
+    if not clean_provenance:
+        raise ValueError("provenance is required for dataset origin traceability.")
+    combined = f"{clean_source} {clean_license} {clean_provenance}".lower()
+    for tok in _DISALLOWED_PROVENANCE_TOKENS:
+        if tok in combined:
+            raise ValueError(f"Disallowed synthetic or external model provenance token: {tok!r}")
+    return clean_source, clean_license, clean_provenance
+
+
+def verify_dataset_approval_ticket(
+    workflow_engine: Any,
+    approval_id: str | None,
+    *,
+    dataset_version: str | None = None,
+) -> dict[str, Any]:
+    """Verify an Approval Gate ticket from apps/core/workflow/ before dataset ingestion."""
+    ticket_id = str(approval_id or "").strip()
+    if not ticket_id:
+        raise ApprovalViolationError(
+            "Tier-2 workflow Approval Gate ticket (approval_id) is required before marking a dataset as 'ready'."
+        )
+    if workflow_engine is None or not hasattr(workflow_engine, "governance"):
+        raise ApprovalViolationError("Workflow Approval Gate registry is unavailable.")
+
+    expected_scope = f"dataset:{dataset_version}" if dataset_version else None
+    return workflow_engine.governance.verify_approval_readonly(
+        ticket_id,
+        expected_action_type="dataset.ingest",
+        expected_scope=expected_scope,
+    )
+
+
+def ingest_v11_dataset(
+    *,
+    dataset_version: str,
+    splits: dict[str, list[dict[str, Any]]],
+    source_name: str,
+    license_str: str,
+    provenance: str,
+    dataset_root: str | Path | None = None,
+    do_redact_pii: bool = True,
+    approval_id: str | None = None,
+    workflow_engine: Any | None = None,
+    require_approval: bool = True,
+) -> dict[str, Any]:
+    """Ingest, clean, hash, and leakage-verify a 4-split V11 dataset atomically with Approval Gate verification."""
+    clean_version = validate_dataset_version(dataset_version)
+    ticket_id = str(approval_id or "").strip()
+    owns_engine = False
+    engine = workflow_engine
+
+    if require_approval:
+        if not ticket_id:
+            raise ApprovalViolationError(
+                "Tier-2 workflow Approval Gate ticket (approval_id) is required before marking a dataset as 'ready'."
+            )
+        if engine is None:
+            engine = create_default_orchestrator()
+            owns_engine = True
+        verify_dataset_approval_ticket(engine, ticket_id, dataset_version=clean_version)
+
+    try:
+        clean_source, clean_license, clean_provenance = _validate_provenance_and_license(
+            source_name, license_str, provenance
+        )
+
+        root_val = str(dataset_root if dataset_root is not None else os.getenv("ZYRQUEN_DATASET_ROOT", "")).strip()
+        if not root_val:
+            raise RuntimeError("ZYRQUEN_DATASET_ROOT is not configured.")
+        raw_root = Path(root_val)
+        if raw_root.is_symlink() or not raw_root.is_dir():
+            raise RuntimeError("ZYRQUEN_DATASET_ROOT directory is missing or invalid.")
+        resolved_root = raw_root.resolve()
+
+        target_dir = (resolved_root / clean_version).resolve()
+        if target_dir == resolved_root or not target_dir.is_relative_to(resolved_root):
+            raise ValueError("Dataset version resolves outside configured dataset root.")
+        if target_dir.exists() or target_dir.is_symlink():
+            raise FileExistsError(f"Dataset version {clean_version!r} already exists; overwrite is forbidden.")
+
+        if not isinstance(splits, dict):
+            raise ValueError("splits payload must be an object mapping train/validation/unseen/ood.")
+        missing_splits = [sp for sp in V11_SPLITS if sp not in splits]
+        if missing_splits:
+            raise ValueError(f"V11 dataset requires 4 splits {list(V11_SPLITS)}; missing {missing_splits}.")
+
+        seen_norms: set[str] = set()
+        cleaned_splits: dict[str, list[dict[str, Any]]] = {sp: [] for sp in V11_SPLITS}
+        detected_mode: str | None = None
+
+        for sp in V11_SPLITS:
+            rows = splits.get(sp)
+            if not isinstance(rows, list) or not rows:
+                raise ValueError(f"Split {sp!r} must be a non-empty list of records.")
+            for idx, row in enumerate(rows):
+                if not isinstance(row, dict):
+                    raise ValueError(f"Split {sp!r} row {idx} must be a JSON object.")
+                if "input" in row and "target" in row:
+                    mode = "sft"
+                    inp = clean_text(str(row["input"]))
+                    tgt = clean_text(str(row["target"]))
+                    if do_redact_pii:
+                        inp = redact_pii(inp)
+                        tgt = redact_pii(tgt)
+                    if not inp or not tgt:
+                        continue
+                    norm_key = re.sub(r"\s+", " ", inp).casefold()
+                    out_row: dict[str, Any] = {"input": inp, "target": tgt, "split": sp, "source": clean_source}
+                elif "text" in row:
+                    mode = "text"
+                    txt = clean_text(str(row["text"]))
+                    if do_redact_pii:
+                        txt = redact_pii(txt)
+                    if not txt:
+                        continue
+                    norm_key = re.sub(r"\s+", " ", txt).casefold()
+                    out_row = {"text": txt, "split": sp, "source": clean_source}
+                else:
+                    raise ValueError(f"Split {sp!r} row {idx} must contain ('input','target') or 'text'.")
+
+                if detected_mode is None:
+                    detected_mode = mode
+                elif detected_mode != mode:
+                    raise ValueError("Mixed SFT and text record schemas within the same dataset are not allowed.")
+
+                if norm_key in seen_norms:
+                    continue
+                seen_norms.add(norm_key)
+                cleaned_splits[sp].append(out_row)
+
+            if not cleaned_splits[sp]:
+                raise ValueError(f"Split {sp!r} has no unique non-empty records after cleaning/deduplication.")
+
+        staging_dir = Path(tempfile.mkdtemp(prefix=f".ingest_{clean_version}_", dir=str(resolved_root)))
+        try:
+            files_meta: dict[str, dict[str, Any]] = {}
+            split_hashes: list[str] = []
+            for sp in V11_SPLITS:
+                sp_file = staging_dir / f"{sp}.jsonl"
+                with sp_file.open("w", encoding="utf-8") as fh:
+                    for item in cleaned_splits[sp]:
+                        fh.write(json.dumps(item, ensure_ascii=False) + "\n")
+                sha = _sha256_file(sp_file)
+                files_meta[f"{sp}.jsonl"] = {"documents": len(cleaned_splits[sp]), "sha256": sha}
+                split_hashes.append(sha)
+
+            content_sha = hashlib.sha256("".join(split_hashes).encode("utf-8")).hexdigest()
+            manifest_path = staging_dir / "manifest.json"
+            manifest: dict[str, Any] = {
+                "schema": SCHEMA,
+                "dataset": "nagi_v11",
+                "version": clean_version,
+                "status": "pending_approval",
+                "content_sha256": content_sha,
+                "provenance": clean_provenance,
+                "sources": {
+                    clean_source: {
+                        "license": clean_license,
+                        "provenance": clean_provenance,
+                        "sha256": content_sha,
+                    }
+                },
+                "files": files_meta,
+            }
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            adapter = DataAdapter(staging_dir, verify_on_init=True)
+            leak_report = adapter.detect_leakage(raise_on_leakage=False)
+            if not leak_report.passed:
+                raise DatasetLeakageError(
+                    f"V11 leakage gate failed; dataset rejected: {', '.join(leak_report.violations)}"
+                )
+
+            existing_dirs = [
+                p
+                for p in resolved_root.iterdir()
+                if p.is_dir() and not p.is_symlink() and not p.name.startswith(".") and p != staging_dir
+            ]
+            semantic_detector = DatasetLeakageDetector()
+            semantic_report = semantic_detector.check_entries(
+                cleaned_splits,
+                reference_dirs=existing_dirs,
+                allowed_root=resolved_root,
+                check_internal_splits=True,
+                raise_on_leakage=False,
+            )
+            if not semantic_report.passed:
+                raise DatasetLeakageError(
+                    f"Semantic hash leakage gate failed; dataset rejected: {', '.join(semantic_report.violations)}"
+                )
+
+            if require_approval and engine is not None:
+                consumed = engine.governance.verify_and_consume_by_id(
+                    ticket_id,
+                    expected_action_type="dataset.ingest",
+                    expected_scope=f"dataset:{clean_version}",
+                )
+                manifest["status"] = "ready"
+                manifest["approval_gate"] = {
+                    "approval_id": consumed["id"],
+                    "run_id": consumed["run_id"],
+                    "action_type": consumed["action_type"],
+                    "scope": consumed["scope"],
+                    "approved_by_user_id": consumed.get("approved_by_user_id"),
+                    "consumed_at": consumed.get("consumed_at"),
+                    "verified": True,
+                }
+                manifest_path.write_text(
+                    json.dumps(manifest, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+
+            staging_dir.rename(target_dir)
+        except Exception:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            raise
+
+        return inspect_dataset_directory(target_dir, allowed_root=resolved_root, check_v11_leakage=True)
+    finally:
+        if owns_engine and engine is not None:
+            engine.shutdown(wait=True)
