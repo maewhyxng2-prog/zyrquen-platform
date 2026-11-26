@@ -544,6 +544,7 @@ class CentralWorkflowOrchestrator:
         self.governance = WorkflowGovernance(self.store, approval_secret=resolved_secret)
         self.scheduler = WorkflowScheduler()
         self._started = False
+        self._closed = False
         self._recovery_enabled = False
         self._register_builtin_workflows()
 
@@ -616,10 +617,18 @@ class CentralWorkflowOrchestrator:
         if enable_scheduler:
             self.scheduler.start()
 
+    @property
+    def is_closed(self) -> bool:
+        """Whether this orchestrator has released its persistent store."""
+        return self._closed
+
     def shutdown(self, wait: bool = True) -> None:
+        if self._closed:
+            return
         self.scheduler.stop()
         self._started = False
         self.store.close()
+        self._closed = True
 
     def get_service_status(self) -> dict[str, Any]:
         return {
