@@ -68,10 +68,10 @@ export function isPiiAuditEvent(event: AuditEvent): boolean {
   return /PII/i.test(event.action);
 }
 
-export function toSafeAuditCsv(rows: AuditEvent[]): string {
+export function toSafeAuditCsv(rows: AuditEvent[], piiOnly = true): string {
   const header = ["เวลา", "ผู้ดำเนินการ", "เหตุการณ์", "เป้าหมาย", "ผลลัพธ์"];
   const lines = rows
-    .filter(isPiiAuditEvent)
+    .filter((row) => !piiOnly || isPiiAuditEvent(row))
     .map((row) => {
       const safe = redactAuditRow(row);
       return [
@@ -92,8 +92,12 @@ function csvCell(value: unknown): string {
   return `"${text.replace(/"/g, '""')}"`;
 }
 
-export function toSafeAuditJson(rows: AuditEvent[]): string {
-  return JSON.stringify(rows.filter(isPiiAuditEvent).map(redactAuditRow), null, 2);
+export function toSafeAuditJson(rows: AuditEvent[], piiOnly = true): string {
+  return JSON.stringify(
+    rows.filter((row) => !piiOnly || isPiiAuditEvent(row)).map(redactAuditRow),
+    null,
+    2
+  );
 }
 
 export function downloadText(filename: string, text: string, mimeType: string): void {
