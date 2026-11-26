@@ -2582,7 +2582,8 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
   );
 
   const isProductionEnv =
-    process.env.NODE_ENV === 'production' || Boolean(process.env.K_SERVICE);
+    process.env.NODE_ENV === 'production' ||
+    (Boolean(process.env.K_SERVICE) && process.env.NODE_ENV !== 'development');
   const shouldAttachVite = options.attachVite ?? !isProductionEnv;
   if (shouldAttachVite) {
     const { createServer: createViteServer } = await import('vite');
