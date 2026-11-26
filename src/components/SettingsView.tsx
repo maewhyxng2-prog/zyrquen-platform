@@ -146,7 +146,16 @@ export function SettingsView({
         apiRequest<AdminOverview>('/api/admin/overview', { token }),
         apiRequest<AuditEvent[]>('/api/admin/audit-logs?limit=500', { token }).catch(() => null),
       ]);
-      setAdminData({ ...res, audit_logs: auditLogs || res.audit_logs || [] });
+      setAdminData({
+        ...res,
+        audit_logs: (auditLogs ?? res.audit_logs ?? []).map((log) => ({
+          ...log,
+          actor_id: log.actor_id ?? '',
+          actor_email: log.actor_email ?? '',
+          target: log.target ?? '',
+          outcome: log.outcome ?? '',
+        })),
+      });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'ไม่สามารถโหลดส่วนผู้ดูแลระบบได้');
     } finally {
