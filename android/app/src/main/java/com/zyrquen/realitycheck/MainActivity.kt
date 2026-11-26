@@ -75,7 +75,7 @@ private fun RealityCheckApp(tokens: TokenStore) {
             scope.launch {
                 busy = true
                 try {
-                    health = api!!.health().status ?: "UNKNOWN"
+                    health = api!!.livez().status ?: "UNKNOWN"
                     statusText = "Backend ตอบสนองแล้ว"
                     if (token.isNotBlank()) {
                         api!!.me("Bearer $token")
