@@ -1,4 +1,5 @@
 // @vitest-environment node
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -1244,9 +1245,16 @@ describe('Isolated 6-Step Non-Skippable Native Training Pipeline Gate E2E', () =
     expect(exportJsonRes.headers.get('x-content-type-options')).toBe('nosniff');
     expect(exportJsonRes.headers.get('cache-control')).toContain('no-store');
     const shaHeader = exportJsonRes.headers.get('x-zyrquen-export-sha256') || '';
+    const jsonFileShaHeader = exportJsonRes.headers.get('x-zyrquen-file-sha256') || '';
     expect(shaHeader.length).toBe(64);
+    expect(jsonFileShaHeader.length).toBe(64);
 
     const exportBodyText = await exportJsonRes.text();
+    const computedJsonFileSha = crypto
+      .createHash('sha256')
+      .update(exportBodyText, 'utf8')
+      .digest('hex');
+    expect(computedJsonFileSha).toBe(jsonFileShaHeader);
     expect(exportBodyText).not.toContain('alice.secret@example.org');
     expect(exportBodyText).not.toContain('081-234-5678');
     expect(exportBodyText).not.toContain('1-1004-00123-45-6');
@@ -1281,7 +1289,10 @@ describe('Isolated 6-Step Non-Skippable Native Training Pipeline Gate E2E', () =
     );
     expect(exportCsvRes.status).toBe(200);
     expect(exportCsvRes.headers.get('content-type')).toContain('text/csv');
+    const csvFileShaHeader = exportCsvRes.headers.get('x-zyrquen-file-sha256') || '';
     const csvText = await exportCsvRes.text();
+    const computedCsvFileSha = crypto.createHash('sha256').update(csvText, 'utf8').digest('hex');
+    expect(computedCsvFileSha).toBe(csvFileShaHeader);
     expect(csvText).toContain('PII_REDACTION');
     expect(csvText).not.toContain('alice.secret@example.org');
 

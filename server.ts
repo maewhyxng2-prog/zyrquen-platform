@@ -2128,13 +2128,18 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
             .join(',')
         );
         const csvBody = [headers.join(','), ...rows].join('\r\n');
+        const fileSha256 = crypto.createHash('sha256').update(csvBody, 'utf8').digest('hex');
+        res.setHeader('X-Zyrquen-File-Sha256', fileSha256);
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.status(200).send(csvBody);
         return;
       }
 
+      const jsonBody = JSON.stringify(exportData, null, 2);
+      const fileSha256 = crypto.createHash('sha256').update(jsonBody, 'utf8').digest('hex');
+      res.setHeader('X-Zyrquen-File-Sha256', fileSha256);
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      res.status(200).send(JSON.stringify(exportData, null, 2));
+      res.status(200).send(jsonBody);
     }
   );
 
