@@ -97,6 +97,25 @@ def api_client(tmp_path, monkeypatch):
     engine.dispose()
 
 
+
+def test_workflow_engine_recreated_after_shutdown(tmp_path, monkeypatch):
+    from apps.api.routers import workflows as workflows_router
+    from apps.core.workflow import CentralWorkflowOrchestrator
+
+    closed_engine = CentralWorkflowOrchestrator(
+        db_path=tmp_path / "closed-workflow.db",
+        work_dir=tmp_path / "closed-workflow-work",
+        approval_secret="unit-test-approval-secret-minimum-32-chars",
+    )
+    closed_engine.shutdown(wait=True)
+    monkeypatch.setattr(workflows_router, "_ENGINE", closed_engine)
+
+    replacement = workflows_router.get_workflow_engine()
+    assert replacement is not closed_engine
+    assert replacement.is_closed is False
+    replacement.shutdown(wait=True)
+
+
 def test_dataset_status_requires_authentication(api_client):
     client, _, _, _ = api_client
     app.dependency_overrides.pop(get_current_user)
