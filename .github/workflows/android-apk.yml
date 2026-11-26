@@ -5,11 +5,17 @@ on:
     paths:
       - "android/**"
       - ".github/workflows/android-apk.yml"
+      - "tests/restoreproof/**"
+      - "realitycheck/restoreproof/**"
+      - "conftest.py"
   push:
     branches: [main]
     paths:
       - "android/**"
       - ".github/workflows/android-apk.yml"
+      - "tests/restoreproof/**"
+      - "realitycheck/restoreproof/**"
+      - "conftest.py"
 
 permissions:
   contents: read
@@ -47,4 +53,7 @@ jobs:
       - name: Install test runner
         run: python -m pip install --upgrade pip pytest
       - name: Run RestoreProof unit tests
+        env:
+          PYTHON_DOTENV_DISABLED: "1"
         run: python -m pytest -q tests/restoreproof
+}
