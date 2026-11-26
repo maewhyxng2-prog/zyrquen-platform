@@ -166,7 +166,7 @@ def test_missing_training_artifacts_return_503(api_client, tmp_path, monkeypatch
         )
 
         assert response.status_code == 503
-        assert "dataset directory and tokenizer path are not configured" in response.json()["detail"]
+        assert "Native training dataset directory and tokenizer path are not configured." in response.json()["detail"]
         assert isolated_engine.store.get_approval(approved["id"])["status"] == "approved"
     finally:
         isolated_engine.shutdown(wait=True)
