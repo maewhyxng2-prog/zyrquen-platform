@@ -7,16 +7,22 @@ import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
 import { fileURLToPath } from 'url';
+import {
+  runFallbackBenchmark,
+  runFallbackCoreCommand,
+  runFallbackDbBridge,
+} from './server_fallback.ts';
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const SESSION_SECRET =
   process.env.ZYRQUEN_SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const revokedTokenIds = new Set<string>();
+let pythonUnavailable = process.env.ZYRQUEN_NODE_FALLBACK === '1';
 
 export interface AuthUser {
   id: string;
@@ -195,11 +201,35 @@ function getPythonWorker(): PythonWorkerClient {
   return activeWorker;
 }
 
-function runPythonScript<T = Record<string, unknown>>(
+async function runPythonScript<T = Record<string, unknown>>(
   scriptName: 'zyrquen_core.py' | 'db_bridge.py',
   input: Record<string, unknown>
 ): Promise<T> {
-  return getPythonWorker().call<T>(scriptName, input);
+  if (!pythonUnavailable) {
+    try {
+      return await getPythonWorker().call<T>(scriptName, input);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      const message = err instanceof Error ? err.message : String(err);
+      if (code === 'ENOENT' || code === 'EACCES' || /spawn python3 ENOENT/i.test(message)) {
+        pythonUnavailable = true;
+        console.warn('[ZYRQUEN] python3 unavailable in this container; switching to Node.js runtime fallback.');
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  if (scriptName === 'db_bridge.py') {
+    return runFallbackDbBridge(
+      String(input.action || ''),
+      (input.payload as Record<string, unknown>) || {}
+    ) as unknown as T;
+  }
+  return runFallbackCoreCommand(
+    String(input.cmd || ''),
+    (input.payload as Record<string, unknown>) || {}
+  ) as unknown as T;
 }
 
 function hashPassword(password: string): string {
@@ -1735,52 +1765,68 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
     }
 
     try {
-      const report = await new Promise<Record<string, unknown>>((resolve, reject) => {
-        const pyCode = [
-          'import json, sys',
-          'from tests.benchmark_suite import run_capability_benchmark',
-          'print(json.dumps(run_capability_benchmark(model_version=sys.argv[1], persist_baseline=True), ensure_ascii=False))',
-        ].join('; ');
-        const child = spawn('python3', ['-c', pyCode, requestedModel], {
-          cwd: __dirname,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          env: {
-            ...process.env,
-            PYTHONPATH: path.resolve(__dirname, 'python_core'),
-          },
-        });
+      let report: Record<string, unknown>;
+      if (pythonUnavailable) {
+        report = runFallbackBenchmark(requestedModel);
+      } else {
+        try {
+          report = await new Promise<Record<string, unknown>>((resolve, reject) => {
+            const pyCode = [
+              'import json, sys',
+              'from tests.benchmark_suite import run_capability_benchmark',
+              'print(json.dumps(run_capability_benchmark(model_version=sys.argv[1], persist_baseline=True), ensure_ascii=False))',
+            ].join('; ');
+            const child = spawn('python3', ['-c', pyCode, requestedModel], {
+              cwd: __dirname,
+              stdio: ['ignore', 'pipe', 'pipe'],
+              env: {
+                ...process.env,
+                PYTHONPATH: path.resolve(__dirname, 'python_core'),
+              },
+            });
 
-        let stdout = '';
-        let stderr = '';
-        const timer = setTimeout(() => {
-          child.kill('SIGTERM');
-          reject(new Error('Native capability benchmark timed out'));
-        }, 60_000);
+            let stdout = '';
+            let stderr = '';
+            const timer = setTimeout(() => {
+              child.kill('SIGTERM');
+              reject(new Error('Native capability benchmark timed out'));
+            }, 60_000);
 
-        child.stdout.on('data', (chunk: Buffer) => {
-          stdout += chunk.toString('utf-8');
-        });
-        child.stderr.on('data', (chunk: Buffer) => {
-          stderr += chunk.toString('utf-8');
-        });
-        child.on('error', (err) => {
-          clearTimeout(timer);
-          reject(err);
-        });
-        child.on('close', (code) => {
-          clearTimeout(timer);
-          if (code !== 0) {
-            reject(new Error(stderr.trim() || `Benchmark exited with code ${code}`));
-            return;
+            child.stdout.on('data', (chunk: Buffer) => {
+              stdout += chunk.toString('utf-8');
+            });
+            child.stderr.on('data', (chunk: Buffer) => {
+              stderr += chunk.toString('utf-8');
+            });
+            child.on('error', (err) => {
+              clearTimeout(timer);
+              reject(err);
+            });
+            child.on('close', (code) => {
+              clearTimeout(timer);
+              if (code !== 0) {
+                reject(new Error(stderr.trim() || `Benchmark exited with code ${code}`));
+                return;
+              }
+              try {
+                const parsed = JSON.parse(stdout.trim()) as Record<string, unknown>;
+                resolve(parsed);
+              } catch (err) {
+                reject(new Error(`Invalid JSON from benchmark_suite.py: ${(err as Error).message}`));
+              }
+            });
+          });
+        } catch (spawnErr) {
+          const code = (spawnErr as NodeJS.ErrnoException | undefined)?.code;
+          const msg = spawnErr instanceof Error ? spawnErr.message : String(spawnErr);
+          if (code === 'ENOENT' || code === 'EACCES' || /spawn python3 ENOENT/i.test(msg)) {
+            pythonUnavailable = true;
+            report = runFallbackBenchmark(requestedModel);
+          } else {
+            throw spawnErr;
           }
-          try {
-            const parsed = JSON.parse(stdout.trim()) as Record<string, unknown>;
-            resolve(parsed);
-          } catch (err) {
-            reject(new Error(`Invalid JSON from benchmark_suite.py: ${(err as Error).message}`));
-          }
-        });
-      });
+        }
+      }
 
       const summary = (report.summary || {}) as Record<string, unknown>;
       await runPythonScript('db_bridge.py', {
@@ -2387,7 +2433,9 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
     }
   );
 
-  const shouldAttachVite = options.attachVite ?? process.env.NODE_ENV !== 'production';
+  const isProductionEnv =
+    process.env.NODE_ENV === 'production' || Boolean(process.env.K_SERVICE);
+  const shouldAttachVite = options.attachVite ?? !isProductionEnv;
   if (shouldAttachVite) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -2395,7 +2443,7 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
       appType: 'spa',
     });
     app.use(vite.middlewares);
-  } else if (process.env.NODE_ENV === 'production') {
+  } else if (isProductionEnv) {
     const distDir = path.resolve(__dirname, 'dist');
     app.use(
       express.static(distDir, {
