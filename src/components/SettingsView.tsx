@@ -7,7 +7,9 @@ import {
   Code2,
   Database,
   Download,
+  GitCompare,
   KeyRound,
+  Layers,
   LogOut,
   Moon,
   Play,
@@ -25,6 +27,7 @@ import { serializeTableToTsv } from '../lib/clipboard';
 import { useZyrquenTheme } from '../lib/theme';
 import { MODEL_VARIANTS } from '../types';
 import { CopyButton } from './CopyButton';
+import { ModelRegistryModal, type ModelRegistryModalTab } from './ModelRegistryModal';
 import { ToolRegistry } from './ToolRegistry';
 
 const AdminStabilityPanel = lazy(() =>
@@ -139,6 +142,12 @@ export function SettingsView({
     type: 'success' | 'error';
     text: string;
   } | null>(null);
+  const [registryModalOpen, setRegistryModalOpen] = useState(false);
+  const [registryModalTab, setRegistryModalTab] = useState<ModelRegistryModalTab>('compare');
+  const [registryBaseVersion, setRegistryBaseVersion] = useState<string | undefined>(undefined);
+  const [registryCandidateVersion, setRegistryCandidateVersion] = useState<string | undefined>(
+    undefined
+  );
 
   const loadDeveloper = useCallback(async () => {
     setLoading(true);
@@ -690,8 +699,26 @@ export function SettingsView({
     }
   }
 
-  async function handleDownloadTrainingArtifact(kind: 'logs' | 'manifest') {
+  function openModelRegistryModal(
+    tab: ModelRegistryModalTab = 'compare',
+    baseVersion?: string,
+    candidateVersion?: string
+  ) {
+    setRegistryModalTab(tab);
+    setRegistryBaseVersion(baseVersion);
+    setRegistryCandidateVersion(candidateVersion);
+    setRegistryModalOpen(true);
+    if (!devData) {
+      void loadDeveloper();
+    }
+  }
+
+  async function handleDownloadTrainingArtifact(
+    kind: 'logs' | 'manifest',
+    versionOverride?: string
+  ) {
     const targetVersion =
+      versionOverride ||
       selectedArtifactVersion ||
       (devData?.checkpoints?.[0] ? `v${devData.checkpoints[0].version}` : '');
     if (!targetVersion) {
@@ -1272,14 +1299,32 @@ export function SettingsView({
                     <h3 className="text-base font-semibold text-[var(--color-text)]">
                       Checkpoint โมเดลแบบไม่เขียนทับ
                     </h3>
-                    <button
-                      type="button"
-                      disabled={runningEval}
-                      onClick={() => void handleRunEvaluation()}
-                      className="min-h-[36px] rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-xs font-medium text-[var(--color-accent)] transition-colors hover:border-[var(--color-accent)] disabled:opacity-50 whitespace-nowrap"
-                    >
-                      {runningEval ? 'กำลังประเมิน...' : 'ประเมินผลเทียบ Baseline'}
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => openModelRegistryModal('registry')}
+                        className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-xs font-medium text-[var(--color-text)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] whitespace-nowrap"
+                      >
+                        <Layers className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>เปิด Model Registry</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openModelRegistryModal('compare')}
+                        className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-xs font-medium text-[var(--color-accent)] transition-colors hover:border-[var(--color-accent)] whitespace-nowrap"
+                      >
+                        <GitCompare className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>เปรียบเทียบเวอร์ชัน</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={runningEval}
+                        onClick={() => void handleRunEvaluation()}
+                        className="min-h-[36px] rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-xs font-medium text-[var(--color-accent)] transition-colors hover:border-[var(--color-accent)] disabled:opacity-50 whitespace-nowrap"
+                      >
+                        {runningEval ? 'กำลังประเมิน...' : 'ประเมินผลเทียบ Baseline'}
+                      </button>
+                    </div>
                   </div>
                   <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
                     สร้างหลังผ่าน Approval Gate ในหน้า ความจำ → ระบบเวิร์กโฟลว์ → ฝึกโมเดลภายใน
@@ -1330,9 +1375,10 @@ export function SettingsView({
                         ยังไม่มี Checkpoint ที่ฝึกไว้
                       </p>
                     ) : (
-                      devData!.checkpoints.map((ck) => {
+                      devData!.checkpoints.map((ck, idx) => {
                         const ckVersionLabel = `v${ck.version}`;
                         const isSelected = selectedArtifactVersion === ckVersionLabel;
+                        const prevCk = devData!.checkpoints[idx + 1] || devData!.checkpoints[0];
                         return (
                           <div
                             key={ck.id}
@@ -1352,9 +1398,28 @@ export function SettingsView({
                                 Checkpoint {ckVersionLabel}
                                 {isSelected ? ' (Selected)' : ''}
                               </button>
-                              <span className="text-xs font-medium text-[var(--color-accent)]">
-                                {ck.eval_status}
-                              </span>
+                              <div className="flex items-center gap-2">
+                                {devData!.checkpoints.length >= 2 && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      openModelRegistryModal(
+                                        'compare',
+                                        prevCk && prevCk.version !== ck.version
+                                          ? `v${prevCk.version}`
+                                          : undefined,
+                                        ckVersionLabel
+                                      )
+                                    }
+                                    className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface-raised)] px-2 py-0.5 text-[11px] font-medium text-[var(--color-text-secondary)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] whitespace-nowrap"
+                                  >
+                                    เทียบใน Registry
+                                  </button>
+                                )}
+                                <span className="text-xs font-medium text-[var(--color-accent)]">
+                                  {ck.eval_status}
+                                </span>
+                              </div>
                             </div>
                             <p className="mt-1 font-mono text-xs text-[var(--color-text-secondary)] tabular-nums">
                               vocab {ck.vocab_size} · train_loss {ck.train_loss} · val_loss{' '}
@@ -2119,6 +2184,14 @@ export function SettingsView({
                         />
                         <button
                           type="button"
+                          onClick={() => openModelRegistryModal('compare')}
+                          className="inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-xs font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] whitespace-nowrap"
+                        >
+                          <GitCompare className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span>Model Registry</span>
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => onChangeTab('developer')}
                           className="min-h-[36px] shrink-0 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-xs font-medium text-[var(--color-accent)] hover:border-[var(--color-accent)] whitespace-nowrap"
                         >
@@ -2693,6 +2766,20 @@ export function SettingsView({
           )}
         </div>
       )}
+      <ModelRegistryModal
+        open={registryModalOpen}
+        initialTab={registryModalTab}
+        initialBaseVersion={registryBaseVersion}
+        initialCandidateVersion={registryCandidateVersion}
+        checkpoints={devData?.checkpoints ?? adminData?.training_readiness?.checkpoints ?? []}
+        evaluations={devData?.evaluations ?? []}
+        experiments={devData?.experiments ?? adminData?.training_readiness?.experiments ?? []}
+        datasets={devData?.datasets ?? adminData?.training_readiness?.datasets ?? []}
+        downloadingArtifact={downloadingArtifact}
+        artifactNotice={artifactNotice}
+        onDownloadArtifact={(kind, ver) => handleDownloadTrainingArtifact(kind, ver)}
+        onClose={() => setRegistryModalOpen(false)}
+      />
     </div>
   );
 }
