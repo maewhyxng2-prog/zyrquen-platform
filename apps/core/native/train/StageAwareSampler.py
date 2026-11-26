@@ -95,14 +95,20 @@ def _extract_item_stage(item: Any, index: int, stage_key: str) -> str:
     if isinstance(item, str):
         return _validate_stage_name(item, label=f"stage at index {index}")
     if isinstance(item, Mapping):
-        if stage_key not in item:
-            raise ValueError(
-                f"record at index {index} is missing required stage field {stage_key!r}"
-            )
-        return _validate_stage_name(item[stage_key], label=f"record[{stage_key!r}] at index {index}")
+        if stage_key in item:
+            return _validate_stage_name(item[stage_key], label=f"record[{stage_key!r}] at index {index}")
+        if stage_key == "stage" and "stage_tag" in item:
+            return _validate_stage_name(item["stage_tag"], label=f"record['stage_tag'] at index {index}")
+        raise ValueError(
+            f"record at index {index} is missing required stage field {stage_key!r}"
+        )
     if hasattr(item, stage_key):
         return _validate_stage_name(
             getattr(item, stage_key), label=f"record.{stage_key} at index {index}"
+        )
+    if stage_key == "stage" and hasattr(item, "stage_tag"):
+        return _validate_stage_name(
+            getattr(item, "stage_tag"), label=f"record.stage_tag at index {index}"
         )
     raise ValueError(
         f"cannot extract stage from item at index {index} using stage_key={stage_key!r}"
