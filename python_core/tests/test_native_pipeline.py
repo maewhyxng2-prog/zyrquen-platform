@@ -57,6 +57,9 @@ class NativePipelineTests(unittest.TestCase):
             # Checkpoint continuity: load candidate checkpoint and train 2 more steps without overwriting
             cont = stage_resume(art_dir, steps=2)
             self.assertTrue(cont["weights_preserved_continuity"])
+            self.assertTrue(cont["source_checkpoint_unchanged"])
+            self.assertTrue(cont["resumed_checkpoint_reload_verified"])
+            self.assertEqual(cont["source_sha256"], cont["source_sha256_after"])
             self.assertEqual(cont["global_step_before"], 8)
             self.assertEqual(cont["global_step_after"], 10)
             resumed_ckpt = art_dir / cont["resumed_checkpoint"]
