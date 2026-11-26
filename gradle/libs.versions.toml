@@ -11,7 +11,7 @@ kotlinxCoroutines = "1.10.2"
 firebaseBom = "35.1.0"
 googleServices = "4.4.2"
 junit = "4.13.2"
-orgJson = "20240303"
+orgJson = "20260719"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
