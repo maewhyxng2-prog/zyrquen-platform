@@ -75,6 +75,7 @@ def run_restore(backup: Path, manifest: Path, report_path: Path,
             "--pids-limit", "128", "--read-only",
             "--tmpfs", "/var/lib/postgresql/data:rw,noexec,nosuid,size=768m",
             "--tmpfs", "/var/run/postgresql:rw,noexec,nosuid,size=16m",
+            "--mount", "type=bind,src=" + str(artifact["path"]) + ",dst=/backup.dump,readonly",
             "-e", "POSTGRES_PASSWORD=" + password,
             "-e", "POSTGRES_DB=restoreproof",
             postgres_image,
@@ -94,11 +95,10 @@ def run_restore(backup: Path, manifest: Path, report_path: Path,
         if not ready:
             raise RuntimeError("POSTGRES_READINESS_TIMEOUT")
 
-        # Copy input into the disposable container. The source is only read.
-        _run(["docker", "cp", str(artifact["path"]), container_id + ":/tmp/backup.dump"], 60)
+        # The backup is bind-mounted read-only; no writable copy is created.
         _run(["docker", "exec", container_id, "pg_restore", "--exit-on-error",
               "--no-owner", "--no-privileges", "-U", "postgres",
-              "-d", "restoreproof", "/tmp/backup.dump"],
+              "-d", "restoreproof", "/backup.dump"],
              max(1, int(deadline - time.monotonic())))
         checks.append({"name": "isolated_postgres_restore", "status": "PASS"})
 
