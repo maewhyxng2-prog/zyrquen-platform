@@ -53,3 +53,10 @@ tokenizers/
 
 # Editor backup files
 *.save
+
+# Build & test artifacts
+*.tsbuildinfo
+.next/
+dist/
+test-results/
+playwright-report/
