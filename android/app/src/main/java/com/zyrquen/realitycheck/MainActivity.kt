@@ -49,7 +49,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun RealityCheckApp(tokens: TokenStore) {
     val scope = rememberCoroutineScope()
-    var baseUrl by remember { mutableStateOf("") }
+    var baseUrl by remember { mutableStateOf(tokens.readBaseUrl()) }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var token by remember { mutableStateOf(tokens.read().orEmpty()) }
@@ -61,6 +61,12 @@ private fun RealityCheckApp(tokens: TokenStore) {
     var busy by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf("home") }
     var api by remember { mutableStateOf<RealityCheckApi?>(null) }
+
+    LaunchedEffect(baseUrl) {
+        if (baseUrl.startsWith("https://") && baseUrl.endsWith("/")) {
+            api = runCatching { ApiFactory.create(baseUrl) { token.ifBlank { null } } }.getOrNull()
+        }
+    }
 
     fun connect() {
         try {
@@ -90,14 +96,13 @@ private fun RealityCheckApp(tokens: TokenStore) {
             LoginScreen(
                 baseUrl, { baseUrl = it }, email, { email = it },
                 password, { password = it }, statusText, busy,
-                onConnect = { connect() },
                 onLogin = {
                     scope.launch {
                         busy = true
                         try {
                             val client = ApiFactory.create(baseUrl.trim()) { null }
                             val result = client.login(LoginRequest(email.trim(), password))
-                            tokens.write(result.access_token)
+                            tokens.write(result.access_token, baseUrl.trim())
                             token = result.access_token
                             password = ""
                             api = ApiFactory.create(baseUrl.trim()) { token }
@@ -169,7 +174,7 @@ private fun LoginScreen(
     baseUrl: String, onBaseUrl: (String) -> Unit,
     email: String, onEmail: (String) -> Unit,
     password: String, onPassword: (String) -> Unit,
-    status: String, busy: Boolean, onConnect: () -> Unit, onLogin: () -> Unit
+    status: String, busy: Boolean, onLogin: () -> Unit
 ) {
     Column(Modifier.fillMaxSize().background(Navy).padding(24.dp), verticalArrangement = Arrangement.Center) {
         Text("RealityCheck", style = MaterialTheme.typography.headlineLarge)
