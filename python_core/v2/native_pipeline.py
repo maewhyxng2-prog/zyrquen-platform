@@ -454,6 +454,7 @@ def _load_candidate_evaluator(
     return evaluator, trainer
 
 
+
 def stage_evaluate(artifact_dir: Path) -> Dict[str, Any]:
     manifest = json.loads((artifact_dir / "train_manifest.json").read_text(encoding="utf-8"))
     baseline = json.loads((artifact_dir / "baseline_metrics.json").read_text(encoding="utf-8"))
@@ -604,11 +605,31 @@ def stage_resume(
         out_name = f"v2_resumed_{stamp}_step{stats['global_step']}.json.gz"
         resumed_path, resumed_sha = resumed.save_checkpoint(ckpt_dir / out_name)
 
+    source_sha_after = _sha256_file(ckpt_path)
+    if source_sha_after != ckpt_sha:
+        raise RuntimeError("Source candidate checkpoint changed during resume verification")
+
+    if backend == "pytorch":
+        reloaded = ContinualTrainerV2.load_checkpoint(
+            resumed_path, tokenizer=tok, expected_sha256=resumed_sha,
+            resume_optimizer=True, restore_continual_state=True,
+        )
+    else:
+        reloaded = PureContinualTrainerV2.load_checkpoint(
+            resumed_path, tokenizer=tok, expected_sha256=resumed_sha,
+            resume_optimizer=True, restore_continual_state=True,
+        )
+    if int(reloaded.global_step) != int(stats["global_step"]):
+        raise RuntimeError("Resumed checkpoint global_step failed reload verification")
+
     continuity = {
         "schema": "zyrquen.v2.checkpoint_continuity",
         "backend": backend,
         "source_checkpoint": ckpt_path.relative_to(artifact_dir).as_posix(),
         "source_sha256": ckpt_sha,
+        "source_sha256_after": source_sha_after,
+        "source_checkpoint_unchanged": source_sha_after == ckpt_sha,
+        "resumed_checkpoint_reload_verified": True,
         "global_step_before": step_before,
         "global_step_after": int(stats["global_step"]),
         "resumed_steps": int(steps),
@@ -635,6 +656,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_train.add_argument("--steps-p1", type=int, default=20)
     p_train.add_argument("--steps-p2", type=int, default=25)
     p_train.add_argument("--replay-ratio", type=float, default=0.5)
+
+    p_cont = sub.add_parser("resume-checkpoint", help="Verify checkpoint continuity without overwriting source")
+    p_cont.add_argument("--artifact-dir", required=True)
+    p_cont.add_argument("--steps", type=int, default=5)
+    p_cont.add_argument("--replay-ratio", type=float, default=0.5)
 
     p_eval = sub.add_parser("evaluate", help="Evaluate checkpoint on disjoint unseen tasks")
     p_eval.add_argument("--artifact-dir", required=True)
@@ -669,6 +695,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                 steps_p1=args.steps_p1,
                 steps_p2=args.steps_p2,
                 replay_ratio=args.replay_ratio,
+            )
+            print(json.dumps(res, indent=2))
+            return 0
+        if args.stage == "resume-checkpoint":
+            res = stage_checkpoint_continuity(
+                artifact_dir, steps=args.steps, replay_ratio=args.replay_ratio
             )
             print(json.dumps(res, indent=2))
             return 0

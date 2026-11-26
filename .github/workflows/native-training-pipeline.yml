@@ -62,6 +62,15 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
+      - name: Validate Docker Compose application and training profiles
+        env:
+          POSTGRES_USER: zyrquen_ci
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+          POSTGRES_DB: zyrquen_ci
+          JWT_SECRET_KEY: ci-only-placeholder-secret
+          ZYRQUEN_INSTALL_TORCH: "0"
+        run: docker compose --profile training config --quiet
+
       - name: Build reproducible Native Training Docker image
         run: |
           INSTALL_TORCH=0
@@ -236,12 +245,12 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  checkpoint-backup:
-    name: 6. Checkpoint Continuity & Artifact Backup
+  checkpoint-continuity:
+    name: 6. Checkpoint Continuity (Resume Without Overwrite)
     needs: [docker-image, model-training, model-evaluation, regression-testing, approval-gate]
-    if: always() && needs.model-training.result == 'success'
+    if: ${{ always() && needs.model-training.result == 'success' && needs.model-evaluation.result == 'success' && needs.regression-testing.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Download Docker image, checkpoints & reports
@@ -250,21 +259,52 @@ jobs:
           pattern: zyrquen-*-${{ github.run_id }}
           merge-multiple: true
 
-      - name: Verify checkpoint continuity (load & resume training) inside Docker
+      - name: Prepare isolated continuity workspace
         run: |
           gunzip -c zyrquen-native-training.tar.gz | docker load
+          mkdir -p continuity
+          cp -r checkpoints train_manifest.json baseline_metrics.json continuity/
+          chmod -R 777 continuity
+
+      - name: Resume candidate and verify source checkpoint remains unchanged
+        run: |
+          docker run --rm \
+            -v "$PWD/continuity:/artifacts" \
+            zyrquen-native-training:ci \
+            resume --artifact-dir /artifacts --steps 5 --replay-ratio 0.5
+
+      - name: Upload checkpoint continuity proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: zyrquen-continuity-proof-${{ github.run_id }}
+          path: |
+            continuity/continuity_report.json
+            continuity/checkpoints/v2_resumed_*
+          retention-days: 30
+
+  checkpoint-backup:
+    name: 7. Checkpoint & Report Artifact Backup
+    needs: [docker-image, model-training, model-evaluation, regression-testing, approval-gate, checkpoint-continuity]
+    if: ${{ always() && needs.model-training.result == 'success' && needs.checkpoint-continuity.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Download all pipeline artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: zyrquen-*-${{ github.run_id }}
+          merge-multiple: true
+
+      - name: Assemble resumable backup bundle
+        run: |
           mkdir -p backup
-          for item in checkpoints train_manifest.json baseline_metrics.json eval_report.json regression_report.json gate_summary.json; do
+          for item in checkpoints train_manifest.json baseline_metrics.json eval_report.json regression_report.json continuity_report.json gate_summary.json; do
             if [ -e "$item" ]; then cp -r "$item" backup/; fi
           done
-          chmod -R 777 backup
-          docker run --rm \
-            -v "$PWD/backup:/artifacts" \
-            zyrquen-native-training:ci \
-            resume --artifact-dir /artifacts --steps 3 --replay-ratio 0.5
           ls -la backup backup/checkpoints || true
 
-      - name: Upload long-term resumable checkpoint backup
+      - name: Upload long-term checkpoint & report backup
         uses: actions/upload-artifact@v4
         with:
           name: zyrquen-native-checkpoint-backup-${{ github.run_id }}
