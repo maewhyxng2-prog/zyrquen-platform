@@ -19,7 +19,7 @@ import {
   X,
 } from 'lucide-react';
 import { apiRequest, ApiError } from '../lib/api';
-import { downloadText, isPiiAuditEvent, toSafeAuditCsv, toSafeAuditJson } from '../lib/auditExport';
+import { downloadText, isPiiAuditEvent, redactAuditRow, toSafeAuditCsv, toSafeAuditJson } from '../lib/auditExport';
 import type { AuditEvent } from '../lib/auditExport';
 import { runNativeCapabilityBenchmark } from '../lib/benchmark';
 import { serializeTableToTsv } from '../lib/clipboard';
@@ -471,7 +471,7 @@ export function SettingsView({
         body: { format: auditFormat, exported_count: rows.length },
       });
       downloadText(
-        `zyrquen-audit-pii-${date}.${auditFormat}`,
+        `zyrquen-audit-${auditPiiOnly ? 'pii' : 'all'}-${date}.${auditFormat}`,
         content,
         auditFormat === 'csv' ? 'text/csv;charset=utf-8' : 'application/json;charset=utf-8'
       );
@@ -2132,15 +2132,18 @@ export function SettingsView({
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-[var(--color-border)] tabular-nums">
-                        {filteredAuditLogs.map((log) => (
-                          <tr key={log.id}>
-                            <td className="py-2.5 pr-4 font-mono text-[var(--color-text-muted)]">{new Date(log.created_at).toLocaleString('th-TH')}</td>
-                            <td className="py-2.5 pr-4 text-[var(--color-text)]">{log.actor_email.replace(/^(.).+(@.*)$/, '**$2')}</td>
-                            <td className="py-2.5 pr-4 font-mono text-[var(--color-accent)]">{log.action}</td>
-                            <td className="py-2.5 pr-4 text-[var(--color-text-secondary)]">{log.target}</td>
-                            <td className="py-2.5 text-[var(--color-text-secondary)]">{log.outcome}</td>
-                          </tr>
-                        ))}
+                        {filteredAuditLogs.map((log) => {
+                          const safe = redactAuditRow(log as AuditEvent);
+                          return (
+                            <tr key={log.id}>
+                              <td className="py-2.5 pr-4 font-mono text-[var(--color-text-muted)]">{new Date(log.created_at).toLocaleString('th-TH')}</td>
+                              <td className="py-2.5 pr-4 text-[var(--color-text)]">{String(safe.actor_email ?? '')}</td>
+                              <td className="py-2.5 pr-4 font-mono text-[var(--color-accent)]">{String(safe.action ?? '')}</td>
+                              <td className="py-2.5 pr-4 text-[var(--color-text-secondary)]">{String(safe.target ?? '')}</td>
+                              <td className="py-2.5 text-[var(--color-text-secondary)]">{String(safe.outcome ?? '')}</td>
+                            </tr>
+                          );
+                        })}
                         {filteredAuditLogs.length === 0 && (
                           <tr><td colSpan={5} className="py-5 text-center text-[var(--color-text-muted)]">ไม่พบเหตุการณ์ตามตัวกรอง</td></tr>
                         )}
