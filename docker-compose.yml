@@ -93,9 +93,34 @@ services:
           cpus: "1.0"
           memory: 1G
 
+  # Opt-in Native-Only training runner; excluded from the default application stack.
+  # Example:
+  # docker compose --profile training run --rm native-training train --artifact-dir /artifacts --backend pure --seed 42 --steps-p1 20 --steps-p2 25 --replay-ratio 0.5
+  native-training:
+    profiles: ["training"]
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.native-training
+      args:
+        INSTALL_TORCH: ${ZYRQUEN_INSTALL_TORCH:-0}
+    environment:
+      PYTHONPATH: /app:/app/python_core
+      PYTHON_DOTENV_DISABLED: "1"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - native-training-artifacts:/artifacts
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/zyrquen
+    init: true
+    restart: "no"
+    command: ["--help"]
+
 volumes:
   pgdata:
   datasets:
   tokenizers:
   training:
   model-registry:
+  native-training-artifacts:
