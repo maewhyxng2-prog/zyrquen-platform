@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
 
 from apps.api.models import User
 from apps.api.routers.admin import require_admin
@@ -350,6 +353,118 @@ def get_model_lineage(
         }
     except RegistryError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+_SAFE_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_SAFE_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
+
+def _read_confined_text(candidate: Path, root: Path) -> str | None:
+    try:
+        if candidate.is_symlink():
+            return None
+        resolved_root = root.resolve()
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(resolved_root) or not resolved.is_file():
+            return None
+        return resolved.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+@router.get("/v1/models/registry/{version}/artifacts/manifest")
+def download_model_manifest(
+    version: str,
+    _: User = Depends(get_current_user),
+):
+    if not _SAFE_VERSION_RE.match(version):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid model version identifier.")
+    registry, info = _get_model_registry()
+    if registry is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=info)
+    try:
+        record = registry.get(version)
+    except RegistryError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    dataset_manifest: dict | None = None
+    ds_rel = (record.get("dataset") or {}).get("path") if isinstance(record, dict) else None
+    if isinstance(ds_rel, str) and ds_rel:
+        raw_manifest = _read_confined_text(registry.root / ds_rel, registry.root)
+        if raw_manifest:
+            try:
+                parsed = json.loads(raw_manifest)
+                if isinstance(parsed, dict):
+                    dataset_manifest = parsed
+            except json.JSONDecodeError:
+                dataset_manifest = None
+
+    manifest_doc = {
+        "schema": "zyrquen.model-artifact-manifest.v1",
+        "version": version,
+        "registry_record": record,
+        "dataset_manifest": dataset_manifest,
+    }
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", version)
+    return Response(
+        content=json.dumps(manifest_doc, ensure_ascii=False, indent=2),
+        media_type="application/json; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}-manifest.json"',
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.get("/v1/models/registry/{version}/artifacts/logs")
+def download_model_training_logs(
+    version: str,
+    _: User = Depends(get_current_user),
+):
+    if not _SAFE_VERSION_RE.match(version):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid model version identifier.")
+    registry, info = _get_model_registry()
+    if registry is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=info)
+    try:
+        record = registry.get(version)
+    except RegistryError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    raw_logs: str | None = None
+    artifact_dir = registry.root / "artifacts" / version
+    for fname in ("metrics.jsonl", "training_logs.jsonl", "training.log"):
+        candidate_text = _read_confined_text(artifact_dir / fname, registry.root)
+        if candidate_text and candidate_text.strip():
+            raw_logs = candidate_text
+            break
+
+    if raw_logs is None:
+        lineage = record.get("workflow_lineage") if isinstance(record, dict) else None
+        run_id = lineage.get("training_run_id") if isinstance(lineage, dict) else None
+        if isinstance(run_id, str) and _SAFE_RUN_ID_RE.match(run_id):
+            training_root = Path(os.getenv("ZYRQUEN_TRAINING_ROOT", "/data/training"))
+            candidate_text = _read_confined_text(training_root / run_id / "metrics.jsonl", training_root)
+            if candidate_text and candidate_text.strip():
+                raw_logs = candidate_text
+
+    if raw_logs is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No raw training logs recorded for model version {version}.",
+        )
+
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", version)
+    return Response(
+        content=raw_logs if raw_logs.endswith("\n") else raw_logs + "\n",
+        media_type="application/x-ndjson; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}-training-logs.jsonl"',
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.post("/v1/models/registry/{version}/stage")

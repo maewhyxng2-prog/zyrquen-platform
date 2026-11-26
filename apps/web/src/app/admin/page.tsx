@@ -8,7 +8,7 @@ import { Icon } from "@/components/Icon";
 import { PageHeader } from "@/components/PageHeader";
 import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
-import { apiRequest, readSession } from "@/lib/api";
+import { apiRequest, downloadBackendFile, readSession } from "@/lib/api";
 
 type AdminOverview = {
   users: number;
@@ -147,6 +147,9 @@ export default function AdminPage() {
   const [lineageError, setLineageError] = useState("");
   const [lineageData, setLineageData] = useState<ModelLineageResponse | null>(null);
   const [resolvedModelVersion, setResolvedModelVersion] = useState<string | null>(null);
+  const [artifactBusy, setArtifactBusy] = useState<"logs" | "manifest" | null>(null);
+  const [artifactError, setArtifactError] = useState("");
+  const [artifactNotice, setArtifactNotice] = useState("");
 
   const fetchAdminData = useCallback(async (isCancelled?: () => boolean) => {
     try {
@@ -244,11 +247,35 @@ export default function AdminPage() {
     setLineageOpen((prev) => {
       const next = !prev;
       if (next) {
+        setArtifactError("");
+        setArtifactNotice("");
         void loadModelLineage();
       }
       return next;
     });
   }, [loadModelLineage]);
+
+  const handleDownloadArtifact = useCallback(async (version: string, kind: "logs" | "manifest") => {
+    setArtifactBusy(kind);
+    setArtifactError("");
+    setArtifactNotice("");
+    try {
+      const fallback = kind === "logs" ? `${version}-training-logs.jsonl` : `${version}-manifest.json`;
+      const filename = await downloadBackendFile(
+        `v1/models/registry/${encodeURIComponent(version)}/artifacts/${kind}`,
+        fallback,
+      );
+      setArtifactNotice(`ดาวน์โหลด ${filename} สำหรับ ${version} สำเร็จ`);
+    } catch (reason) {
+      setArtifactError(
+        reason instanceof Error
+          ? reason.message
+          : `ไม่สามารถดาวน์โหลดไฟล์ ${kind} สำหรับ ${version} ได้`,
+      );
+    } finally {
+      setArtifactBusy(null);
+    }
+  }, []);
 
   useEffect(() => {
     if (!lineageOpen) return;
@@ -787,9 +814,43 @@ export default function AdminPage() {
 
                   <div className="lineage-chain-section">
                     <div className="lineage-section-title">
-                      <strong>Training Artifact History ({lineageData.lineage.ancestors.length})</strong>
-                      <small>เรียงจากรุ่นที่โหลดปัจจุบันย้อนกลับไปยัง Baseline</small>
+                      <div>
+                        <strong>Training Artifact History ({lineageData.lineage.ancestors.length})</strong>
+                        <small>เรียงจากรุ่นที่โหลดปัจจุบันย้อนกลับไปยัง Baseline</small>
+                      </div>
+                      <div className="workflow-actions">
+                        <button
+                          className="button button-secondary button-compact"
+                          disabled={artifactBusy !== null}
+                          onClick={() => void handleDownloadArtifact(lineageData.record.version, "logs")}
+                          type="button"
+                        >
+                          <Icon name="download" size={14} />
+                          {artifactBusy === "logs" ? "กำลังดาวน์โหลด..." : "Download Raw Training Logs"}
+                        </button>
+                        <button
+                          className="button button-secondary button-compact"
+                          disabled={artifactBusy !== null}
+                          onClick={() => void handleDownloadArtifact(lineageData.record.version, "manifest")}
+                          type="button"
+                        >
+                          <Icon name="download" size={14} />
+                          {artifactBusy === "manifest" ? "กำลังดาวน์โหลด..." : "Download Manifest JSON"}
+                        </button>
+                      </div>
                     </div>
+                    {artifactError ? (
+                      <p className="form-alert form-alert-error" role="alert">
+                        <Icon name="close" size={15} />
+                        <span>{artifactError}</span>
+                      </p>
+                    ) : null}
+                    {artifactNotice ? (
+                      <p className="form-alert" role="status">
+                        <Icon name="check-circle" size={15} />
+                        <span>{artifactNotice}</span>
+                      </p>
+                    ) : null}
                     <div className="lineage-chain">
                       {lineageData.lineage.ancestors.map((node, index) => {
                         const workflowEntries = Object.entries(

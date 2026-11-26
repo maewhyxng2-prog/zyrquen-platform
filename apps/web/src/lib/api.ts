@@ -124,3 +124,36 @@ export async function readSession(signal?: AbortSignal): Promise<Session> {
   }
   return response.json();
 }
+
+export async function downloadBackendFile(
+  path: string,
+  fallbackFilename: string,
+): Promise<string> {
+  const response = await fetch(`/api/backend/${path}`, {
+    method: "GET",
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+
+  if (!response.ok) {
+    throw await errorFromResponse(response);
+  }
+
+  const disposition = response.headers.get("content-disposition") || "";
+  const match = disposition.match(/filename="?([^";\n]+)"?/i);
+  const filename = match?.[1] || fallbackFilename;
+  const contentType = response.headers.get("content-type") || "application/octet-stream";
+  const text = await response.text();
+  const blob = new Blob([text], { type: contentType });
+  if (typeof URL !== "undefined" && typeof URL.createObjectURL === "function") {
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
+  }
+  return filename;
+}

@@ -97,6 +97,12 @@ describe("backend proxy route allowlist", () => {
       isAllowedBackendRoute("GET", "v1/models/registry/ZYRQUEN-Native-0.1.0/lineage"),
     ).toBe(true);
     expect(
+      isAllowedBackendRoute("GET", "v1/models/registry/ZYRQUEN-Native-0.1.0/artifacts/manifest"),
+    ).toBe(true);
+    expect(
+      isAllowedBackendRoute("GET", "v1/models/registry/ZYRQUEN-Native-0.1.0/artifacts/logs"),
+    ).toBe(true);
+    expect(
       isAllowedBackendRoute("POST", "v1/models/registry/ZYRQUEN-Native-0.1.0/stage"),
     ).toBe(true);
     expect(
@@ -155,6 +161,12 @@ describe("backend proxy route allowlist", () => {
     expect(isAllowedBackendRoute("DELETE", "v1/models/registry/ZYRQUEN-Native-0.1.0/promote")).toBe(false);
     expect(isAllowedBackendRoute("POST", "v1/models/registry/../secret/promote")).toBe(false);
     expect(isAllowedBackendRoute("GET", "v1/models/registry/v1..2/lineage")).toBe(false);
+    expect(
+      isAllowedBackendRoute("POST", "v1/models/registry/ZYRQUEN-Native-0.1.0/artifacts/manifest"),
+    ).toBe(false);
+    expect(
+      isAllowedBackendRoute("GET", "v1/models/registry/ZYRQUEN-Native-0.1.0/artifacts/other"),
+    ).toBe(false);
     expect(isAllowedBackendRoute("GET", "v1/models/registry/ZYRQUEN-Native-0.1.0/stage")).toBe(false);
     expect(isAllowedBackendRoute("POST", "v1/v10/closure-audit")).toBe(false);
     expect(isAllowedBackendRoute("DELETE", "v1/v10/closure-audit")).toBe(false);

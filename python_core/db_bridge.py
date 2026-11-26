@@ -4,8 +4,10 @@ ZYRQUEN Parameterized SQLite Bridge
 Handles structured CRUD operations for Express API routes using parameterized queries.
 """
 
+import gzip
 import hashlib
 import json
+from pathlib import Path
 import re
 import sys
 import uuid
@@ -854,6 +856,283 @@ def handle_action(action: str, payload: dict) -> dict:
                 "daily_quota": 1000,
                 "recent": recent_usage,
             },
+        }
+
+    if action == "dev_artifact_download":
+        init_dataset_pipeline_schema(conn)
+        raw_version = str(payload.get("version") or "").strip()
+        kind = str(payload.get("kind") or "").strip().lower()
+        if not raw_version or not re.match(r"^[A-Za-z0-9._-]{1,64}$", raw_version):
+            conn.close()
+            return {"ok": False, "status": 400, "error": "Invalid model version identifier."}
+        if kind not in {"logs", "manifest"}:
+            conn.close()
+            return {"ok": False, "status": 400, "error": "Artifact kind must be 'logs' or 'manifest'."}
+
+        ver_match = re.match(r"^v?(\d+)$", raw_version, re.IGNORECASE)
+        if ver_match:
+            ck_row = conn.execute(
+                "SELECT * FROM checkpoints WHERE version = ? LIMIT 1",
+                (int(ver_match.group(1)),),
+            ).fetchone()
+        else:
+            ck_row = conn.execute(
+                "SELECT * FROM checkpoints WHERE id = ? LIMIT 1",
+                (raw_version,),
+            ).fetchone()
+
+        if not ck_row:
+            conn.close()
+            return {
+                "ok": False,
+                "status": 404,
+                "error": f"Model checkpoint '{raw_version}' not found.",
+            }
+
+        ck = dict(ck_row)
+        data_root = DATA_DIR.resolve()
+
+        def _confined_file(path_val: str | None) -> Path | None:
+            if not path_val:
+                return None
+            try:
+                p = Path(str(path_val))
+                if p.is_symlink():
+                    return None
+                resolved = p.resolve()
+                if not resolved.is_relative_to(data_root) or not resolved.is_file():
+                    return None
+                return resolved
+            except OSError:
+                return None
+
+        def _confined_dir(path_val: str | None) -> Path | None:
+            if not path_val:
+                return None
+            try:
+                p = Path(str(path_val))
+                if p.is_symlink():
+                    return None
+                resolved = p.resolve()
+                if not resolved.is_relative_to(data_root) or not resolved.is_dir():
+                    return None
+                return resolved
+            except OSError:
+                return None
+
+        weights_file = _confined_file(ck.get("weights_path"))
+        weights_sha256: str | None = None
+        weights_size_bytes: int | None = None
+        ckpt_metrics: dict = {}
+        ckpt_config: dict | None = None
+        ckpt_param_count: int | None = None
+
+        if weights_file is not None:
+            raw_bytes = weights_file.read_bytes()
+            weights_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+            weights_size_bytes = len(raw_bytes)
+            try:
+                if weights_file.name.endswith(".gz"):
+                    parsed_ckpt = json.loads(gzip.decompress(raw_bytes).decode("utf-8"))
+                else:
+                    parsed_ckpt = json.loads(raw_bytes.decode("utf-8"))
+                if isinstance(parsed_ckpt, dict):
+                    if isinstance(parsed_ckpt.get("metrics"), dict):
+                        ckpt_metrics = parsed_ckpt["metrics"]
+                    if isinstance(parsed_ckpt.get("config"), dict):
+                        ckpt_config = parsed_ckpt["config"]
+                    if isinstance(parsed_ckpt.get("param_count"), int):
+                        ckpt_param_count = parsed_ckpt["param_count"]
+            except Exception:
+                pass
+
+        ds_row = (
+            conn.execute("SELECT * FROM datasets WHERE id = ? LIMIT 1", (ck["dataset_id"],)).fetchone()
+            if ck.get("dataset_id")
+            else None
+        )
+        ds_dict = dict(ds_row) if ds_row else None
+
+        exp_row = conn.execute(
+            "SELECT * FROM experiments WHERE candidate_ckpt_id = ? ORDER BY created_at DESC LIMIT 1",
+            (ck["id"],),
+        ).fetchone()
+        exp_dict = dict(exp_row) if exp_row else None
+
+        eval_rows = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT id, checkpoint_version, suite_name, overall_status, math_score, knowledge_score, planning_score, test_accuracy, perplexity, created_at FROM evaluations WHERE checkpoint_version = ? ORDER BY created_at DESC LIMIT 10",
+                (ck["version"],),
+            ).fetchall()
+        ]
+        conn.close()
+
+        safe_ver_label = f"v{ck['version']}"
+
+        if kind == "manifest":
+            dataset_manifest_obj: dict | None = None
+            if ds_dict:
+                art_dir = _confined_dir(ds_dict.get("artifact_dir"))
+                disk_manifest = _confined_file(str(art_dir / "manifest.json")) if art_dir else None
+                if disk_manifest is not None:
+                    try:
+                        dataset_manifest_obj = json.loads(disk_manifest.read_text(encoding="utf-8"))
+                    except Exception:
+                        dataset_manifest_obj = None
+                if dataset_manifest_obj is None and ds_dict.get("manifest_json"):
+                    try:
+                        parsed_m = json.loads(str(ds_dict["manifest_json"]))
+                        if isinstance(parsed_m, dict) and parsed_m:
+                            dataset_manifest_obj = parsed_m
+                    except Exception:
+                        dataset_manifest_obj = None
+                if dataset_manifest_obj is None:
+                    dataset_manifest_obj = {
+                        "id": ds_dict["id"],
+                        "name": ds_dict["name"],
+                        "manifest_hash": ds_dict["manifest_hash"],
+                        "content_sha256": ds_dict.get("content_sha256") or ds_dict["manifest_hash"],
+                        "source_name": ds_dict.get("source_name"),
+                        "license": ds_dict.get("license"),
+                        "provenance": ds_dict.get("provenance"),
+                        "total_records": ds_dict["total_records"],
+                        "train_count": ds_dict["train_count"],
+                        "val_count": ds_dict["val_count"],
+                        "test_count": ds_dict["test_count"],
+                        "leakage_detected": bool(ds_dict["leakage_detected"]),
+                        "created_at": ds_dict["created_at"],
+                    }
+
+            manifest_payload = {
+                "schema": "zyrquen.model-artifact-manifest.v1",
+                "model_version": safe_ver_label,
+                "checkpoint": {
+                    "id": ck["id"],
+                    "version": ck["version"],
+                    "dataset_id": ck["dataset_id"],
+                    "vocab_size": ck["vocab_size"],
+                    "ngram_order": ck["ngram_order"],
+                    "eval_status": ck["eval_status"],
+                    "train_loss": ck["train_loss"],
+                    "val_loss": ck["val_loss"],
+                    "perplexity": ck["perplexity"],
+                    "eval_accuracy": ck["eval_accuracy"],
+                    "weights_file": weights_file.name if weights_file else None,
+                    "weights_sha256": weights_sha256,
+                    "weights_size_bytes": weights_size_bytes,
+                    "disk_verified": weights_file is not None,
+                    "param_count": ckpt_param_count,
+                    "model_config": ckpt_config,
+                    "created_at": ck["created_at"],
+                },
+                "dataset_manifest": dataset_manifest_obj,
+                "experiment": (
+                    {
+                        "id": exp_dict["id"],
+                        "hypothesis": exp_dict["hypothesis"],
+                        "improved": bool(exp_dict["improved"]),
+                        "approval_status": exp_dict["approval_status"],
+                        "approved_by": exp_dict["approved_by"],
+                        "created_at": exp_dict["created_at"],
+                    }
+                    if exp_dict
+                    else None
+                ),
+                "evaluations": eval_rows,
+            }
+            return {
+                "ok": True,
+                "filename": f"zyrquen-{safe_ver_label}-manifest.json",
+                "content_type": "application/json; charset=utf-8",
+                "content": json.dumps(manifest_payload, ensure_ascii=False, indent=2),
+            }
+
+        # kind == "logs": return only real recorded training log lines; never fabricate
+        log_lines: list[str] = []
+
+        # 1. Check explicit on-disk jsonl log path inside DATA_DIR if present
+        cand_metrics_obj: dict = {}
+        if exp_dict and exp_dict.get("candidate_metrics_json"):
+            try:
+                parsed_cm = json.loads(str(exp_dict["candidate_metrics_json"]))
+                if isinstance(parsed_cm, dict):
+                    cand_metrics_obj = parsed_cm
+            except Exception:
+                cand_metrics_obj = {}
+
+        for log_key in ("metrics_log_path", "logs_path", "training_log_path"):
+            disk_log = _confined_file(cand_metrics_obj.get(log_key) if cand_metrics_obj else None)
+            if disk_log is not None:
+                raw_text = disk_log.read_text(encoding="utf-8").strip()
+                if raw_text:
+                    return {
+                        "ok": True,
+                        "filename": f"zyrquen-{safe_ver_label}-training-logs.jsonl",
+                        "content_type": "application/x-ndjson; charset=utf-8",
+                        "content": raw_text + "\n",
+                    }
+
+        # 2. Extract genuine per-epoch / experiment history recorded inside checkpoint metrics
+        history_entries = ckpt_metrics.get("history") if isinstance(ckpt_metrics, dict) else None
+        if isinstance(history_entries, list) and len(history_entries) > 0:
+            if any(
+                k in ckpt_metrics
+                for k in ("initial_train_loss", "initial_val_loss", "initial_test_loss")
+            ):
+                log_lines.append(
+                    json.dumps(
+                        {
+                            "event": "baseline_eval",
+                            "model_version": safe_ver_label,
+                            "checkpoint_id": ck["id"],
+                            "initial_train_loss": ckpt_metrics.get("initial_train_loss"),
+                            "initial_val_loss": ckpt_metrics.get("initial_val_loss"),
+                            "initial_test_loss": ckpt_metrics.get("initial_test_loss"),
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            for item in history_entries:
+                if isinstance(item, dict):
+                    log_lines.append(
+                        json.dumps(
+                            {
+                                "event": "training_step",
+                                "model_version": safe_ver_label,
+                                **item,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+            log_lines.append(
+                json.dumps(
+                    {
+                        "event": "final_eval",
+                        "model_version": safe_ver_label,
+                        "checkpoint_id": ck["id"],
+                        "final_train_loss": ckpt_metrics.get("final_train_loss", ck["train_loss"]),
+                        "final_val_loss": ckpt_metrics.get("final_val_loss", ck["val_loss"]),
+                        "val_perplexity": ckpt_metrics.get("val_perplexity", ck["perplexity"]),
+                        "test_accuracy": ckpt_metrics.get("test_accuracy", ck["eval_accuracy"]),
+                        "created_at": ck["created_at"],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if not log_lines:
+            return {
+                "ok": False,
+                "status": 404,
+                "error": f"No raw training logs recorded for Checkpoint {safe_ver_label}.",
+            }
+
+        return {
+            "ok": True,
+            "filename": f"zyrquen-{safe_ver_label}-training-logs.jsonl",
+            "content_type": "application/x-ndjson; charset=utf-8",
+            "content": "\n".join(log_lines) + "\n",
         }
 
     if action == "dev_key_create":

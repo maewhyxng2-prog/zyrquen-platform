@@ -133,6 +133,12 @@ export function SettingsView({
     focus: 'pii_redaction' | 'all';
     format: 'json' | 'csv';
   } | null>(null);
+  const [selectedArtifactVersion, setSelectedArtifactVersion] = useState<string>('');
+  const [downloadingArtifact, setDownloadingArtifact] = useState<'logs' | 'manifest' | null>(null);
+  const [artifactNotice, setArtifactNotice] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
 
   const loadDeveloper = useCallback(async () => {
     setLoading(true);
@@ -143,6 +149,15 @@ export function SettingsView({
         apiRequest<ToolsOverview>('/api/developer/tools', { token }).catch(() => null),
       ]);
       setDevData(res);
+      const checkpoints = res.checkpoints || [];
+      if (checkpoints.length > 0) {
+        setSelectedArtifactVersion((prev) => {
+          if (prev && checkpoints.some((ck) => `v${ck.version}` === prev)) {
+            return prev;
+          }
+          return `v${checkpoints[0].version}`;
+        });
+      }
       if (toolsRes) setToolsData(toolsRes);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'ไม่สามารถโหลดเครื่องมือนักพัฒนาได้');
@@ -672,6 +687,75 @@ export function SettingsView({
       setError(err instanceof ApiError ? err.message : 'ส่งออก Audit Log ไม่สำเร็จ');
     } finally {
       setExportingAudit(false);
+    }
+  }
+
+  async function handleDownloadTrainingArtifact(kind: 'logs' | 'manifest') {
+    const targetVersion =
+      selectedArtifactVersion ||
+      (devData?.checkpoints?.[0] ? `v${devData.checkpoints[0].version}` : '');
+    if (!targetVersion) {
+      setArtifactNotice({
+        type: 'error',
+        text: 'กรุณาเลือกรุ่นโมเดล (Checkpoint) ก่อนดาวน์โหลด',
+      });
+      return;
+    }
+
+    setDownloadingArtifact(kind);
+    setArtifactNotice(null);
+    try {
+      const headers: Record<string, string> = {};
+      if (token && token !== 'cookie-session') {
+        headers.Authorization = `Bearer ${token}`;
+      }
+      const res = await fetch(
+        `/api/developer/artifacts/${encodeURIComponent(targetVersion)}/download?kind=${encodeURIComponent(kind)}`,
+        {
+          method: 'GET',
+          headers,
+          credentials: 'include',
+        }
+      );
+      if (!res.ok) {
+        const errPayload = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new ApiError(
+          errPayload.error || `ไม่สามารถดาวน์โหลด ${kind} สำหรับ ${targetVersion} ได้ (${res.status})`,
+          res.status
+        );
+      }
+      const disposition = res.headers.get('content-disposition') || '';
+      const filenameMatch = disposition.match(/filename="?([^";\n]+)"?/i);
+      const fallbackName =
+        kind === 'logs'
+          ? `zyrquen-${targetVersion}-training-logs.jsonl`
+          : `zyrquen-${targetVersion}-manifest.json`;
+      const filename = filenameMatch?.[1] || fallbackName;
+      const rawText = await res.text();
+      const mimeType =
+        kind === 'logs' ? 'application/x-ndjson;charset=utf-8' : 'application/json;charset=utf-8';
+      const blob = new Blob([rawText], { type: mimeType });
+      if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+        const objectUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = objectUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(objectUrl);
+      }
+      setArtifactNotice({
+        type: 'success',
+        text: `ดาวน์โหลด ${filename} สำหรับ ${targetVersion} เรียบร้อยแล้ว`,
+      });
+    } catch (err) {
+      setArtifactNotice({
+        type: 'error',
+        text: err instanceof ApiError ? err.message : 'ไม่สามารถดาวน์โหลดไฟล์ Training Artifact ได้',
+      });
+    } finally {
+      setDownloadingArtifact(null);
     }
   }
 
@@ -1246,22 +1330,115 @@ export function SettingsView({
                         ยังไม่มี Checkpoint ที่ฝึกไว้
                       </p>
                     ) : (
-                      devData!.checkpoints.map((ck) => (
-                        <div key={ck.id} className="py-3">
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm font-semibold text-[var(--color-text)]">
-                              Checkpoint v{ck.version}
-                            </span>
-                            <span className="text-xs font-medium text-[var(--color-accent)]">
-                              {ck.eval_status}
-                            </span>
+                      devData!.checkpoints.map((ck) => {
+                        const ckVersionLabel = `v${ck.version}`;
+                        const isSelected = selectedArtifactVersion === ckVersionLabel;
+                        return (
+                          <div
+                            key={ck.id}
+                            className={`py-3 transition-colors ${
+                              isSelected ? 'rounded-xl bg-[var(--color-surface)] px-3 -mx-3' : ''
+                            }`}
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedArtifactVersion(ckVersionLabel);
+                                  setArtifactNotice(null);
+                                }}
+                                className="text-left text-sm font-semibold text-[var(--color-text)] hover:text-[var(--color-accent)]"
+                              >
+                                Checkpoint {ckVersionLabel}
+                                {isSelected ? ' (Selected)' : ''}
+                              </button>
+                              <span className="text-xs font-medium text-[var(--color-accent)]">
+                                {ck.eval_status}
+                              </span>
+                            </div>
+                            <p className="mt-1 font-mono text-xs text-[var(--color-text-secondary)] tabular-nums">
+                              vocab {ck.vocab_size} · train_loss {ck.train_loss} · val_loss{' '}
+                              {ck.val_loss} · ppl {ck.perplexity}
+                            </p>
                           </div>
-                          <p className="mt-1 font-mono text-xs text-[var(--color-text-secondary)] tabular-nums">
-                            vocab {ck.vocab_size} · train_loss {ck.train_loss} · val_loss{' '}
-                            {ck.val_loss} · ppl {ck.perplexity}
-                          </p>
-                        </div>
-                      ))
+                        );
+                      })
+                    )}
+                  </div>
+
+                  <div className="mt-5 border-t border-[var(--color-border)] pt-4">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <h4 className="text-sm font-semibold text-[var(--color-text)]">
+                          Training Artifact History
+                        </h4>
+                        <p className="text-xs text-[var(--color-text-secondary)]">
+                          เลือกเวอร์ชันโมเดลเพื่อดาวน์โหลดไฟล์ Raw Training Logs หรือ Manifest JSON จริง
+                        </p>
+                      </div>
+                      {(devData?.checkpoints || []).length > 0 && (
+                        <select
+                          aria-label="เลือกรุ่นโมเดลใน Training Artifact History"
+                          value={selectedArtifactVersion}
+                          onChange={(e) => {
+                            setSelectedArtifactVersion(e.target.value);
+                            setArtifactNotice(null);
+                          }}
+                          className="h-9 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 text-xs text-[var(--color-text)] focus:border-[var(--color-focus)] focus:outline-none"
+                        >
+                          {devData!.checkpoints.map((ck) => {
+                            const ckVer = `v${ck.version}`;
+                            return (
+                              <option key={`art-${ck.id}`} value={ckVer}>
+                                Checkpoint {ckVer} ({ck.eval_status})
+                              </option>
+                            );
+                          })}
+                        </select>
+                      )}
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={!selectedArtifactVersion || downloadingArtifact !== null}
+                        onClick={() => void handleDownloadTrainingArtifact('logs')}
+                        className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-xs font-medium text-[var(--color-text)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:opacity-40 whitespace-nowrap"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        <span>
+                          {downloadingArtifact === 'logs'
+                            ? 'กำลังดาวน์โหลด Logs...'
+                            : 'Download Raw Training Logs'}
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={!selectedArtifactVersion || downloadingArtifact !== null}
+                        onClick={() => void handleDownloadTrainingArtifact('manifest')}
+                        className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-xs font-medium text-[var(--color-text)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:opacity-40 whitespace-nowrap"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        <span>
+                          {downloadingArtifact === 'manifest'
+                            ? 'กำลังดาวน์โหลด Manifest...'
+                            : 'Download Manifest JSON'}
+                        </span>
+                      </button>
+                    </div>
+
+                    {artifactNotice && (
+                      <p
+                        role={artifactNotice.type === 'error' ? 'alert' : 'status'}
+                        className={`mt-2.5 rounded-lg border px-3 py-2 text-xs ${
+                          artifactNotice.type === 'error'
+                            ? 'border-[var(--color-danger)]/40 bg-[var(--color-danger)]/10 text-[var(--color-danger)]'
+                            : 'border-[var(--color-success)]/40 bg-[var(--color-success)]/10 text-[var(--color-success)]'
+                        }`}
+                      >
+                        {artifactNotice.text}
+                      </p>
                     )}
                   </div>
                 </section>

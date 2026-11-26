@@ -1874,6 +1874,45 @@ export async function handleInMemoryBackendRequest(options: {
     };
   }
 
+  const artifactDownloadMatch = path.match(
+    /^v1\/models\/registry\/([^/]+)\/artifacts\/(manifest|logs)$/i,
+  );
+  if (method === "GET" && artifactDownloadMatch) {
+    const versionName = decodeURIComponent(artifactDownloadMatch[1]);
+    const kind = artifactDownloadMatch[2].toLowerCase();
+    const record = store.modelVersions.find((m) => m.version === versionName);
+    if (!record) return { status: 404, body: { detail: "Model version not found" } };
+
+    const safeName = record.version.replace(/[^A-Za-z0-9._-]/g, "_");
+    if (kind === "manifest") {
+      const manifestDoc = {
+        schema: "zyrquen.model-artifact-manifest.v1",
+        version: record.version,
+        registry_record: record,
+        dataset_manifest: {
+          version: record.dataset.version,
+          content_sha256: record.dataset.content_sha256,
+        },
+      };
+      return {
+        status: 200,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "content-disposition": `attachment; filename="${safeName}-manifest.json"`,
+          "x-content-type-options": "nosniff",
+        },
+        body: JSON.stringify(manifestDoc, null, 2),
+      };
+    }
+
+    return {
+      status: 404,
+      body: {
+        detail: `No raw training logs recorded for model version ${record.version} in Node.js preview mode.`,
+      },
+    };
+  }
+
   const stageOrPromoteMatch = path.match(
     /^v1\/models\/registry\/([^/]+)\/(stage|promote)$/i,
   );

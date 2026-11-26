@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { apiRequest, readSession } from "@/lib/api";
+import { apiRequest, downloadBackendFile, readSession } from "@/lib/api";
 import type { WorkflowServicesStatus } from "@/lib/types";
 import {
   computeRunProgress,
@@ -325,6 +325,28 @@ export function WorkflowConsole() {
       setSelectedLineage(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "ไม่สามารถดึง Lineage ของเวอร์ชันนี้ได้");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function downloadModelArtifact(version: string, kind: "logs" | "manifest") {
+    setBusyKey(`artifact:${kind}:${version}`);
+    setError("");
+    setNotice("");
+    try {
+      const fallback = kind === "logs" ? `${version}-training-logs.jsonl` : `${version}-manifest.json`;
+      const filename = await downloadBackendFile(
+        `v1/models/registry/${encodeURIComponent(version)}/artifacts/${kind}`,
+        fallback,
+      );
+      setNotice(`ดาวน์โหลดไฟล์ ${filename} สำหรับ ${version} สำเร็จ`);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : `ไม่สามารถดาวน์โหลดไฟล์ ${kind} สำหรับ ${version} ได้`,
+      );
     } finally {
       setBusyKey(null);
     }
@@ -928,10 +950,36 @@ export function WorkflowConsole() {
             {selectedLineage ? (
               <div className="workflow-compare-result">
                 <div className="workflow-def-head">
-                  <strong>Model Lineage: {selectedLineage.lineage.version}</strong>
-                  <StatusBadge tone={selectedLineage.compatibility.compatible ? "good" : "bad"}>
-                    {selectedLineage.compatibility.compatible ? "Compatibility PASS" : "Compatibility FAIL"}
-                  </StatusBadge>
+                  <strong>
+                    Training Artifact History · {selectedLineage.lineage.version}
+                  </strong>
+                  <div className="workflow-actions">
+                    <button
+                      className="button button-secondary button-compact"
+                      disabled={busyKey === `artifact:logs:${selectedLineage.lineage.version}`}
+                      onClick={() => void downloadModelArtifact(selectedLineage.lineage.version, "logs")}
+                      type="button"
+                    >
+                      <Icon name="download" size={14} />
+                      {busyKey === `artifact:logs:${selectedLineage.lineage.version}`
+                        ? "กำลังดาวน์โหลด..."
+                        : "Download Raw Training Logs"}
+                    </button>
+                    <button
+                      className="button button-secondary button-compact"
+                      disabled={busyKey === `artifact:manifest:${selectedLineage.lineage.version}`}
+                      onClick={() => void downloadModelArtifact(selectedLineage.lineage.version, "manifest")}
+                      type="button"
+                    >
+                      <Icon name="download" size={14} />
+                      {busyKey === `artifact:manifest:${selectedLineage.lineage.version}`
+                        ? "กำลังดาวน์โหลด..."
+                        : "Download Manifest JSON"}
+                    </button>
+                    <StatusBadge tone={selectedLineage.compatibility.compatible ? "good" : "bad"}>
+                      {selectedLineage.compatibility.compatible ? "Compatibility PASS" : "Compatibility FAIL"}
+                    </StatusBadge>
+                  </div>
                 </div>
                 <div className="workflow-delta-grid tabular-nums">
                   {selectedLineage.lineage.ancestors.map((anc) => (

@@ -3932,6 +3932,145 @@ describe('ZYRQUEN ประสบการณ์แอปพลิเคชั�
 
     sv.unmount();
   });
+
+  it('แสดงส่วน Training Artifact History ใน Developer Console และดาวน์โหลด Raw Training Logs / Manifest JSON ตามรุ่นที่เลือก', async () => {
+    const requestedUrls: Array<{ url: string; auth: string | null }> = [];
+    const createObjectUrlSpy = vi.fn(() => 'blob:zyrquen-test-artifact');
+    const revokeObjectUrlSpy = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      writable: true,
+      value: createObjectUrlSpy,
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      writable: true,
+      value: revokeObjectUrlSpy,
+    });
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      const headers = new Headers(init?.headers);
+      if (url === '/api/developer/overview') {
+        return new Response(
+          JSON.stringify({
+            keys: [],
+            datasets: [],
+            kg_proposals: [],
+            checkpoints: [
+              {
+                id: 'ckpt-2',
+                version: 2,
+                dataset_id: 'ds-1',
+                vocab_size: 320,
+                ngram_order: 0,
+                train_loss: 2.15,
+                val_loss: 2.41,
+                perplexity: 11.13,
+                eval_accuracy: 0.42,
+                eval_status: 'NEURAL_VERIFIED',
+                created_at: '2026-11-26T01:00:00Z',
+              },
+              {
+                id: 'ckpt-1',
+                version: 1,
+                dataset_id: 'ds-1',
+                vocab_size: 120,
+                ngram_order: 3,
+                train_loss: 3.1,
+                val_loss: 3.4,
+                perplexity: 29.96,
+                eval_accuracy: 0.15,
+                eval_status: 'PASS',
+                created_at: '2026-11-25T01:00:00Z',
+              },
+            ],
+            evaluations: [],
+            experiments: [],
+            usage: { total_requests: 0, avg_latency_ms: 0, daily_quota: 500, recent: [] },
+          }),
+          { status: 200 }
+        );
+      }
+      if (url === '/api/developer/tools') {
+        return new Response(
+          JSON.stringify({ tools: [], invocations: [], workspace_files: [] }),
+          { status: 200 }
+        );
+      }
+      if (url.startsWith('/api/developer/artifacts/')) {
+        requestedUrls.push({ url, auth: headers.get('Authorization') });
+        if (url.includes('/v2/download?kind=manifest')) {
+          return new Response(JSON.stringify({ schema: 'zyrquen.model-artifact-manifest.v1', model_version: 'v2' }), {
+            status: 200,
+            headers: {
+              'Content-Type': 'application/json; charset=utf-8',
+              'Content-Disposition': 'attachment; filename="zyrquen-v2-manifest.json"',
+            },
+          });
+        }
+        if (url.includes('/v2/download?kind=logs')) {
+          return new Response('{"event":"training_step","epoch":1,"train_loss":2.85}\n', {
+            status: 200,
+            headers: {
+              'Content-Type': 'application/x-ndjson; charset=utf-8',
+              'Content-Disposition': 'attachment; filename="zyrquen-v2-training-logs.jsonl"',
+            },
+          });
+        }
+        if (url.includes('/v1/download?kind=logs')) {
+          return new Response(JSON.stringify({ error: 'No raw training logs recorded for Checkpoint v1.' }), {
+            status: 404,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+      }
+      return new Response(JSON.stringify({ error: `Unhandled route: ${url}` }), { status: 404 });
+    }) as unknown as typeof fetch;
+
+    const sv = render(
+      <SettingsView
+        token="t-dev-artifact"
+        user={{
+          id: 'u-dev',
+          email: 'dev@zyrquen.local',
+          display_name: 'Dev',
+          role: 'user',
+          created_at: '2026-11-26T00:00:00Z',
+        }}
+        activeTab="developer"
+        autoExpandTrace={false}
+        defaultMode="auto"
+        onChangeTab={vi.fn()}
+        onUpdatePreferences={vi.fn()}
+        onLogout={vi.fn()}
+      />
+    );
+
+    expect(await screen.findByText('Training Artifact History')).toBeInTheDocument();
+    const versionSelect = await screen.findByLabelText('เลือกรุ่นโมเดลใน Training Artifact History');
+    expect((versionSelect as HTMLSelectElement).value).toBe('v2');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Download Manifest JSON' }));
+    expect(await screen.findByText(/ดาวน์โหลด zyrquen-v2-manifest\.json สำหรับ v2 เรียบร้อยแล้ว/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Download Raw Training Logs' }));
+    expect(await screen.findByText(/ดาวน์โหลด zyrquen-v2-training-logs\.jsonl สำหรับ v2 เรียบร้อยแล้ว/)).toBeInTheDocument();
+
+    fireEvent.change(versionSelect, { target: { value: 'v1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Download Raw Training Logs' }));
+    expect(await screen.findByText(/No raw training logs recorded for Checkpoint v1\./)).toBeInTheDocument();
+
+    expect(requestedUrls).toEqual([
+      { url: '/api/developer/artifacts/v2/download?kind=manifest', auth: 'Bearer t-dev-artifact' },
+      { url: '/api/developer/artifacts/v2/download?kind=logs', auth: 'Bearer t-dev-artifact' },
+      { url: '/api/developer/artifacts/v1/download?kind=logs', auth: 'Bearer t-dev-artifact' },
+    ]);
+    expect(createObjectUrlSpy).toHaveBeenCalledTimes(2);
+    expect(revokeObjectUrlSpy).toHaveBeenCalledTimes(2);
+
+    sv.unmount();
+  });
 });
 
 

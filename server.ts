@@ -1324,6 +1324,66 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
     res.json(data);
   });
 
+  app.get(
+    '/api/developer/artifacts/:version/download',
+    requireAuth,
+    async (req: AuthedRequest, res: Response) => {
+      const versionParam = String(req.params.version || '').trim();
+      const kind = String(req.query.kind || '').trim().toLowerCase();
+      if (!/^[A-Za-z0-9._-]{1,64}$/.test(versionParam)) {
+        res.status(400).json({ error: 'Invalid model version identifier.' });
+        return;
+      }
+      if (kind !== 'logs' && kind !== 'manifest') {
+        res.status(400).json({ error: "Query parameter 'kind' must be 'logs' or 'manifest'." });
+        return;
+      }
+
+      const result = await runPythonScript<{
+        ok: boolean;
+        status?: number;
+        error?: string;
+        filename?: string;
+        content_type?: string;
+        content?: string;
+      }>('db_bridge.py', {
+        action: 'dev_artifact_download',
+        payload: { version: versionParam, kind },
+      });
+
+      if (!result.ok || typeof result.content !== 'string') {
+        const statusCode = result.status === 400 || result.status === 404 ? result.status : 404;
+        res.status(statusCode).json({ error: result.error || 'Training artifact not found.' });
+        return;
+      }
+
+      const safeFilename = String(result.filename || `zyrquen-${versionParam}-${kind}.json`).replace(
+        /[^A-Za-z0-9._-]/g,
+        '_'
+      );
+      const fileSha256 = crypto.createHash('sha256').update(result.content, 'utf8').digest('hex');
+
+      await runPythonScript('db_bridge.py', {
+        action: 'log_audit',
+        payload: {
+          actor_id: req.user!.id,
+          actor_email: req.user!.email,
+          action: 'TRAINING_ARTIFACT_DOWNLOAD',
+          target: `${versionParam}:${kind}`,
+          outcome: `OK (${fileSha256.slice(0, 12)})`,
+        },
+      }).catch(() => null);
+
+      res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('X-Zyrquen-File-Sha256', fileSha256);
+      res.setHeader('Content-Type', result.content_type || 'application/json; charset=utf-8');
+      res.status(200).send(result.content);
+    }
+  );
+
   app.post('/api/developer/keys', requireAuth, async (req: AuthedRequest, res: Response) => {
     const name = String(req.body?.name || '').trim().slice(0, 64);
     const scopes = Array.isArray(req.body?.scopes)

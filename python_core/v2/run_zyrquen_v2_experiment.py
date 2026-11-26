@@ -29,6 +29,7 @@ from v2.zyrquen_v2_trainer import (  # noqa: E402
     EvalReport,
     SandboxEvaluator,
     detect_task_leakage,
+    record_checkpoint_approval,
 )
 
 
@@ -216,6 +217,9 @@ def _run_pure_python_experiment(
         candidate_regression=cand_reg_rep,
         leakage_count=len(leaks),
     )
+    approval = record_checkpoint_approval(
+        ckpt_p2, sha_p2, decision, metadata={"backend": "pure_python_3.11_stdlib"}
+    )
 
     print("=== ZYRQUEN V2 EXPERIMENT REPORT ===", flush=True)
     print("Runtime Backend : pure_python_3.11_stdlib (PyTorch unavailable in container)", flush=True)
@@ -237,17 +241,19 @@ def _run_pure_python_experiment(
     print(f"Leakage Check   : {len(leaks)} leaks", flush=True)
     print(
         f"Baseline  (V1)  | Reg Loss: {base_reg_rep.avg_loss:.4f} | Reg Pass: {base_reg_rep.exec_pass_rate:.2f} "
-        f"| Unseen Loss: {base_unseen_rep.avg_loss:.4f} | Unseen Pass: {base_unseen_rep.exec_pass_rate:.2f}",
+        f"| Unseen Loss: {base_unseen_rep.avg_loss:.4f} | Unseen Pass: {base_unseen_rep.exec_pass_rate:.2f} "
+        f"| Unseen Errors: {base_unseen_rep.error_breakdown}",
         flush=True,
     )
     print(
         f"Candidate (V2)  | Reg Loss: {cand_reg_rep.avg_loss:.4f} | Reg Pass: {cand_reg_rep.exec_pass_rate:.2f} "
-        f"| Unseen Loss: {cand_unseen_rep.avg_loss:.4f} | Unseen Pass: {cand_unseen_rep.exec_pass_rate:.2f}",
+        f"| Unseen Loss: {cand_unseen_rep.avg_loss:.4f} | Unseen Pass: {cand_unseen_rep.exec_pass_rate:.2f} "
+        f"| Unseen Errors: {cand_unseen_rep.error_breakdown}",
         flush=True,
     )
     print(f"Checkpoint saved: {ckpt_p2} (sha256:{sha_p2[:16]}...)", flush=True)
     print(
-        f"Approval Gate   | Approved: {decision.approved} | Reason: {decision.reason}",
+        f"Approval Gate   | Approved: {approval['approved']} ({approval['status']}) | Reason: {decision.reason}",
         flush=True,
     )
     return 0
@@ -414,6 +420,9 @@ def _run_pytorch_experiment(
         candidate_regression=cand_reg_rep,
         leakage_count=len(leaks),
     )
+    approval = record_checkpoint_approval(
+        ckpt_p2, sha_p2, decision, metadata={"backend": f"pytorch ({device.type})"}
+    )
 
     print("=== ZYRQUEN V2 EXPERIMENT REPORT ===")
     print(f"Runtime Backend : pytorch ({device.type})")
@@ -424,15 +433,17 @@ def _run_pytorch_experiment(
     print(f"Leakage Check   : {len(leaks)} leaks")
     print(
         f"Baseline  (V1)  | Reg Loss: {base_reg_rep.avg_loss:.4f} | Reg Pass: {base_reg_rep.exec_pass_rate:.2f} "
-        f"| Unseen Loss: {base_unseen_rep.avg_loss:.4f} | Unseen Pass: {base_unseen_rep.exec_pass_rate:.2f}"
+        f"| Unseen Loss: {base_unseen_rep.avg_loss:.4f} | Unseen Pass: {base_unseen_rep.exec_pass_rate:.2f} "
+        f"| Unseen Errors: {base_unseen_rep.error_breakdown}"
     )
     print(
         f"Candidate (V2)  | Reg Loss: {cand_reg_rep.avg_loss:.4f} | Reg Pass: {cand_reg_rep.exec_pass_rate:.2f} "
-        f"| Unseen Loss: {cand_unseen_rep.avg_loss:.4f} | Unseen Pass: {cand_unseen_rep.exec_pass_rate:.2f}"
+        f"| Unseen Loss: {cand_unseen_rep.avg_loss:.4f} | Unseen Pass: {cand_unseen_rep.exec_pass_rate:.2f} "
+        f"| Unseen Errors: {cand_unseen_rep.error_breakdown}"
     )
     print(f"Checkpoint saved: {ckpt_p2} (sha256:{sha_p2[:16]}...)")
     print(
-        f"Approval Gate   | Approved: {decision.approved} | Reason: {decision.reason}"
+        f"Approval Gate   | Approved: {approval['approved']} ({approval['status']}) | Reason: {decision.reason}"
     )
     return 0
 

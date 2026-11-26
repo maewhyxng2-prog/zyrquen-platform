@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import math
 import random
 import re
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from collections import Counter
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -52,6 +54,7 @@ class EvalReport:
     passed_count: int
     total_count: int
     details: List[Dict[str, Any]] = field(default_factory=list)
+    error_breakdown: Dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -264,8 +267,76 @@ class ApprovalGate:
         )
 
 
+ERROR_TYPES: Tuple[str, ...] = (
+    "passed",
+    "SyntaxError",
+    "NameError",
+    "TypeError",
+    "AssertionError",
+    "timeout",
+    "other",
+)
+
+
+def classify_sandbox_failure(passed: bool, info: str) -> str:
+    """Classify sandbox outcome into an explicit, auditable error category."""
+    if passed:
+        return "passed"
+    text = str(info or "")
+    if text == "timeout":
+        return "timeout"
+    if "IndentationError" in text or "TabError" in text or "SyntaxError" in text:
+        return "SyntaxError"
+    for err_type in ("NameError", "TypeError", "AssertionError"):
+        if err_type in text:
+            return err_type
+    return "other"
+
+
+def compute_error_breakdown(details: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+    """Summarize execution pass and categorized failure counts across evaluation details."""
+    counts = Counter(
+        classify_sandbox_failure(bool(d.get("passed")), str(d.get("info", "")))
+        for d in details
+    )
+    return {err_type: int(counts.get(err_type, 0)) for err_type in ERROR_TYPES}
+
+
+def record_checkpoint_approval(
+    checkpoint_path: str | Path,
+    sha256: str,
+    decision: GateDecision,
+    *,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Persist fail-closed checkpoint approval status alongside the checkpoint artifact."""
+    ckpt = Path(checkpoint_path)
+    # Fail-closed invariant: never permit approval if safety/leakage/unseen constraints failed
+    strict_approved = bool(
+        decision.approved
+        and decision.leakage_count == 0
+        and decision.candidate_unseen > 0.0
+    )
+    record: Dict[str, Any] = {
+        "schema": "zyrquen.v2.checkpoint_approval",
+        "checkpoint_path": str(ckpt),
+        "checkpoint_sha256": sha256,
+        "approved": strict_approved,
+        "status": "APPROVED" if strict_approved else "REJECTED_BY_GATE",
+        "approved_checkpoint": str(ckpt) if strict_approved else None,
+        "gate": asdict(decision),
+    }
+    if metadata:
+        record["metadata"] = metadata
+    approval_path = ckpt.with_suffix(ckpt.suffix + ".approval.json")
+    approval_path.parent.mkdir(parents=True, exist_ok=True)
+    approval_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    record["approval_record_path"] = str(approval_path)
+    return record
+
+
 class SandboxEvaluator:
-    """Evaluates models via reference-solution loss and isolated sandbox code execution."""
+    """Evaluates models via reference-solution loss, raw output capture, and isolated sandbox execution."""
 
     def __init__(
         self,
@@ -278,7 +349,12 @@ class SandboxEvaluator:
     def evaluate(self, tasks: List[CodingTask]) -> EvalReport:
         if not tasks:
             return EvalReport(
-                avg_loss=None, exec_pass_rate=0.0, passed_count=0, total_count=0
+                avg_loss=None,
+                exec_pass_rate=0.0,
+                passed_count=0,
+                total_count=0,
+                details=[],
+                error_breakdown={err_type: 0 for err_type in ERROR_TYPES},
             )
 
         loss_texts = [
@@ -289,8 +365,10 @@ class SandboxEvaluator:
         details: List[Dict[str, Any]] = []
 
         for task in tasks:
-            generated_code = self.generate_fn(task.prompt)
-            ok, msg = run_code_in_sandbox(generated_code, task.test_code)
+            raw_output = self.generate_fn(task.prompt)
+            extracted_code = extract_first_python_function(raw_output)
+            ok, msg = run_code_in_sandbox(raw_output, task.test_code)
+            err_type = classify_sandbox_failure(ok, msg)
             if ok:
                 passed += 1
             details.append(
@@ -298,7 +376,10 @@ class SandboxEvaluator:
                     "task_id": task.task_id,
                     "family": task.family,
                     "passed": ok,
+                    "error_type": err_type,
                     "info": msg,
+                    "raw_output": raw_output,
+                    "extracted_code": extracted_code,
                 }
             )
 
@@ -308,6 +389,7 @@ class SandboxEvaluator:
             passed_count=passed,
             total_count=len(tasks),
             details=details,
+            error_breakdown=compute_error_breakdown(details),
         )
 
 

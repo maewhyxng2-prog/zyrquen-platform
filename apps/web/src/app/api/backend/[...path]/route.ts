@@ -125,10 +125,18 @@ function buildInMemoryHttpResponse(
     });
   }
 
-  const response = NextResponse.json(inMemory.body, {
-    status: inMemory.status,
-    headers: { "cache-control": "no-store" },
-  });
+  const inMemHeaders = new Headers(inMemory.headers);
+  inMemHeaders.set("cache-control", "no-store");
+  const response =
+    typeof inMemory.body === "string"
+      ? new NextResponse(inMemory.body, {
+          status: inMemory.status,
+          headers: inMemHeaders,
+        })
+      : NextResponse.json(inMemory.body, {
+          status: inMemory.status,
+          headers: inMemHeaders,
+        });
   if (
     inMemory.status === 401 &&
     accessToken &&
@@ -409,6 +417,10 @@ async function proxy(request: NextRequest, context: RouteContext) {
   const responseHeaders = new Headers();
   const contentType = upstream.headers.get("content-type");
   if (contentType) responseHeaders.set("content-type", contentType);
+  const contentDisposition = upstream.headers.get("content-disposition");
+  if (contentDisposition) responseHeaders.set("content-disposition", contentDisposition);
+  const contentTypeOptions = upstream.headers.get("x-content-type-options");
+  if (contentTypeOptions) responseHeaders.set("x-content-type-options", contentTypeOptions);
   responseHeaders.set("cache-control", "no-store");
   if (isInferenceStream) {
     responseHeaders.set("x-accel-buffering", "no");
