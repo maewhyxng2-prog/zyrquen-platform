@@ -40,7 +40,7 @@ _ENGINE: CentralWorkflowOrchestrator | None = None
 
 def get_workflow_engine() -> CentralWorkflowOrchestrator:
     global _ENGINE
-    if _ENGINE is None:
+    if _ENGINE is None or _ENGINE.is_closed:
         v10d_enabled = os.getenv("ZYRQUEN_V10D_APPROVAL_ENABLED", "0").strip() == "1"
         if v10d_enabled:
             if not os.getenv("ZYRQUEN_WORKFLOW_DB_PATH", "").strip():
