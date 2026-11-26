@@ -52,7 +52,8 @@ describe('PII-safe audit export', () => {
     expect(json).not.toContain('private.person@example.com');
     expect(json).not.toContain('192.0.2.10');
     const csv = toSafeAuditCsv([{ ...piiEvent, target: '=HYPERLINK("https://bad.invalid")' }]);
-    expect(csv).toContain("'=HYPERLINK(""https://bad.invalid"")");
+    expect(csv).toContain("\"'=HYPERLINK");
+    expect(csv).toContain('""https://bad.invalid""');
   });
 
   it('can export non-PII rows only when the caller explicitly disables the PII-only filter', () => {
