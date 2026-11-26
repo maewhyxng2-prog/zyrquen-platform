@@ -1,8 +1,0 @@
-{
-  "name": "@zyrquen/cloudflare-api-gateway",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "test": "node --test test/*.test.mjs"
-  }
-}
