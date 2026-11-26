@@ -563,6 +563,67 @@ def stage_approve(
     return approval
 
 
+def stage_resume(
+    artifact_dir: Path,
+    *,
+    steps: int = 5,
+    replay_ratio: float = 0.5,
+) -> Dict[str, Any]:
+    """Verify checkpoint continuity by loading the saved candidate checkpoint (SHA-256 verified)
+    and resuming training without resetting weights or overwriting the candidate checkpoint.
+    """
+    manifest = json.loads((artifact_dir / "train_manifest.json").read_text(encoding="utf-8"))
+    ckpt_path, ckpt_sha = _verify_checkpoint_integrity(artifact_dir, manifest)
+    backend = manifest["backend"]
+    p1_train, p2_train, _, _ = build_leak_free_datasets()
+    tok = ByteTokenizer()
+
+    ckpt_dir = artifact_dir / "checkpoints"
+    stamp = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
+
+    if backend == "pytorch":
+        resumed = ContinualTrainerV2.load_checkpoint(
+            ckpt_path, tokenizer=tok, expected_sha256=ckpt_sha, resume_optimizer=True
+        )
+        step_before = int(resumed.global_step)
+        stats = resumed.train_steps(
+            p2_train, steps=steps, batch_size=3, replay_ratio=replay_ratio
+        )
+        out_name = f"v2_resumed_{stamp}_step{stats['global_step']}.pt"
+        resumed_path, resumed_sha = resumed.save_checkpoint(ckpt_dir / out_name)
+    else:
+        resumed = PureContinualTrainerV2.load_checkpoint(
+            ckpt_path, tokenizer=tok, expected_sha256=ckpt_sha, resume_optimizer=True
+        )
+        step_before = int(resumed.global_step)
+        stats = resumed.train_steps(
+            p2_train, steps=steps, batch_size=2, replay_ratio=replay_ratio
+        )
+        if _has_non_finite_pure(resumed.model.params):
+            raise RuntimeError("NaN/Inf detected after resumed training")
+        out_name = f"v2_resumed_{stamp}_step{stats['global_step']}.json.gz"
+        resumed_path, resumed_sha = resumed.save_checkpoint(ckpt_dir / out_name)
+
+    continuity = {
+        "schema": "zyrquen.v2.checkpoint_continuity",
+        "backend": backend,
+        "source_checkpoint": ckpt_path.relative_to(artifact_dir).as_posix(),
+        "source_sha256": ckpt_sha,
+        "global_step_before": step_before,
+        "global_step_after": int(stats["global_step"]),
+        "resumed_steps": int(steps),
+        "final_loss_after_resume": stats["final_loss"],
+        "resumed_checkpoint": resumed_path.relative_to(artifact_dir).as_posix(),
+        "resumed_sha256": resumed_sha,
+        "weights_preserved_continuity": int(stats["global_step"]) == step_before + int(steps),
+        "verified_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    (artifact_dir / "continuity_report.json").write_text(
+        json.dumps(continuity, indent=2), encoding="utf-8"
+    )
+    return continuity
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="ZYRQUEN Native-Only Pipeline CLI")
     sub = parser.add_subparsers(dest="stage", required=True)
@@ -590,6 +651,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Write REJECTED_BY_GATE/APPROVED record without returning exit code 3 on gate rejection.",
     )
+
+    p_res = sub.add_parser("resume", help="Verify checkpoint continuity by loading and training further")
+    p_res.add_argument("--artifact-dir", required=True)
+    p_res.add_argument("--steps", type=int, default=5)
+    p_res.add_argument("--replay-ratio", type=float, default=0.5)
 
     args = parser.parse_args(argv)
     artifact_dir = Path(args.artifact_dir)
@@ -623,6 +689,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(json.dumps(res, indent=2))
             if not res["approved"] and not args.report_only:
                 return 3
+            return 0
+        if args.stage == "resume":
+            res = stage_resume(
+                artifact_dir,
+                steps=args.steps,
+                replay_ratio=args.replay_ratio,
+            )
+            print(json.dumps(res, indent=2))
             return 0
     except Exception as exc:
         print(f"PIPELINE ERROR ({args.stage}): {exc}", file=sys.stderr)

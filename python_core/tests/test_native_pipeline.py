@@ -17,6 +17,7 @@ from v2.native_pipeline import (  # noqa: E402
     stage_approve,
     stage_evaluate,
     stage_regression,
+    stage_resume,
     stage_train,
 )
 
@@ -52,6 +53,16 @@ class NativePipelineTests(unittest.TestCase):
             approval_data = json.loads(approval_path.read_text(encoding="utf-8"))
             self.assertFalse(approval_data["approved"])
             self.assertEqual(approval_data["status"], "REJECTED_BY_GATE")
+
+            # Checkpoint continuity: load candidate checkpoint and train 2 more steps without overwriting
+            cont = stage_resume(art_dir, steps=2)
+            self.assertTrue(cont["weights_preserved_continuity"])
+            self.assertEqual(cont["global_step_before"], 8)
+            self.assertEqual(cont["global_step_after"], 10)
+            resumed_ckpt = art_dir / cont["resumed_checkpoint"]
+            self.assertTrue(resumed_ckpt.is_file())
+            self.assertNotEqual(resumed_ckpt, ckpt_path)
+            self.assertNotEqual(cont["resumed_sha256"], manifest["candidate_sha256"])
 
     def test_tampered_checkpoint_blocks_evaluation_regression_and_approval(self) -> None:
         with tempfile.TemporaryDirectory(prefix="zyrquen_tamper_") as tmp:

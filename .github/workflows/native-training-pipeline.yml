@@ -237,25 +237,31 @@ jobs:
           retention-days: 14
 
   checkpoint-backup:
-    name: 6. Checkpoint & Report Artifact Backup
-    needs: [model-training, model-evaluation, regression-testing, approval-gate]
+    name: 6. Checkpoint Continuity & Artifact Backup
+    needs: [docker-image, model-training, model-evaluation, regression-testing, approval-gate]
     if: always() && needs.model-training.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
-      - name: Download all generated checkpoints & reports
+      - name: Download Docker image, checkpoints & reports
         uses: actions/download-artifact@v4
         with:
           pattern: zyrquen-*-${{ github.run_id }}
           merge-multiple: true
 
-      - name: Assemble resumable backup bundle
+      - name: Verify checkpoint continuity (load & resume training) inside Docker
         run: |
+          gunzip -c zyrquen-native-training.tar.gz | docker load
           mkdir -p backup
           for item in checkpoints train_manifest.json baseline_metrics.json eval_report.json regression_report.json gate_summary.json; do
             if [ -e "$item" ]; then cp -r "$item" backup/; fi
           done
+          chmod -R 777 backup
+          docker run --rm \
+            -v "$PWD/backup:/artifacts" \
+            zyrquen-native-training:ci \
+            resume --artifact-dir /artifacts --steps 3 --replay-ratio 0.5
           ls -la backup backup/checkpoints || true
 
       - name: Upload long-term resumable checkpoint backup

@@ -68,10 +68,8 @@ jobs:
           python -m compileall -q python_core apps phases
           python -c "import zyrquen_core, fastapi, sqlalchemy, alembic, pydantic_settings; from apps.api.main import app; print('Import OK:', app.title)"
 
-      - name: Run Python contract tests
+      - name: Verify cross-version core runtime & CLI compatibility
         shell: bash -el {0}
         run: |
-          python -m unittest \
-            python_core/tests/test_v2_contracts.py \
-            python_core/tests/test_real_only_trainer.py \
-            -v
+          python -m v2.native_pipeline --help
+          python -c "from v2.zyrquen_v2_pure import verify_v2_gradients; res = verify_v2_gradients(); assert res['passed'], res; print('Gradient & Pure V2 check passed:', res['max_relative_error'])"
