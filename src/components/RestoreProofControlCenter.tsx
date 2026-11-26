@@ -270,7 +270,9 @@ export function RestoreProofControlCenter({
   }, [lastAssistantResp, token]);
 
   useEffect(() => {
-    void loadOverview();
+    queueMicrotask(() => {
+      void loadOverview();
+    });
   }, [loadOverview]);
 
   const runs = useMemo(() => overview?.runs || [], [overview]);
