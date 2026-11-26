@@ -50,9 +50,19 @@ Problem to validate:
 - Automatic deletion or mutation of source backups.
 - Cloud-provider account management.
 - Generic verification of every system, API, security control, or business workflow.
-- AI/LLM-based diagnosis or decision-making.
+- AI-generated restore verdicts or AI-directed execution without backend policy and operator approval.
 - Compliance certification or guarantees of RPO/RTO.
 - Multi-cloud orchestration and enterprise dashboards.
+
+
+### Governed AI Operations Assistant (product companion)
+
+The Android product may include an assistant backed only by the repository's ZYRQUEN Native AI runtime. It may explain evidence, summarize logs, and propose a structured next action. This does not change RestoreProof's deterministic verification boundary:
+- The assistant is not the verification engine and cannot set a run verdict.
+- Any proposed operation must be validated by a server-side allowlist and the authenticated user's permissions.
+- Side-effecting actions require the existing approval policy before execution.
+- The worker, not the model, produces evidence and PASS/FAIL/BLOCKED/NOT_RUN.
+- If the Native AI runtime is unavailable, deterministic verification remains independently usable; no external AI API or model fallback is permitted.
 
 ## 4. Safety and isolation requirements
 
