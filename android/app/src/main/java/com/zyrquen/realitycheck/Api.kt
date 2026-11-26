@@ -67,8 +67,14 @@ class TokenStore(context: Context) {
     )
 
     fun read(): String? = preferences.getString("access_token", null)
-    fun write(token: String) { preferences.edit().putString("access_token", token).apply() }
-    fun clear() { preferences.edit().remove("access_token").apply() }
+    fun readBaseUrl(): String = preferences.getString("base_url", "").orEmpty()
+    fun write(token: String, baseUrl: String) {
+        preferences.edit()
+            .putString("access_token", token)
+            .putString("base_url", baseUrl)
+            .apply()
+    }
+    fun clear() { preferences.edit().remove("access_token").remove("base_url").apply() }
 }
 
 object ApiFactory {
