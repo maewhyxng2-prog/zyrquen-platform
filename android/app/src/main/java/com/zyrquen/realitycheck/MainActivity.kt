@@ -149,7 +149,7 @@ private fun RealityCheckApp(tokens: TokenStore) {
                         onRefresh = { connect() },
                         onLogout = {
                             scope.launch {
-                                try { api?.let { it } } catch (_: Exception) { }
+                                try { api?.logout("Bearer $token") } catch (_: Exception) { }
                                 tokens.clear()
                                 token = ""
                                 workflows = emptyList()
