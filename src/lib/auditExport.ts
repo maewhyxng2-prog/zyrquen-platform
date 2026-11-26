@@ -16,9 +16,10 @@ const ALWAYS_EXCLUDED_KEYS = new Set([
   "user_agent",
   "useragent",
 ]);
-const SECRET_KEY_PATTERN = /(token|api[_-]?key|password|secret|authorization|cookie|session)/i;
+const SECRET_KEY_PATTERN = /(token|api[_-]?key|password|secret|authorization|cookie|session|id[_-]?card|address)/i;
 const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 const PHONE_PATTERN = /(?<!\d)(?:\+?66|0)[ -]?(?:\d[ -]?){8,9}(?!\d)/g;
+const IPV4_PATTERN = /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])/g;
 
 export function maskEmail(value: string): string {
   return value.replace(EMAIL_PATTERN, (email) => {
@@ -30,18 +31,19 @@ export function maskEmail(value: string): string {
 }
 
 function redactString(value: string): string {
-  return maskEmail(value).replace(PHONE_PATTERN, (phone) => {
-    const digits = phone.replace(/\D/g, "");
-    return digits.length >= 4 ? `${digits.slice(0, 3)}-***-****` : "[REDACTED]";
-  });
+  return maskEmail(value)
+    .replace(PHONE_PATTERN, (phone) => {
+      const digits = phone.replace(/\D/g, "");
+      return digits.length >= 4 ? `${digits.slice(0, 3)}-***-****` : "[REDACTED]";
+    })
+    .replace(IPV4_PATTERN, "[REDACTED]");
 }
 
 function redactValue(key: string, value: unknown): unknown {
   const normalizedKey = key.toLowerCase().replace(/[ -]/g, "_");
-  if (ALWAYS_EXCLUDED_KEYS.has(normalizedKey) || SECRET_KEY_PATTERN.test(normalizedKey)) {
-    return "[REDACTED]";
-  }
-  if (normalizedKey.includes("email") && typeof value === "string") {
+  if (ALWAYS_EXCLUDED_KEYS.has(normalizedKey)) return undefined;
+  if (SECRET_KEY_PATTERN.test(normalizedKey)) return "[REDACTED]";
+  if ((normalizedKey.includes("email") || normalizedKey.includes("phone")) && typeof value === "string") {
     return redactString(value);
   }
   if (normalizedKey === "details_json" && typeof value === "string") {
@@ -56,10 +58,9 @@ function redactValue(key: string, value: unknown): unknown {
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([childKey, childValue]) => [
-        childKey,
-        redactValue(childKey, childValue),
-      ])
+      Object.entries(value as Record<string, unknown>)
+        .filter(([childKey]) => !ALWAYS_EXCLUDED_KEYS.has(childKey.toLowerCase().replace(/[ -]/g, "_")))
+        .map(([childKey, childValue]) => [childKey, redactValue(childKey, childValue)])
     );
   }
   return typeof value === "string" ? redactString(value) : value;
@@ -67,7 +68,9 @@ function redactValue(key: string, value: unknown): unknown {
 
 export function redactAuditRow(row: AuditEvent): Record<string, unknown> {
   return Object.fromEntries(
-    Object.entries(row).map(([key, value]) => [key, redactValue(key, value)])
+    Object.entries(row)
+      .filter(([key]) => !ALWAYS_EXCLUDED_KEYS.has(key.toLowerCase().replace(/[ -]/g, "_")))
+      .map(([key, value]) => [key, redactValue(key, value)])
   );
 }
 
