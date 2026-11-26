@@ -125,9 +125,25 @@ export async function readSession(signal?: AbortSignal): Promise<Session> {
   return response.json();
 }
 
+export function buildModelRegistryMetadataFilename(
+  version: string,
+  exportedAt: Date = new Date(),
+): string {
+  const safeVersion =
+    version
+      .trim()
+      .replace(/[^A-Za-z0-9._-]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "unknown-version";
+  const dateStamp = Number.isNaN(exportedAt.getTime())
+    ? new Date().toISOString().slice(0, 10)
+    : exportedAt.toISOString().slice(0, 10);
+  return `zyrquen-model-registry-${safeVersion}-metadata-${dateStamp}.json`;
+}
+
 export async function downloadBackendFile(
   path: string,
   fallbackFilename: string,
+  options?: { overrideFilename?: boolean },
 ): Promise<string> {
   const response = await fetch(`/api/backend/${path}`, {
     method: "GET",
@@ -141,11 +157,17 @@ export async function downloadBackendFile(
 
   const disposition = response.headers.get("content-disposition") || "";
   const match = disposition.match(/filename="?([^";\n]+)"?/i);
-  const filename = match?.[1] || fallbackFilename;
+  const filename = options?.overrideFilename
+    ? fallbackFilename
+    : match?.[1] || fallbackFilename;
   const contentType = response.headers.get("content-type") || "application/octet-stream";
   const text = await response.text();
   const blob = new Blob([text], { type: contentType });
-  if (typeof URL !== "undefined" && typeof URL.createObjectURL === "function") {
+  if (
+    typeof document !== "undefined" &&
+    typeof URL !== "undefined" &&
+    typeof URL.createObjectURL === "function"
+  ) {
     const objectUrl = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = objectUrl;

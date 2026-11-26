@@ -8,7 +8,12 @@ import { Icon } from "@/components/Icon";
 import { PageHeader } from "@/components/PageHeader";
 import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
-import { apiRequest, downloadBackendFile, readSession } from "@/lib/api";
+import {
+  apiRequest,
+  buildModelRegistryMetadataFilename,
+  downloadBackendFile,
+  readSession,
+} from "@/lib/api";
 
 type AdminOverview = {
   users: number;
@@ -147,7 +152,7 @@ export default function AdminPage() {
   const [lineageError, setLineageError] = useState("");
   const [lineageData, setLineageData] = useState<ModelLineageResponse | null>(null);
   const [resolvedModelVersion, setResolvedModelVersion] = useState<string | null>(null);
-  const [artifactBusy, setArtifactBusy] = useState<"logs" | "manifest" | null>(null);
+  const [artifactBusy, setArtifactBusy] = useState<"logs" | "manifest" | "metadata" | null>(null);
   const [artifactError, setArtifactError] = useState("");
   const [artifactNotice, setArtifactNotice] = useState("");
 
@@ -255,27 +260,43 @@ export default function AdminPage() {
     });
   }, [loadModelLineage]);
 
-  const handleDownloadArtifact = useCallback(async (version: string, kind: "logs" | "manifest") => {
-    setArtifactBusy(kind);
-    setArtifactError("");
-    setArtifactNotice("");
-    try {
-      const fallback = kind === "logs" ? `${version}-training-logs.jsonl` : `${version}-manifest.json`;
-      const filename = await downloadBackendFile(
-        `v1/models/registry/${encodeURIComponent(version)}/artifacts/${kind}`,
-        fallback,
-      );
-      setArtifactNotice(`ดาวน์โหลด ${filename} สำหรับ ${version} สำเร็จ`);
-    } catch (reason) {
-      setArtifactError(
-        reason instanceof Error
-          ? reason.message
-          : `ไม่สามารถดาวน์โหลดไฟล์ ${kind} สำหรับ ${version} ได้`,
-      );
-    } finally {
-      setArtifactBusy(null);
-    }
-  }, []);
+  const handleDownloadArtifact = useCallback(
+    async (version: string, kind: "logs" | "manifest" | "metadata") => {
+      setArtifactBusy(kind);
+      setArtifactError("");
+      setArtifactNotice("");
+      try {
+        const apiKind = kind === "metadata" ? "manifest" : kind;
+        const fallback =
+          kind === "logs"
+            ? `${version}-training-logs.jsonl`
+            : kind === "metadata"
+              ? buildModelRegistryMetadataFilename(version)
+              : `${version}-manifest.json`;
+        const filename = await downloadBackendFile(
+          `v1/models/registry/${encodeURIComponent(version)}/artifacts/${apiKind}`,
+          fallback,
+          kind === "metadata" ? { overrideFilename: true } : undefined,
+        );
+        setArtifactNotice(
+          kind === "metadata"
+            ? `ส่งออก Metadata JSON (${filename}) สำหรับ ${version} สำเร็จ`
+            : `ดาวน์โหลด ${filename} สำหรับ ${version} สำเร็จ`,
+        );
+      } catch (reason) {
+        setArtifactError(
+          reason instanceof Error
+            ? reason.message
+            : kind === "metadata"
+              ? `ไม่สามารถส่งออก Metadata JSON สำหรับ ${version} ได้`
+              : `ไม่สามารถดาวน์โหลดไฟล์ ${kind} สำหรับ ${version} ได้`,
+        );
+      } finally {
+        setArtifactBusy(null);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!lineageOpen) return;
@@ -836,6 +857,15 @@ export default function AdminPage() {
                         >
                           <Icon name="download" size={14} />
                           {artifactBusy === "manifest" ? "กำลังดาวน์โหลด..." : "Download Manifest JSON"}
+                        </button>
+                        <button
+                          className="button button-secondary button-compact"
+                          disabled={artifactBusy !== null}
+                          onClick={() => void handleDownloadArtifact(lineageData.record.version, "metadata")}
+                          type="button"
+                        >
+                          <Icon name="download" size={14} />
+                          {artifactBusy === "metadata" ? "กำลังส่งออก..." : "Export Metadata JSON"}
                         </button>
                       </div>
                     </div>
