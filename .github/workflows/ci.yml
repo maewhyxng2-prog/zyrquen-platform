@@ -1,0 +1,188 @@
+name: ZYRQUEN CI & PR Status
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint-and-vitest:
+    name: Web Lint, Typecheck & Vitest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install workspace dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run TypeScript typecheck
+        run: npm run typecheck
+
+      - name: Run Vitest unit tests
+        run: npm run test
+
+      - name: Build production bundle
+        run: npm run build
+
+  maintainer-gate-audit:
+    name: Maintainer Policy & Native-Only Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      PYTHONPATH: ${{ github.workspace }}/python_core
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run Native-Only Policy & Python Core Verification
+        run: |
+          python -m compileall -q python_core
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          banned_py = re.compile(
+              r"^\s*(?:import|from)\s+(?:openai|anthropic|google\.generativeai|google\.genai|groq|together|mistralai)\b",
+              re.MULTILINE,
+          )
+          violations = []
+          py_files = sorted(Path("python_core").rglob("*.py"))
+          for p in py_files:
+              text = p.read_text(encoding="utf-8", errors="replace")
+              if banned_py.search(text):
+                  violations.append(str(p))
+
+          pkg = json.loads(Path("package.json").read_text(encoding="utf-8"))
+          deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+          for banned_pkg in ("openai", "@anthropic-ai/sdk", "@google/genai", "@google/generative-ai"):
+              if banned_pkg in deps:
+                  violations.append(f"package.json:{banned_pkg}")
+
+          report = {
+              "schema": "zyrquen.ci.audit.v1",
+              "python_core_files_checked": len(py_files),
+              "native_only_violations": violations,
+              "overall_verdict": "PASS" if not violations else "FAIL",
+          }
+          Path("maintainer-audit-report.json").write_text(
+              json.dumps(report, indent=2), encoding="utf-8"
+          )
+          if violations:
+              raise SystemExit(f"Native-Only policy violation(s): {violations}")
+          PY
+          python -m unittest python_core/tests/test_continual_learning.py -v
+
+      - name: Upload Maintainer Audit Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-maintainer-audit-report
+          path: maintainer-audit-report.json
+          retention-days: 7
+
+  ci-summary-status:
+    name: CI Summary Status Check
+    needs: [lint-and-vitest, maintainer-gate-audit]
+    if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: write
+      pull-requests: write
+
+    steps:
+      - name: Report deterministic CI summary
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const lintStatus = '${{ needs.lint-and-vitest.result }}';
+            const auditStatus = '${{ needs.maintainer-gate-audit.result }}';
+            const allPassed = lintStatus === 'success' && auditStatus === 'success';
+            const state = allPassed ? 'success' : 'failure';
+            const sha = context.payload.pull_request.head.sha;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha,
+              state,
+              context: 'ZYRQUEN / CI Summary',
+              description: allPassed
+                ? 'Lint, Typecheck, Vitest & Maintainer policy passed'
+                : `Checks failed (lint/vitest: ${lintStatus}, policy: ${auditStatus})`,
+              target_url: runUrl,
+            });
+
+            const marker = '<!-- zyrquen-ci-summary-status -->';
+            const body = [
+              marker,
+              '### ZYRQUEN Deterministic CI Summary',
+              '',
+              `- **Web Lint, Typecheck & Vitest**: \`${lintStatus}\``,
+              `- **Maintainer Policy & Native-Only Check**: \`${auditStatus}\``,
+              `- **CI Result**: \`${state.toUpperCase()}\``,
+              '- **Codex Review**: tracked separately by the ZYRQUEN Maintainer PR Review workflow.',
+              `- **Workflow Run**: [View logs](${runUrl})`,
+              '',
+              allPassed
+                ? '> Deterministic CI passed. This is **not** a Codex review result or merge approval.'
+                : '> Merge readiness is blocked until the failing deterministic checks are resolved.',
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 50,
+            });
+            const existing = comments.find((c) => typeof c.body === 'string' && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+            if (!allPassed) {
+              core.setFailed(`PR checks failed (lint-and-vitest=${lintStatus}, maintainer-gate-audit=${auditStatus}).`);
+            }

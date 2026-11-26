@@ -1,0 +1,75 @@
+name: ZYRQUEN Maintainer Audit
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: maintainer-audit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  read-only-audit:
+    name: Read-Only Repository & Native Policy Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      PYTHONPATH: ${{ github.workspace }}/python_core
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run Python Core Compilation, Continual Learning & Native-Only Audit
+        run: |
+          python -m compileall -q python_core
+          python -m unittest python_core/tests/test_continual_learning.py -v
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          banned_py = re.compile(
+              r"^\s*(?:import|from)\s+(?:openai|anthropic|google\.generativeai|google\.genai|groq|together|mistralai)\b",
+              re.MULTILINE,
+          )
+          violations = []
+          py_files = sorted(Path("python_core").rglob("*.py"))
+          for p in py_files:
+              if banned_py.search(p.read_text(encoding="utf-8", errors="replace")):
+                  violations.append(str(p))
+
+          report = {
+              "schema": "zyrquen.maintainer.audit.v1",
+              "python_core_files": len(py_files),
+              "native_only_violations": violations,
+              "overall_verdict": "PASS" if not violations else "FAIL",
+          }
+          Path("maintainer-audit-report.json").write_text(
+              json.dumps(report, indent=2), encoding="utf-8"
+          )
+          if violations:
+              raise SystemExit(f"Native-Only policy violations: {violations}")
+          PY
+
+      - name: Upload Maintainer Audit Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maintainer-audit-report
+          path: maintainer-audit-report.json
+          retention-days: 14

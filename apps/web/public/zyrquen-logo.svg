@@ -1,0 +1,153 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="64" viewBox="0 0 320 64" role="img" aria-labelledby="zq-logo-title">
+  <title id="zq-logo-title">ZYRQUEN Ω∞ Cognitive Core</title>
+  <defs>
+    <linearGradient id="zq-core-ring" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22d3ee"/>
+      <stop offset="50%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <linearGradient id="zq-surface" x1="15%" y1="0%" x2="85%" y2="100%">
+      <stop offset="0%" stop-color="#17223b"/>
+      <stop offset="55%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#070b18"/>
+    </linearGradient>
+    <radialGradient id="zq-nucleus" cx="42%" cy="38%" r="65%">
+      <stop offset="0%" stop-color="#eef2fa"/>
+      <stop offset="40%" stop-color="#22d3ee"/>
+      <stop offset="100%" stop-color="#3b82f6"/>
+    </radialGradient>
+    <linearGradient id="zq-wordmark-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#eef2fa"/>
+      <stop offset="72%" stop-color="#cbd5e1"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+    <filter id="zq-soft-glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="1.8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <style>
+      .zq-orbit-outer {
+        transform-box: view-box;
+        transform-origin: 32px 32px;
+        animation: zq-orbit-cw 24s linear infinite;
+      }
+      .zq-orbit-inner {
+        transform-box: view-box;
+        transform-origin: 32px 32px;
+        animation: zq-orbit-ccw 32s linear infinite;
+      }
+      .zq-aura-breathe {
+        transform-box: view-box;
+        transform-origin: 32px 32px;
+        animation: zq-aura 4.2s ease-in-out infinite;
+      }
+      .zq-core-breathe {
+        transform-box: view-box;
+        transform-origin: 32px 32px;
+        animation: zq-breathe 4.2s ease-in-out infinite;
+      }
+      .zq-data-trace {
+        stroke-dasharray: 18 118;
+        stroke-dashoffset: 136;
+        animation: zq-trace 5.6s linear infinite;
+      }
+      .zq-wordmark {
+        fill: url(#zq-wordmark-grad);
+        font-family: "Plus Jakarta Sans", "Inter", "Segoe UI", system-ui, sans-serif;
+        font-size: 23px;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+      }
+      .zq-submark {
+        fill: #94a3b8;
+        font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+        font-size: 8.5px;
+        font-weight: 500;
+        letter-spacing: 0.22em;
+      }
+      @keyframes zq-orbit-cw {
+        to { transform: rotate(360deg); }
+      }
+      @keyframes zq-orbit-ccw {
+        to { transform: rotate(-360deg); }
+      }
+      @keyframes zq-breathe {
+        0%, 100% { transform: scale(0.92); opacity: 0.85; }
+        50% { transform: scale(1.09); opacity: 1; }
+      }
+      @keyframes zq-aura {
+        0%, 100% { transform: scale(0.95); opacity: 0.28; }
+        50% { transform: scale(1.06); opacity: 0.65; }
+      }
+      @keyframes zq-trace {
+        to { stroke-dashoffset: 0; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .zq-orbit-outer,
+        .zq-orbit-inner,
+        .zq-aura-breathe,
+        .zq-core-breathe,
+        .zq-data-trace {
+          animation: none !important;
+        }
+        .zq-aura-breathe { opacity: 0.45; }
+        .zq-data-trace { stroke-dasharray: none; stroke-dashoffset: 0; }
+      }
+    </style>
+  </defs>
+
+  <g aria-hidden="true">
+    <!-- Subtle Cognitive Aura -->
+    <circle class="zq-aura-breathe" cx="32" cy="32" r="28" fill="none" stroke="#22d3ee" stroke-opacity="0.35" stroke-width="1"/>
+
+    <!-- Outer Orbit Ring & Data Satellites -->
+    <g class="zq-orbit-outer">
+      <circle cx="32" cy="32" r="26" fill="none" stroke="url(#zq-core-ring)" stroke-opacity="0.48" stroke-width="1" stroke-dasharray="44 12 10 12"/>
+      <circle cx="32" cy="6" r="2.1" fill="#22d3ee" filter="url(#zq-soft-glow)"/>
+      <circle cx="54.5" cy="45" r="1.6" fill="#8b5cf6"/>
+    </g>
+
+    <!-- Counter-Rotating Elliptical Synapse Orbit -->
+    <g class="zq-orbit-inner">
+      <ellipse cx="32" cy="32" rx="23.5" ry="12" transform="rotate(-30 32 32)" fill="none" stroke="#3b82f6" stroke-opacity="0.38" stroke-width="0.9"/>
+      <circle cx="52.3" cy="20.2" r="1.4" fill="#eef2fa"/>
+    </g>
+
+    <!-- Minimalist Geometric Cognitive Core Hexagonal Frame -->
+    <polygon points="32,10 51,21 51,43 32,54 13,43 13,21" fill="url(#zq-surface)" stroke="url(#zq-core-ring)" stroke-width="1.5" stroke-linejoin="round"/>
+    <polygon class="zq-data-trace" points="32,10 51,21 51,43 32,54 13,43 13,21" fill="none" stroke="#22d3ee" stroke-opacity="0.9" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Interconnected Data-Link Neural Pathways -->
+    <g stroke="#60a5fa" stroke-opacity="0.42" stroke-width="0.9" stroke-linecap="round">
+      <line x1="32" y1="14" x2="32" y2="25.5"/>
+      <line x1="32" y1="38.5" x2="32" y2="50"/>
+      <line x1="16.4" y1="23" x2="26.4" y2="28.8"/>
+      <line x1="37.6" y1="35.2" x2="47.6" y2="41"/>
+      <line x1="47.6" y1="23" x2="37.6" y2="28.8"/>
+      <line x1="26.4" y1="35.2" x2="16.4" y2="41"/>
+    </g>
+
+    <!-- 6 Vertex Data-Link Nodes -->
+    <g fill="#22d3ee">
+      <circle cx="32" cy="14" r="1.35"/>
+      <circle cx="47.6" cy="23" r="1.35"/>
+      <circle cx="47.6" cy="41" r="1.35"/>
+      <circle cx="32" cy="50" r="1.35"/>
+      <circle cx="16.4" cy="41" r="1.35"/>
+      <circle cx="16.4" cy="23" r="1.35"/>
+    </g>
+
+    <!-- Central Ω∞ Geometric Core & Breathing Nucleus -->
+    <g class="zq-core-breathe" filter="url(#zq-soft-glow)">
+      <path d="M23.5 32c0-3 2.3-4.8 4.6-4.8 2.6 0 3.9 2.4 3.9 4.8s1.3 4.8 3.9 4.8c2.3 0 4.6-1.8 4.6-4.8s-2.3-4.8-4.6-4.8c-2.6 0-3.9 2.4-3.9 4.8s-1.3 4.8-3.9 4.8c-2.3 0-4.6-1.8-4.6-4.8Z" fill="none" stroke="url(#zq-core-ring)" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="32" cy="32" r="3" fill="url(#zq-nucleus)"/>
+      <circle cx="32" cy="32" r="1.2" fill="#eef2fa"/>
+    </g>
+  </g>
+
+  <text class="zq-wordmark" x="78" y="34">ZYRQUEN Ω∞</text>
+  <text class="zq-submark" x="79" y="48">NATIVE COGNITIVE CORE</text>
+</svg>

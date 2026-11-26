@@ -155,6 +155,28 @@ class TrainingRuntimeGuard:
 
 
 @dataclass
+class GuardOutcome:
+    allowed: bool
+    blocked: bool = False
+    reason: str = "ok"
+    detail: Any = None
+
+    @property
+    def wait_for_resource(self) -> bool:
+        if isinstance(self.detail, dict) and "wait_for_resource" in self.detail:
+            return bool(self.detail["wait_for_resource"])
+        return bool((not self.allowed) and (not self.blocked))
+
+    @property
+    def snapshot(self) -> dict[str, Any]:
+        if isinstance(self.detail, dict):
+            return self.detail
+        if self.detail is None:
+            return {"allowed": self.allowed, "blocked": self.blocked, "reason": self.reason}
+        return {"detail": self.detail}
+
+
+@dataclass
 class WorkflowResourceGuard:
     """Guards workflow execution against RAM, disk reserve, CPU, and unapproved paid GPU."""
 
@@ -162,6 +184,13 @@ class WorkflowResourceGuard:
     min_free_disk_gb: float = MIN_DISK_RESERVE_GB
     ram_hard_limit_gb: float = RAM_HARD_LIMIT_GB
     max_cpu_threads: int = MAX_CPU_THREADS
+    resource_manager: Any = None
+
+    def __post_init__(self) -> None:
+        if self.resource_manager is not None:
+            max_ram_mb = getattr(self.resource_manager, "max_ram_mb", None)
+            if isinstance(max_ram_mb, (int, float)) and max_ram_mb > 0:
+                self.ram_hard_limit_gb = float(max_ram_mb) / 1024.0
 
     def check_step(
         self,
@@ -178,35 +207,39 @@ class WorkflowResourceGuard:
         paid_gpu = bool(use_paid_gpu or payload.get("use_paid_gpu", False))
         approved_gpu = bool(has_paid_gpu_approval or payload.get("approved_paid_gpu", False))
         if paid_gpu and not approved_gpu:
-            return {
-                "allowed": False,
-                "reason": "unapproved_paid_gpu",
-                "detail": "Paid GPU requested without approval.",
-            }
+            return GuardOutcome(
+                allowed=False,
+                blocked=True,
+                reason="unapproved_paid_gpu",
+                detail="Paid GPU requested without approval.",
+            )
 
         disk_ok, disk = check_disk_reserve(self.work_dir, reserve_gb=self.min_free_disk_gb)
         if not disk_ok:
-            return {
-                "allowed": False,
-                "reason": "disk_reserve_violated",
-                "detail": disk,
-            }
+            return GuardOutcome(
+                allowed=False,
+                blocked=True,
+                reason="disk_reserve_violated",
+                detail=disk,
+            )
 
         rss_gb = read_process_rss_bytes() / GB
         if rss_gb > self.ram_hard_limit_gb:
-            return {
-                "allowed": False,
-                "reason": "ram_hard_limit",
-                "detail": {"rss_gb": round(rss_gb, 4), "hard_limit_gb": self.ram_hard_limit_gb},
-            }
+            return GuardOutcome(
+                allowed=False,
+                blocked=True,
+                reason="ram_hard_limit",
+                detail={"rss_gb": round(rss_gb, 4), "hard_limit_gb": self.ram_hard_limit_gb},
+            )
 
         step_count = steps if steps is not None else payload.get("steps", payload.get("max_steps"))
         if step_count is not None and int(step_count) > MAX_CPU_TRAINING_STEPS:
-            return {
-                "allowed": False,
-                "reason": "step_limit_exceeded",
-                "detail": {"steps": int(step_count), "max_steps": MAX_CPU_TRAINING_STEPS},
-            }
+            return GuardOutcome(
+                allowed=False,
+                blocked=True,
+                reason="step_limit_exceeded",
+                detail={"steps": int(step_count), "max_steps": MAX_CPU_TRAINING_STEPS},
+            )
 
         params_count = (
             estimated_params
@@ -214,14 +247,16 @@ class WorkflowResourceGuard:
             else payload.get("estimated_params")
         )
         if params_count is not None and int(params_count) > MAX_CPU_MODEL_PARAMETERS:
-            return {
-                "allowed": False,
-                "reason": "parameter_budget_exceeded",
-                "detail": {"estimated_params": int(params_count), "max_params": MAX_CPU_MODEL_PARAMETERS},
-            }
+            return GuardOutcome(
+                allowed=False,
+                blocked=True,
+                reason="parameter_budget_exceeded",
+                detail={"estimated_params": int(params_count), "max_params": MAX_CPU_MODEL_PARAMETERS},
+            )
 
-        return {
-            "allowed": True,
-            "reason": "ok",
-            "detail": {"disk": disk, "rss_gb": round(rss_gb, 4)},
-        }
+        return GuardOutcome(
+            allowed=True,
+            blocked=False,
+            reason="ok",
+            detail={"disk": disk, "rss_gb": round(rss_gb, 4)},
+        )

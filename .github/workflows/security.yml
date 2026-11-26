@@ -1,0 +1,130 @@
+name: ZYRQUEN Security Audit
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: "30 2 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  codeql:
+    name: CodeQL Static Security Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language:
+          - python
+          - javascript-typescript
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  python-core-security-check:
+    name: Python Native Core Static Security Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check Python core for unsafe patterns and hardcoded secrets
+        run: |
+          python - <<'PY'
+          import ast
+          import re
+          from pathlib import Path
+
+          secret_re = re.compile(
+              r"""(?:["']sk-[A-Za-z0-9_-]{20,}["']|["']gh[pousr]_[A-Za-z0-9]{20,}["']|["']AIza[0-9A-Za-z_-]{20,}["'])"""
+          )
+          for p in Path("python_core").rglob("*.py"):
+              text = p.read_text(encoding="utf-8", errors="replace")
+              if "/tests/" not in f"/{p.as_posix()}" and secret_re.search(text):
+                  raise SystemExit(f"Potential hardcoded secret in {p}")
+              tree = ast.parse(text, filename=str(p))
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                      if isinstance(node.func.value, ast.Name) and node.func.value.id == "subprocess":
+                          for kw in node.keywords:
+                              if kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                                  raise SystemExit(f"Unsafe subprocess shell=True in {p}")
+          print("Python core static security check passed.")
+          PY
+
+  web-dependency-audit:
+    name: Web Dependency Vulnerability Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Audit npm dependencies
+        run: npm audit --audit-level=high
+
+  dependency-review:
+    name: Pull Request Dependency Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+
+    if: github.event_name == 'pull_request'
+
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high

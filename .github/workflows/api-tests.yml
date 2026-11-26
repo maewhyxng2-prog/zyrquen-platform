@@ -1,0 +1,76 @@
+name: ZYRQUEN API Tests
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  native-core-tests:
+    name: Python Native Core Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    env:
+      PYTHONPATH: ${{ github.workspace }}/python_core
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile Python core sources
+        run: python -m compileall -q python_core
+
+      - name: Run Native Core & Continual Learning Tests
+        run: |
+          python -m unittest \
+            python_core/tests/test_continual_learning.py \
+            python_core/tests/test_p1_benchmark.py \
+            -v
+
+  web:
+    name: Web Tests, Server E2E and Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Python for full-stack E2E tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install web dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Run Vitest (including full-stack HTTP + Python E2E)
+        run: npm test
+
+      - name: Type-check web application
+        run: npm run typecheck
+
+      - name: Lint web application
+        run: npm run lint
+
+      - name: Build web application
+        run: npm run build

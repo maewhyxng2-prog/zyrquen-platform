@@ -90,15 +90,13 @@ class WorkflowAuditLogger:
 
         if hasattr(self.store, "append_audit_log"):
             self.store.append_audit_log(
-                entry_id=entry["id"],
-                run_id=entry["run_id"],
-                step_key=entry["step_key"],
                 actor_id=entry["actor_id"],
                 event_type=entry["event_type"],
                 resource=entry["resource"],
                 decision=entry["decision"],
-                details_json=serialized_details,
-                created_at=entry["created_at"],
+                details=entry["details"],
+                run_id=entry["run_id"],
+                step_key=entry["step_key"],
             )
             return entry
 

@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RealityCheck — RestoreProof</title>
+  <style>
+    :root {
+      --bg-app: #081122;
+      --bg-panel: #0e1c36;
+      --bg-card: #122444;
+      --bg-nav-active: #16325b;
+      --border: #1e375e;
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --green: #22c55e;
+      --green-bg: rgba(34, 197, 94, 0.14);
+      --red: #ef4444;
+      --red-bg: rgba(239, 68, 68, 0.14);
+      --amber: #f59e0b;
+      --amber-bg: rgba(245, 158, 11, 0.14);
+      --blue: #38bdf8;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg-app);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .topbar {
+      background: #09152b;
+      border-bottom: 1px solid var(--border);
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .brand-group { display: flex; align-items: center; gap: 18px; }
+    .logo-box {
+      width: 36px; height: 36px; border-radius: 8px;
+      background: linear-gradient(135deg, #0284c7, #2563eb);
+      display: grid; place-items: center; font-weight: 800; font-size: 18px;
+    }
+    .product-title { font-size: 18px; font-weight: 700; }
+    .product-sub { font-size: 12px; color: var(--text-muted); }
+
+    .top-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .btn {
+      background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border);
+      padding: 7px 12px; border-radius: 8px; font-size: 12px; cursor: pointer;
+    }
+    .btn:hover { border-color: var(--blue); }
+
+    .mode-badge {
+      padding: 5px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+      border: 1px solid var(--border); background: var(--bg-card); color: var(--text-muted);
+    }
+    .mode-badge.live { border-color: rgba(34, 197, 94, 0.45); color: var(--green); background: var(--green-bg); }
+    .mode-badge.demo { border-color: rgba(245, 158, 11, 0.5); color: var(--amber); background: var(--amber-bg); }
+
+    .layout { display: flex; flex: 1; min-height: 0; }
+    .sidebar {
+      width: 210px; background: #091429; border-right: 1px solid var(--border);
+      padding: 14px 10px; display: flex; flex-direction: column; gap: 4px;
+    }
+    .nav-item {
+      padding: 10px 12px; border-radius: 8px; color: var(--text-muted);
+      font-size: 13px; display: flex; align-items: center; gap: 10px; cursor: pointer;
+    }
+    .nav-item.active, .nav-item:hover { background: var(--bg-nav-active); color: var(--text-main); }
+
+    .main { flex: 1; padding: 18px 20px; display: flex; flex-direction: column; gap: 16px; }
+    .banner-warn {
+      display: none; padding: 10px 14px; border-radius: 10px; font-size: 13px;
+      background: var(--amber-bg); border: 1px solid rgba(245, 158, 11, 0.45); color: #fde68a;
+    }
+    .banner-warn.show { display: block; }
+
+    .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(160px, 1fr)); gap: 14px; }
+    .card {
+      background: var(--bg-panel); border: 1px solid var(--border);
+      border-radius: 12px; padding: 16px;
+    }
+    .kpi-label { font-size: 12px; color: var(--text-muted); }
+    .kpi-val { font-size: 26px; font-weight: 700; margin: 4px 0; }
+    .kpi-sub { font-size: 12px; color: var(--text-muted); }
+    .c-green { color: var(--green); }
+    .c-red { color: var(--red); }
+
+    .mid-grid { display: grid; grid-template-columns: 1.35fr 1fr; gap: 14px; }
+    .latest-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .status-pill {
+      padding: 6px 12px; border-radius: 8px; font-weight: 700; font-size: 15px;
+      border: 1px solid var(--border); color: var(--text-muted); background: var(--bg-card);
+    }
+    .status-pill.passed { color: var(--green); background: var(--green-bg); border-color: rgba(34, 197, 94, 0.4); }
+    .status-pill.failed { color: var(--red); background: var(--red-bg); border-color: rgba(239, 68, 68, 0.4); }
+
+    .meta-grid { display: grid; grid-template-columns: 130px 1fr; gap: 6px 12px; font-size: 13px; margin-top: 10px; }
+    .meta-k { color: var(--text-muted); }
+    .discrepancy-box {
+      margin-top: 12px; padding: 10px 12px; border-radius: 8px;
+      background: var(--red-bg); border: 1px solid rgba(239, 68, 68, 0.35);
+      color: #fecaca; font-size: 12px; display: none;
+    }
+    .discrepancy-box.show { display: block; }
+
+    .bot-grid { display: grid; grid-template-columns: 1.1fr 1fr 1fr; gap: 14px; }
+    .section-title { font-size: 14px; font-weight: 700; margin-bottom: 12px; }
+
+    .step-row {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      gap: 10px; padding: 8px 0; border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+      font-size: 12px;
+    }
+    .step-row:last-child { border-bottom: none; }
+    .step-title { font-weight: 600; }
+    .step-detail { color: var(--text-muted); margin-top: 2px; }
+    .tag {
+      padding: 2px 7px; border-radius: 6px; font-size: 11px; font-weight: 600; white-space: nowrap;
+      background: var(--bg-card); color: var(--text-muted); border: 1px solid var(--border);
+    }
+    .tag.passed { color: var(--green); background: var(--green-bg); border-color: rgba(34, 197, 94, 0.35); }
+    .tag.failed { color: var(--red); background: var(--red-bg); border-color: rgba(239, 68, 68, 0.35); }
+    .tag.not_run { color: var(--amber); background: var(--amber-bg); border-color: rgba(245, 158, 11, 0.35); }
+
+    .kv-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .kv-table td { padding: 7px 4px; border-bottom: 1px solid rgba(148, 163, 184, 0.12); }
+    .kv-table td:last-child { text-align: right; font-weight: 600; }
+
+    .rel-ring {
+      width: 96px; height: 96px; border-radius: 50%; margin: 8px auto 12px;
+      display: grid; place-items: center; font-size: 20px; font-weight: 800;
+      background: var(--bg-card); border: 6px solid var(--border);
+    }
+    .check-list { list-style: none; font-size: 12px; display: flex; flex-direction: column; gap: 6px; }
+    .verdict-box {
+      margin-top: 12px; padding: 9px 10px; border-radius: 8px; font-size: 12px;
+      background: var(--bg-card); border: 1px solid var(--border); color: var(--text-muted);
+    }
+
+    .footer {
+      padding: 10px 20px; border-top: 1px solid var(--border);
+      background: #091429; font-size: 12px; color: var(--text-muted);
+      display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px;
+    }
+
+    @media (max-width: 1024px) {
+      .kpi-grid, .mid-grid, .bot-grid { grid-template-columns: 1fr; }
+      .sidebar { width: 100%; flex-direction: row; overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-group">
+      <div class="logo-box">Z</div>
+      <div>
+        <div class="product-title">RealityCheck — RestoreProof</div>
+        <div class="product-sub">พิสูจน์ให้เห็นจริงว่า Backup กู้คืนและใช้งานได้ ไม่ใช้แค่สถานะที่ระบบรายงาน</div>
+      </div>
+    </div>
+    <div class="top-actions">
+      <span id="modeBadge" class="mode-badge">รอโหลดหลักฐานจริง</span>
+      <label class="btn">
+        โหลด JSON ผลรันจริง
+        <input id="fileInput" type="file" accept="application/json" hidden />
+      </label>
+      <button id="btnSampleFixture" class="btn" type="button">ดูข้อมูลจำลอง (ติดป้าย Demo)</button>
+      <button id="btnClear" class="btn" type="button">ล้างข้อมูล</button>
+    </div>
+  </header>
+
+  <div id="warnBanner" class="banner-warn"></div>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="nav-item active">หน้าหลัก</div>
+      <div class="nav-item">ตรวจสอบ Backup</div>
+      <div class="nav-item">ทดลอง Restore</div>
+      <div class="nav-item">รายงาน</div>
+      <div class="nav-item">ประวัติการตรวจสอบ</div>
+      <div class="nav-item">ตั้งค่า</div>
+      <div class="nav-item">เกี่ยวกับ</div>
+    </aside>
+
+    <main class="main">
+      <section class="kpi-grid">
+        <div class="card">
+          <div class="kpi-label">ตรวจสอบทั้งหมด</div>
+          <div id="kpiTotal" class="kpi-val">—</div>
+          <div id="kpiToday" class="kpi-sub">วันนี้: —</div>
+        </div>
+        <div class="card">
+          <div class="kpi-label">ผ่าน</div>
+          <div id="kpiPassed" class="kpi-val c-green">—</div>
+          <div id="kpiPassRate" class="kpi-sub">อัตราผ่าน: —</div>
+        </div>
+        <div class="card">
+          <div class="kpi-label">ไม่ผ่าน</div>
+          <div id="kpiFailed" class="kpi-val c-red">—</div>
+          <div id="kpiFailRate" class="kpi-sub">อัตราไม่ผ่าน: —</div>
+        </div>
+        <div class="card">
+          <div class="kpi-label">ใช้เวลาเฉลี่ย</div>
+          <div id="kpiAvgDur" class="kpi-val">—</div>
+          <div class="kpi-sub">วัดจากเวลาทำงานจริง</div>
+        </div>
+      </section>
+
+      <section class="mid-grid">
+        <div class="card">
+          <div class="section-title">ผลการตรวจสอบล่าสุด</div>
+          <div class="latest-head">
+            <span id="latestBadge" class="status-pill">ยังไม่มีการตรวจสอบ</span>
+            <span id="latestHeadline" class="kpi-sub">ยังไม่มีหลักฐานการรันจริง</span>
+          </div>
+          <div class="meta-grid">
+            <span class="meta-k">วันที่ตรวจสอบ:</span><span id="metaCheckedAt">—</span>
+            <span class="meta-k">แหล่งข้อมูล:</span><span id="metaSource">—</span>
+            <span class="meta-k">ขนาดข้อมูล:</span><span id="metaSize">—</span>
+            <span class="meta-k">ใช้เวลาจริง:</span><span id="metaDuration">—</span>
+          </div>
+          <div id="discrepancyBox" class="discrepancy-box"></div>
+        </div>
+
+        <div class="card">
+          <div class="section-title">ผลการตรวจสอบย้อนหลัง (จากประวัติจริง)</div>
+          <canvas id="historyCanvas" width="460" height="175" style="width:100%;height:175px;"></canvas>
+        </div>
+      </section>
+
+      <section class="bot-grid">
+        <div class="card">
+          <div class="section-title">ขั้นตอนการตรวจสอบ</div>
+          <div id="stepsContainer"><div class="kpi-sub">ยังไม่มีข้อมูลขั้นตอนการตรวจสอบ</div></div>
+        </div>
+
+        <div class="card">
+          <div class="section-title">รายละเอียดทางเทคนิค</div>
+          <table class="kv-table">
+            <tbody>
+              <tr><td class="meta-k">ประเภท Backup</td><td id="techType">—</td></tr>
+              <tr><td class="meta-k">ขนาดไฟล์</td><td id="techSize">—</td></tr>
+              <tr><td class="meta-k">Checksum (SHA-256)</td><td id="techSha">—</td></tr>
+              <tr><td class="meta-k">Restore Time</td><td id="techRestoreTime">—</td></tr>
+              <tr><td class="meta-k">Data Integrity</td><td id="techIntegrity">—</td></tr>
+              <tr><td class="meta-k">Service Status</td><td id="techService">—</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <div class="section-title">รายงานความน่าเชื่อถือ</div>
+          <div id="relRing" class="rel-ring">—</div>
+          <ul id="relChecks" class="check-list"></ul>
+          <div id="relVerdict" class="verdict-box">ยังไม่มีหลักฐานการตรวจสอบจริง</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <footer class="footer">
+    <span>ZYRQUEN · RealityCheck — RestoreProof (Fail-Closed Evidence UI)</span>
+    <span id="footerMeta">สถานะ: รอข้อมูล JSON จากผลรันจริง</span>
+  </footer>
+
+  <script>
+    const fmt = (v, fallback = "—") => (v === null || v === undefined || v === "" ? fallback : String(v));
+
+    function drawHistoryChart(history) {
+      const canvas = document.getElementById("historyCanvas");
+      const ctx = canvas.getContext("2d");
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      ctx.strokeStyle = "#1e375e";
+      ctx.lineWidth = 1;
+      for (const pct of [0, 50, 100]) {
+        const y = h - 28 - (pct / 100) * (h - 46);
+        ctx.beginPath();
+        ctx.moveTo(36, y);
+        ctx.lineTo(w - 14, y);
+        ctx.stroke();
+        ctx.fillStyle = "#94a3b8";
+        ctx.font = "11px sans-serif";
+        ctx.fillText(`${pct}%`, 4, y + 4);
+      }
+
+      if (!Array.isArray(history) || history.length === 0) {
+        ctx.fillStyle = "#94a3b8";
+        ctx.font = "12px sans-serif";
+        ctx.fillText("ยังไม่มีประวัติการรันจริง", 150, h / 2);
+        return;
+      }
+
+      const plotW = w - 58;
+      const plotH = h - 46;
+      const pts = history.map((row, idx) => {
+        const x = 36 + (history.length === 1 ? plotW / 2 : (idx / (history.length - 1)) * plotW);
+        const rate = Number(row.pass_rate_pct ?? 0);
+        const y = h - 28 - (Math.max(0, Math.min(100, rate)) / 100) * plotH;
+        return { x, y, label: String(row.label || row.date || ""), rate };
+      });
+
+      ctx.strokeStyle = "#22c55e";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+      ctx.stroke();
+
+      pts.forEach((p) => {
+        ctx.fillStyle = p.rate === 100 ? "#22c55e" : "#f59e0b";
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#94a3b8";
+        ctx.font = "11px sans-serif";
+        ctx.fillText(p.label, p.x - 14, h - 10);
+      });
+    }
+
+    function renderPayload(data) {
+      const warn = document.getElementById("warnBanner");
+      const badge = document.getElementById("modeBadge");
+
+      if (!data || !data.latest_run) {
+        resetEmptyState(data && data.is_demo ? "ข้อมูลตัวอย่างว่างเปล่า" : "ยังไม่มีหลักฐานการรันจริง — ไม่สร้างผล PASS หรือคะแนนความน่าเชื่อถือเอง");
+        return;
+      }
+
+      if (data.is_demo) {
+        badge.textContent = "DEMO FIXTURE (ไม่ใช่ผลรันจริง)";
+        badge.className = "mode-badge demo";
+        warn.textContent = "คำเตือน: กำลังแสดงข้อมูลตัวอย่าง (is_demo = true) ไม่ใช่ผลจากการตรวจสอบระบบจริง";
+        warn.className = "banner-warn show";
+      } else {
+        badge.textContent = "LIVE VERIFICATION";
+        badge.className = "mode-badge live";
+        warn.className = "banner-warn";
+      }
+
+      const s = data.summary || {};
+      const total = Number(s.total_runs ?? 0);
+      const passed = Number(s.passed_runs ?? 0);
+      const failed = Number(s.failed_runs ?? 0);
+      const passRate = s.pass_rate_pct !== null && s.pass_rate_pct !== undefined ? `${s.pass_rate_pct}%` : "—";
+      const failRate = total > 0 ? `${((failed / total) * 100).toFixed(2)}%` : "—";
+
+      document.getElementById("kpiTotal").textContent = fmt(total);
+      document.getElementById("kpiToday").textContent = `วันนี้: ${fmt(s.runs_today, "0")} ครั้ง`;
+      document.getElementById("kpiPassed").textContent = fmt(passed);
+      document.getElementById("kpiPassRate").textContent = `อัตราผ่าน: ${passRate}`;
+      document.getElementById("kpiFailed").textContent = fmt(failed);
+      document.getElementById("kpiFailRate").textContent = `อัตราไม่ผ่าน: ${failRate}`;
+      document.getElementById("kpiAvgDur").textContent = fmt(s.avg_duration_label);
+
+      const lr = data.latest_run;
+      const lBadge = document.getElementById("latestBadge");
+      lBadge.textContent = fmt(lr.status_label, lr.status || "ไม่ทราบสถานะ");
+      lBadge.className = `status-pill ${lr.status === "passed" ? "passed" : "failed"}`;
+      document.getElementById("latestHeadline").textContent = fmt(lr.headline);
+      document.getElementById("metaCheckedAt").textContent = fmt(lr.checked_at);
+      document.getElementById("metaSource").textContent = fmt(lr.source_name);
+      document.getElementById("metaSize").textContent = fmt(lr.data_size_label);
+      document.getElementById("metaDuration").textContent = fmt(lr.duration_label);
+
+      const discBox = document.getElementById("discrepancyBox");
+      discBox.replaceChildren();
+      const discList = Array.isArray(lr.discrepancies) ? lr.discrepancies : [];
+      if (discList.length > 0) {
+        const heading = document.createElement("strong");
+        heading.textContent = "จุดที่ขัดแย้งกับคำกล่าวอ้าง:";
+        discBox.appendChild(heading);
+        discList.forEach((item) => {
+          const line = document.createElement("div");
+          line.textContent = `• ${fmt(item)}`;
+          discBox.appendChild(line);
+        });
+        discBox.className = "discrepancy-box show";
+      } else {
+        discBox.className = "discrepancy-box";
+      }
+
+      const stepsEl = document.getElementById("stepsContainer");
+      stepsEl.replaceChildren();
+      const steps = Array.isArray(data.steps) ? data.steps : [];
+      if (steps.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "kpi-sub";
+        empty.textContent = "ไม่มีข้อมูลขั้นตอนย่อย";
+        stepsEl.appendChild(empty);
+      } else {
+        steps.forEach((st) => {
+          const row = document.createElement("div");
+          row.className = "step-row";
+          const left = document.createElement("div");
+          const title = document.createElement("div");
+          title.className = "step-title";
+          title.textContent = fmt(st.title);
+          const detail = document.createElement("div");
+          detail.className = "step-detail";
+          detail.textContent = `${fmt(st.detail)} · เวลา: ${fmt(st.duration_label, "ไม่ได้วัด")}`;
+          left.append(title, detail);
+
+          const statusKey = ["passed", "failed", "not_run"].includes(st.status) ? st.status : "not_run";
+          const tag = document.createElement("span");
+          tag.className = `tag ${statusKey}`;
+          tag.textContent = fmt(st.status, "not_run").toUpperCase();
+
+          row.append(left, tag);
+          stepsEl.appendChild(row);
+        });
+      }
+
+      const td = data.technical_details || {};
+      document.getElementById("techType").textContent = fmt(td.backup_type);
+      document.getElementById("techSize").textContent = fmt(td.file_size_label);
+      document.getElementById("techSha").textContent = fmt(td.checksum_short || td.checksum_sha256);
+      document.getElementById("techRestoreTime").textContent = fmt(td.restore_time_label);
+      document.getElementById("techIntegrity").textContent = fmt(td.data_integrity_label);
+      document.getElementById("techService").textContent = fmt(td.service_status);
+
+      const rel = data.reliability || {};
+      const ring = document.getElementById("relRing");
+      ring.textContent = fmt(rel.score_label);
+      if (rel.score_pct === null || rel.score_pct === undefined) {
+        ring.style.borderColor = "#334155";
+        ring.style.color = "#94a3b8";
+      } else if (Number(rel.score_pct) >= 100 && lr.status === "passed") {
+        ring.style.borderColor = "#22c55e";
+        ring.style.color = "#22c55e";
+      } else if (lr.status === "passed") {
+        ring.style.borderColor = "#f59e0b";
+        ring.style.color = "#f59e0b";
+      } else {
+        ring.style.borderColor = "#ef4444";
+        ring.style.color = "#ef4444";
+      }
+
+      const checksEl = document.getElementById("relChecks");
+      checksEl.replaceChildren();
+      const checks = Array.isArray(rel.checks) ? rel.checks : [];
+      checks.forEach((c) => {
+        const li = document.createElement("li");
+        const iconSpan = document.createElement("span");
+        iconSpan.className = c.passed ? "c-green" : "c-red";
+        iconSpan.textContent = c.passed ? "✔ " : "✖ ";
+        li.appendChild(iconSpan);
+        li.appendChild(document.createTextNode(`${fmt(c.label)} (${c.passed ? "ยืนยันแล้ว" : "ยังไม่ยืนยัน"})`));
+        checksEl.appendChild(li);
+      });
+
+      document.getElementById("relVerdict").textContent = fmt(rel.verdict_text);
+      document.getElementById("footerMeta").textContent = `สร้างรายงานเมื่อ: ${fmt(data.generated_at)} · โหมด: ${fmt(data.source_mode)}`;
+      drawHistoryChart(data.history);
+    }
+
+    function resetEmptyState(msg) {
+      document.getElementById("modeBadge").textContent = "UNVERIFIED / NO DATA";
+      document.getElementById("modeBadge").className = "mode-badge";
+      document.getElementById("warnBanner").textContent = msg;
+      document.getElementById("warnBanner").className = "banner-warn show";
+      for (const id of ["kpiTotal", "kpiPassed", "kpiFailed", "kpiAvgDur", "metaCheckedAt", "metaSource", "metaSize", "metaDuration", "techType", "techSize", "techSha", "techRestoreTime", "techIntegrity", "techService"]) {
+        document.getElementById(id).textContent = "—";
+      }
+      document.getElementById("kpiToday").textContent = "วันนี้: —";
+      document.getElementById("kpiPassRate").textContent = "อัตราผ่าน: —";
+      document.getElementById("kpiFailRate").textContent = "อัตราไม่ผ่าน: —";
+      document.getElementById("latestBadge").textContent = "ยังไม่มีการตรวจสอบ";
+      document.getElementById("latestBadge").className = "status-pill";
+      document.getElementById("latestHeadline").textContent = "ยังไม่มีหลักฐานการรันจริง";
+      const discBox = document.getElementById("discrepancyBox");
+      discBox.replaceChildren();
+      discBox.className = "discrepancy-box";
+      const stepsEl = document.getElementById("stepsContainer");
+      stepsEl.replaceChildren();
+      const emptySteps = document.createElement("div");
+      emptySteps.className = "kpi-sub";
+      emptySteps.textContent = "ยังไม่มีข้อมูลขั้นตอนการตรวจสอบ";
+      stepsEl.appendChild(emptySteps);
+      document.getElementById("relRing").textContent = "—";
+      document.getElementById("relRing").style.borderColor = "#334155";
+      document.getElementById("relRing").style.color = "#94a3b8";
+      document.getElementById("relChecks").replaceChildren();
+      document.getElementById("relVerdict").textContent = "ยังไม่มีหลักฐานการตรวจสอบจริง ไม่สร้างคะแนนความน่าเชื่อถือเอง";
+      document.getElementById("footerMeta").textContent = "สถานะ: ยังไม่มีผลรันจริง";
+      drawHistoryChart([]);
+    }
+
+    document.getElementById("fileInput").addEventListener("change", (ev) => {
+      const file = ev.target.files && ev.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          renderPayload(JSON.parse(String(reader.result)));
+        } catch (err) {
+          resetEmptyState(`ไฟล์ JSON ไม่ถูกต้อง: ${err.message}`);
+        }
+      };
+      reader.readAsText(file, "utf-8");
+    });
+
+    document.getElementById("btnSampleFixture").addEventListener("click", () => {
+      renderPayload({
+        schema_version: "1.0.0",
+        product: "RealityCheck — RestoreProof",
+        source_mode: "demo_fixture",
+        is_demo: true,
+        generated_at: "2026-11-26T14:32:17Z",
+        summary: {
+          total_runs: 2, runs_today: 1, passed_runs: 1, failed_runs: 1,
+          pass_rate_pct: 50.0, avg_duration_sec: 4.5, avg_duration_label: "5 วินาที"
+        },
+        latest_run: {
+          run_id: "demo_run_002", status: "failed", status_label: "ไม่ผ่านการตรวจสอบ (Demo)",
+          headline: "ตัวอย่างจำลอง: ตรวจพบไฟล์ไม่ครบหลังทดลองกู้คืน",
+          checked_at: "2026-11-26T14:32:17Z", source_name: "Demo Backup Bundle",
+          data_size_bytes: 2048, data_size_label: "2.0 KB", duration_sec: 4.2, duration_label: "4 วินาที",
+          discrepancies: ["Missing files after restore: ['config.json']"]
+        },
+        steps: [
+          { step_key: "integrity_check", title: "ตรวจสอบข้อมูล Backup (Integrity Check)", status: "passed", duration_sec: 0.4, duration_label: "400 ms", detail: "อ่านไฟล์สำรองได้ตามปกติ" },
+          { step_key: "isolated_restore", title: "ทดลอง Restore ในระบบแยก", status: "passed", duration_sec: 2.1, duration_label: "2 วินาที", detail: "แตกไฟล์ลงพื้นที่ชั่วคราวสำเร็จ" },
+          { step_key: "data_completeness", title: "ตรวจสอบความครบถ้วนของข้อมูล", status: "failed", duration_sec: 1.7, duration_label: "2 วินาที", detail: "ขาดไฟล์ตาม manifest" },
+          { step_key: "service_health", title: "ตรวจสอบการทำงานของบริการ", status: "not_run", duration_sec: null, duration_label: null, detail: "ข้ามเนื่องจากความครบถ้วนไม่ผ่าน" }
+        ],
+        technical_details: {
+          backup_type: "Demo Archive (.zip)", file_size_label: "2.0 KB",
+          checksum_sha256: "demo000000000000000000000000000000000000000000000000000000000000",
+          checksum_short: "demo000000....0000", restore_time_label: "2 วินาที",
+          data_integrity_pct: 50.0, data_integrity_label: "50.00%", service_status: "FAIL"
+        },
+        history: [
+          { date: "2026-11-25", label: "25/11", pass_rate_pct: 100.0 },
+          { date: "2026-11-26", label: "26/11", pass_rate_pct: 50.0 }
+        ],
+        reliability: {
+          score_pct: 33.33, score_label: "33.33%",
+          checks: [
+            { key: "restore_verified", label: "Restore สำเร็จ", passed: true },
+            { key: "data_complete", label: "ข้อมูลครบถ้วน", passed: false },
+            { key: "service_healthy", label: "บริการทำงานปกติ", passed: false }
+          ],
+          verdict_text: "ตัวอย่างข้อมูลจำลองเท่านั้น — ไม่ใช่ผลยืนยันระบบจริง"
+        }
+      });
+    });
+
+    document.getElementById("btnClear").addEventListener("click", () => {
+      document.getElementById("fileInput").value = "";
+      resetEmptyState("ล้างข้อมูลแล้ว — รอโหลดไฟล์ JSON จากผลรันจริง");
+    });
+
+    resetEmptyState("เริ่มต้นสถานะว่าง (Fail-Closed) — ยังไม่มีหลักฐานการรันจริง ระบบไม่สร้างผล PASS หรือคะแนนความน่าเชื่อถือขึ้นมาเอง");
+  </script>
+</body>
+</html>

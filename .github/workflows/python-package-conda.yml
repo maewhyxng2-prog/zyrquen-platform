@@ -1,0 +1,75 @@
+name: Python Package using Anaconda
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "apps/api/requirements.txt"
+      - "apps/core/**"
+      - "python_core/**"
+      - "phases/**"
+      - ".github/workflows/python-package-conda.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "apps/api/requirements.txt"
+      - "apps/core/**"
+      - "python_core/**"
+      - "phases/**"
+      - ".github/workflows/python-package-conda.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-conda-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-linux:
+    name: Conda Dependencies & Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    env:
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/python_core
+      PYTHON_DOTENV_DISABLED: "1"
+      ZYRQUEN_ENV: unit_test
+      DATABASE_URL: sqlite:///:memory:
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Miniconda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-update-conda: true
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install & verify dependencies
+        shell: bash -el {0}
+        run: |
+          conda info
+          python --version
+          python -m pip install --upgrade pip
+          if [ -f apps/api/requirements.txt ]; then pip install -r apps/api/requirements.txt; fi
+          pip check
+
+      - name: Verify package imports & bytecode compilation
+        shell: bash -el {0}
+        run: |
+          python -m compileall -q python_core apps phases
+          python -c "import zyrquen_core, fastapi, sqlalchemy, alembic, pydantic_settings; from apps.api.main import app; print('Import OK:', app.title)"
+
+      - name: Verify cross-version core runtime & CLI compatibility
+        shell: bash -el {0}
+        run: |
+          python -m v2.native_pipeline --help
+          python -c "from v2.zyrquen_v2_pure import verify_v2_gradients; res = verify_v2_gradients(); assert res['passed'], res; print('Gradient & Pure V2 check passed:', res['max_relative_error'])"
