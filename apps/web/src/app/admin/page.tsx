@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { DeveloperNav } from "@/components/DeveloperNav";
@@ -155,6 +155,8 @@ export default function AdminPage() {
   const [artifactBusy, setArtifactBusy] = useState<"logs" | "manifest" | "metadata" | null>(null);
   const [artifactError, setArtifactError] = useState("");
   const [artifactNotice, setArtifactNotice] = useState("");
+  const modalDialogRef = useRef<HTMLDivElement | null>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
 
   const fetchAdminData = useCallback(async (isCancelled?: () => boolean) => {
     try {
@@ -300,14 +302,96 @@ export default function AdminPage() {
 
   useEffect(() => {
     if (!lineageOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setLineageOpen(false);
+
+    previousFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+    const getFocusableElements = (): HTMLElement[] => {
+      const dialog = modalDialogRef.current;
+      if (!dialog) return [];
+      const selector = [
+        'a[href]',
+        'button:not([disabled])',
+        'textarea:not([disabled])',
+        'input:not([disabled])',
+        'select:not([disabled])',
+        '[tabindex]:not([tabindex="-1"])',
+      ].join(", ");
+      return Array.from(dialog.querySelectorAll<HTMLElement>(selector)).filter((el) => {
+        if (el.hasAttribute("hidden") || el.closest('[hidden], [aria-hidden="true"]')) {
+          return false;
+        }
+        const style = window.getComputedStyle(el);
+        return style.display !== "none" && style.visibility !== "hidden";
+      });
+    };
+
+    const focusInitialElement = () => {
+      const dialog = modalDialogRef.current;
+      if (!dialog) return;
+      const focusable = getFocusableElements();
+      if (focusable.length > 0) {
+        focusable[0].focus();
+      } else {
+        dialog.focus();
       }
     };
+
+    focusInitialElement();
+    const rafId = window.requestAnimationFrame(() => {
+      const dialog = modalDialogRef.current;
+      if (dialog && !dialog.contains(document.activeElement)) {
+        focusInitialElement();
+      }
+    });
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setLineageOpen(false);
+        return;
+      }
+
+      if (event.key !== "Tab") return;
+
+      const dialog = modalDialogRef.current;
+      if (!dialog) return;
+
+      const focusable = getFocusableElements();
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+
+      if (!dialog.contains(active)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+        return;
+      }
+
+      if (event.shiftKey && (active === first || active === dialog)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
     window.addEventListener("keydown", onKeyDown);
     return () => {
+      window.cancelAnimationFrame(rafId);
       window.removeEventListener("keydown", onKeyDown);
+      const previous = previousFocusRef.current;
+      previousFocusRef.current = null;
+      if (previous && previous.isConnected) {
+        previous.focus();
+      }
     };
   }, [lineageOpen]);
 
@@ -722,7 +806,9 @@ export default function AdminPage() {
             aria-modal="true"
             className="modal-dialog panel"
             onClick={(event) => event.stopPropagation()}
+            ref={modalDialogRef}
             role="dialog"
+            tabIndex={-1}
           >
             <div className="modal-header">
               <div>

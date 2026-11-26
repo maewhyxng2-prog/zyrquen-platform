@@ -1,0 +1,266 @@
+name: ZYRQUEN Native Training Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend:
+        description: "Training backend (auto, pure, pytorch)"
+        required: true
+        default: "pure"
+        type: choice
+        options:
+          - pure
+          - auto
+          - pytorch
+      seed:
+        description: "Deterministic random seed"
+        required: true
+        default: "42"
+        type: string
+      steps_p1:
+        description: "Phase 1 training steps"
+        required: true
+        default: "20"
+        type: string
+      steps_p2:
+        description: "Phase 2 continual training steps"
+        required: true
+        default: "25"
+        type: string
+      enforce_gate:
+        description: "Fail workflow if ApprovalGate rejects candidate checkpoint"
+        required: true
+        default: true
+        type: boolean
+  push:
+    branches: ["main"]
+    paths:
+      - "python_core/v2/native_pipeline.py"
+      - "infra/docker/Dockerfile.native-training"
+      - ".github/workflows/native-training-pipeline.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "python_core/v2/native_pipeline.py"
+      - "infra/docker/Dockerfile.native-training"
+      - ".github/workflows/native-training-pipeline.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-training-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker-image:
+    name: 1. Docker Image (Native Training Environment)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Build reproducible Native Training Docker image
+        run: |
+          INSTALL_TORCH=0
+          if [ "${{ inputs.backend }}" = "pytorch" ]; then
+            INSTALL_TORCH=1
+          fi
+          docker build \
+            --build-arg INSTALL_TORCH="$INSTALL_TORCH" \
+            -f infra/docker/Dockerfile.native-training \
+            -t zyrquen-native-training:ci .
+
+      - name: Smoke-check container & Native-Only policy
+        run: |
+          docker run --rm --entrypoint python zyrquen-native-training:ci -m compileall -q python_core
+          docker run --rm zyrquen-native-training:ci --help
+
+      - name: Export Docker image for downstream pipeline stages
+        run: docker save zyrquen-native-training:ci | gzip -1 > zyrquen-native-training.tar.gz
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zyrquen-native-training-image-${{ github.run_id }}
+          path: zyrquen-native-training.tar.gz
+          retention-days: 1
+
+  model-training:
+    name: 2. Model Training (NativeTransformerLMV2 / ContinualTrainerV2)
+    needs: [docker-image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: zyrquen-native-training-image-${{ github.run_id }}
+
+      - name: Load Docker image & prepare artifact volume
+        run: |
+          gunzip -c zyrquen-native-training.tar.gz | docker load
+          mkdir -p artifacts
+          chmod 777 artifacts
+
+      - name: Train Native V2 from random weights with replay & SHA-256 checkpoint
+        run: |
+          docker run --rm \
+            -v "$PWD/artifacts:/artifacts" \
+            zyrquen-native-training:ci \
+            train \
+            --artifact-dir /artifacts \
+            --backend "${{ inputs.backend || 'pure' }}" \
+            --seed "${{ inputs.seed || '42' }}" \
+            --steps-p1 "${{ inputs.steps_p1 || '20' }}" \
+            --steps-p2 "${{ inputs.steps_p2 || '25' }}" \
+            --replay-ratio 0.5
+
+      - name: Upload checkpoints & training manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: zyrquen-training-artifacts-${{ github.run_id }}
+          path: artifacts/
+          retention-days: 7
+
+  model-evaluation:
+    name: 3. Model Evaluation (Disjoint Unseen Sandbox)
+    needs: [docker-image, model-training]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Download Docker image & training artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: zyrquen-*-${{ github.run_id }}
+          merge-multiple: true
+
+      - name: Load Docker image & prepare volume
+        run: |
+          gunzip -c zyrquen-native-training.tar.gz | docker load
+          mkdir -p artifacts
+          mv checkpoints train_manifest.json baseline_metrics.json artifacts/
+          chmod -R 777 artifacts
+
+      - name: Evaluate candidate checkpoint on unseen tasks
+        run: |
+          docker run --rm \
+            -v "$PWD/artifacts:/artifacts" \
+            zyrquen-native-training:ci \
+            evaluate --artifact-dir /artifacts
+
+      - name: Upload evaluation report
+        uses: actions/upload-artifact@v4
+        with:
+          name: zyrquen-eval-report-${{ github.run_id }}
+          path: artifacts/eval_report.json
+          retention-days: 7
+
+  regression-testing:
+    name: 4. Regression Testing (Retention vs Baseline)
+    needs: [docker-image, model-training, model-evaluation]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Download Docker image & training artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: zyrquen-*-${{ github.run_id }}
+          merge-multiple: true
+
+      - name: Load Docker image & prepare volume
+        run: |
+          gunzip -c zyrquen-native-training.tar.gz | docker load
+          mkdir -p artifacts
+          mv checkpoints train_manifest.json baseline_metrics.json eval_report.json artifacts/
+          chmod -R 777 artifacts
+
+      - name: Run regression retention tests in sandbox
+        run: |
+          docker run --rm \
+            -v "$PWD/artifacts:/artifacts" \
+            zyrquen-native-training:ci \
+            regression --artifact-dir /artifacts
+
+      - name: Upload regression report
+        uses: actions/upload-artifact@v4
+        with:
+          name: zyrquen-regression-report-${{ github.run_id }}
+          path: artifacts/regression_report.json
+          retention-days: 7
+
+  approval-gate:
+    name: 5. Approval Gate & Checkpoint SHA-256 Validation
+    needs: [docker-image, model-training, model-evaluation, regression-testing]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Download Docker image & pipeline artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: zyrquen-*-${{ github.run_id }}
+          merge-multiple: true
+
+      - name: Load Docker image & prepare volume
+        run: |
+          gunzip -c zyrquen-native-training.tar.gz | docker load
+          mkdir -p artifacts
+          mv checkpoints train_manifest.json baseline_metrics.json eval_report.json regression_report.json artifacts/
+          chmod -R 777 artifacts
+
+      - name: Run fail-closed ApprovalGate & SHA-256 verification
+        run: |
+          EXTRA_FLAG=""
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.enforce_gate }}" = "false" ]; then
+            EXTRA_FLAG="--report-only"
+          fi
+          docker run --rm \
+            -v "$PWD/artifacts:/artifacts" \
+            zyrquen-native-training:ci \
+            approve --artifact-dir /artifacts $EXTRA_FLAG
+
+      - name: Upload approval decision record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zyrquen-approval-record-${{ github.run_id }}
+          path: |
+            artifacts/gate_summary.json
+            artifacts/checkpoints/*.approval.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  checkpoint-backup:
+    name: 6. Checkpoint & Report Artifact Backup
+    needs: [model-training, model-evaluation, regression-testing, approval-gate]
+    if: always() && needs.model-training.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Download all generated checkpoints & reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: zyrquen-*-${{ github.run_id }}
+          merge-multiple: true
+
+      - name: Assemble resumable backup bundle
+        run: |
+          mkdir -p backup
+          for item in checkpoints train_manifest.json baseline_metrics.json eval_report.json regression_report.json gate_summary.json; do
+            if [ -e "$item" ]; then cp -r "$item" backup/; fi
+          done
+          ls -la backup backup/checkpoints || true
+
+      - name: Upload long-term resumable checkpoint backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: zyrquen-native-checkpoint-backup-${{ github.run_id }}
+          path: backup/
+          retention-days: 30

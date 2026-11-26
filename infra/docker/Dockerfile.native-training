@@ -1,0 +1,36 @@
+# ZYRQUEN Native-Only Training & Verification Container
+# Build from repository root:
+#   docker build -f infra/docker/Dockerfile.native-training -t zyrquen-native-training:local .
+# Optional CPU PyTorch build:
+#   docker build --build-arg INSTALL_TORCH=1 -f infra/docker/Dockerfile.native-training -t zyrquen-native-training:torch .
+
+FROM python:3.12-slim
+
+ARG INSTALL_TORCH=0
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app:/app/python_core \
+    PYTHON_DOTENV_DISABLED=1
+
+WORKDIR /app
+
+RUN if [ "$INSTALL_TORCH" = "1" ]; then \
+      pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch pytest; \
+    else \
+      pip install --no-cache-dir pytest; \
+    fi
+
+COPY python_core ./python_core
+
+RUN python -m compileall -q python_core \
+    && groupadd --system --gid 10001 zyrquen \
+    && useradd --system --uid 10001 --gid zyrquen --home-dir /home/zyrquen \
+        --create-home --shell /usr/sbin/nologin zyrquen \
+    && mkdir -p /artifacts \
+    && chown -R 10001:10001 /app /artifacts /home/zyrquen
+
+USER 10001:10001
+
+ENTRYPOINT ["python", "-m", "v2.native_pipeline"]
+CMD ["--help"]
