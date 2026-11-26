@@ -2198,6 +2198,27 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
     res.json(data);
   });
 
+  app.post(
+    '/api/admin/overview/summary',
+    requireAuth,
+    requireAdmin,
+    async (req: AuthedRequest, res: Response) => {
+      const summary = await runPythonScript<{ ok: boolean; error?: string }>('db_bridge.py', {
+        action: 'admin_overview_summary',
+        payload: {
+          actor_id: req.user!.id,
+          actor_email: req.user!.email,
+        },
+      });
+      if (!summary.ok) {
+        res.status(500).json({ error: summary.error || 'Failed to generate admin overview summary' });
+        return;
+      }
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.json(summary);
+    }
+  );
+
   app.get(
     '/api/admin/audit-logs/export',
     requireAuth,

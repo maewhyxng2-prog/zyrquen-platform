@@ -410,6 +410,319 @@ def _enrich_conversation_project(conn, conv: dict) -> dict:
     return conv
 
 
+def _build_admin_overview_payload(conn) -> dict:
+    init_dataset_pipeline_schema(conn)
+    init_tool_center_schema(conn)
+    users = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT id, email, display_name, role, created_at FROM users ORDER BY created_at ASC"
+        ).fetchall()
+    ]
+    pending_runs = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT * FROM workflow_runs WHERE status='PENDING_APPROVAL' ORDER BY created_at DESC"
+        ).fetchall()
+    ]
+    audit_logs = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 40"
+        ).fetchall()
+    ]
+    pending_tool_invocations = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT * FROM tool_invocations WHERE status='PENDING_APPROVAL' ORDER BY created_at DESC"
+        ).fetchall()
+    ]
+    tools = [
+        dict(r)
+        for r in conn.execute("SELECT * FROM external_tools ORDER BY id ASC").fetchall()
+    ]
+    pending_experiments = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT * FROM experiments WHERE approval_status='PENDING_APPROVAL' ORDER BY created_at DESC"
+        ).fetchall()
+    ]
+    pending_kg_proposals = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT id, dataset_id, dataset_name, provenance, source_name, license,
+                   manifest_hash, proposal_checksum, triples_json, contradictions_json,
+                   triple_count, status, submitted_by, approved_by, decision_reason,
+                   created_at, reviewed_at
+            FROM kg_ingestion_proposals
+            WHERE status='PENDING_APPROVAL'
+            ORDER BY created_at DESC
+            """
+        ).fetchall()
+    ]
+    datasets = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT id, name, manifest_hash, total_records, train_count, val_count, test_count,
+                   leakage_detected, status, created_at,
+                   source_name, license, provenance, source_format, content_sha256
+            FROM datasets ORDER BY created_at DESC LIMIT 20
+            """
+        ).fetchall()
+    ]
+    checkpoints = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT id, version, dataset_id, vocab_size, ngram_order, train_loss, val_loss, perplexity, eval_accuracy, eval_status, created_at FROM checkpoints ORDER BY version DESC LIMIT 20"
+        ).fetchall()
+    ]
+    experiments_recent = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT id, hypothesis, dataset_id, baseline_ckpt_id, candidate_ckpt_id, baseline_metrics_json, candidate_metrics_json, improved, approval_status, approved_by, created_at FROM experiments ORDER BY created_at DESC LIMIT 12"
+        ).fetchall()
+    ]
+    triples_total = conn.execute("SELECT COUNT(*) FROM knowledge_triples").fetchone()[0]
+    verified_triples = conn.execute(
+        """
+        SELECT COUNT(*) FROM knowledge_triples
+        WHERE confidence >= 0.8
+          AND source NOT LIKE '%uncorroborated%'
+          AND source NOT LIKE '%conflicting%'
+          AND source NOT LIKE '%stale%'
+        """
+    ).fetchone()[0]
+    clean_datasets = sum(
+        1 for d in datasets if int(d.get("leakage_detected", 0)) == 0 and int(d.get("total_records", 0)) >= 5
+    )
+    eval_count = int(conn.execute("SELECT COUNT(*) FROM evaluations").fetchone()[0])
+    baseline_count = int(conn.execute("SELECT COUNT(*) FROM capability_baselines").fetchone()[0])
+    baseline_evaluations = eval_count + baseline_count
+    approved_training_runs = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM workflow_runs WHERE group_id='native_training' AND status='COMPLETED' AND approved_by IS NOT NULL"
+        ).fetchone()[0]
+    )
+    neural_checkpoints = sum(1 for c in checkpoints if str(c.get("eval_status") or "").startswith("NEURAL"))
+    approved_experiments = sum(1 for e in experiments_recent if e.get("approval_status") == "APPROVED")
+    pending_training_runs = sum(1 for r in pending_runs if r.get("group_id") == "native_training")
+
+    if clean_datasets == 0:
+        gate_status = "BLOCKED"
+    elif baseline_evaluations == 0:
+        gate_status = "BLOCKED_NO_BASELINE"
+    elif len(pending_experiments) > 0 or pending_training_runs > 0:
+        gate_status = "AWAITING_APPROVAL"
+    elif len(checkpoints) == 0:
+        gate_status = "READY_FOR_TRAINING_GATE"
+    else:
+        gate_status = "VERIFIED"
+
+    reasoning_traces = _query_reasoning_traces(conn, is_admin=True, limit=40)
+    recent_api_usage = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT endpoint, method, status_code, latency_ms, created_at FROM api_usage_logs ORDER BY created_at DESC LIMIT 40"
+        ).fetchall()
+    ]
+
+    # Compute genuine historical inference metrics from persisted reasoning_traces & messages (no synthetic points)
+    trace_rows = conn.execute(
+        """
+        SELECT rt.prompt, rt.response_preview, rt.status, rt.created_at, m.content AS full_response
+        FROM reasoning_traces rt
+        LEFT JOIN messages m ON m.id = rt.message_id
+        ORDER BY rt.created_at ASC, rt.rowid ASC
+        """
+    ).fetchall()
+    daily_buckets: dict[str, dict[str, int]] = {}
+    successful_inference_requests = 0
+    total_input_tokens = 0
+    total_output_tokens = 0
+    for tr in trace_rows:
+        st_upper = str(tr["status"] or "").upper()
+        if st_upper in ("FAILED", "ERROR", "BLOCKED", "REJECTED"):
+            continue
+        in_tok = len(tokenize(str(tr["prompt"] or "")))
+        out_text = tr["full_response"] if tr["full_response"] is not None else tr["response_preview"]
+        out_tok = len(tokenize(str(out_text or "")))
+        tot_tok = in_tok + out_tok
+        successful_inference_requests += 1
+        total_input_tokens += in_tok
+        total_output_tokens += out_tok
+        raw_date = str(tr["created_at"] or "")[:10]
+        bucket_date = raw_date if re.match(r"^\d{4}-\d{2}-\d{2}$", raw_date) else "unknown"
+        bucket = daily_buckets.setdefault(
+            bucket_date,
+            {
+                "successful_inference_requests": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+            },
+        )
+        bucket["successful_inference_requests"] += 1
+        bucket["input_tokens"] += in_tok
+        bucket["output_tokens"] += out_tok
+        bucket["total_tokens"] += tot_tok
+
+    overview_history = [
+        {
+            "date": day,
+            "successful_inference_requests": daily_buckets[day]["successful_inference_requests"],
+            "input_tokens": daily_buckets[day]["input_tokens"],
+            "output_tokens": daily_buckets[day]["output_tokens"],
+            "total_tokens": daily_buckets[day]["total_tokens"],
+        }
+        for day in sorted(daily_buckets.keys())
+    ]
+
+    active_api_keys = int(
+        conn.execute("SELECT COUNT(*) FROM api_keys WHERE revoked = 0").fetchone()[0]
+    )
+
+    pending_tool_center_invocations = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT * FROM tool_center_invocations WHERE status='PENDING_APPROVAL' ORDER BY created_at DESC"
+        ).fetchall()
+    ]
+    pending_improvement_proposals = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT * FROM improvement_proposals WHERE approval_status='PENDING_APPROVAL' ORDER BY created_at DESC"
+        ).fetchall()
+    ]
+
+    return {
+        "ok": True,
+        "users": users,
+        "pending_runs": pending_runs,
+        "pending_tool_invocations": pending_tool_invocations,
+        "pending_tool_center_invocations": pending_tool_center_invocations,
+        "pending_improvement_proposals": pending_improvement_proposals,
+        "pending_experiments": pending_experiments,
+        "pending_kg_proposals": pending_kg_proposals,
+        "tools": tools,
+        "audit_logs": audit_logs,
+        "system": get_system_metrics(),
+        "reasoning_traces": reasoning_traces,
+        "recent_api_usage": recent_api_usage,
+        "successful_inference_requests": successful_inference_requests,
+        "input_tokens": total_input_tokens,
+        "output_tokens": total_output_tokens,
+        "total_tokens": total_input_tokens + total_output_tokens,
+        "active_api_keys": active_api_keys,
+        "overview_history": overview_history,
+        "training_readiness": {
+            "gate_status": gate_status,
+            "datasets_total": len(datasets),
+            "clean_datasets": clean_datasets,
+            "baseline_evaluations": baseline_evaluations,
+            "approved_training_runs": approved_training_runs,
+            "triples_total": triples_total,
+            "verified_triples": verified_triples,
+            "experiments_total": len(experiments_recent),
+            "approved_experiments": approved_experiments,
+            "pending_experiments": len(pending_experiments),
+            "pending_training_runs": pending_training_runs,
+            "pending_kg_proposals": len(pending_kg_proposals),
+            "checkpoints_total": len(checkpoints),
+            "neural_checkpoints": neural_checkpoints,
+            "datasets": datasets,
+            "checkpoints": checkpoints,
+            "experiments": experiments_recent,
+        },
+    }
+
+
+def _handle_admin_overview(conn) -> dict:
+    overview = _build_admin_overview_payload(conn)
+    conn.close()
+    return overview
+
+
+def _handle_admin_overview_summary(conn, payload: dict) -> dict:
+    overview = _build_admin_overview_payload(conn)
+    actor_id = str(payload.get("actor_id") or "system")
+    actor_email_raw = str(payload.get("actor_email") or "admin")
+    tr = overview["training_readiness"]
+    sys_info = overview["system"]
+    pending_approvals = (
+        len(overview["pending_runs"])
+        + len(overview["pending_experiments"])
+        + len(overview["pending_kg_proposals"])
+        + len(overview["pending_tool_invocations"])
+    )
+    metrics_snapshot = {
+        "users": len(overview["users"]),
+        "successful_inference_requests": overview["successful_inference_requests"],
+        "input_tokens": overview["input_tokens"],
+        "output_tokens": overview["output_tokens"],
+        "total_tokens": overview["total_tokens"],
+        "active_api_keys": overview["active_api_keys"],
+        "pending_approvals": pending_approvals,
+        "audit_logs_count": len(overview["audit_logs"]),
+        "training_readiness": {
+            "gate_status": tr["gate_status"],
+            "datasets_total": tr["datasets_total"],
+            "clean_datasets": tr["clean_datasets"],
+            "verified_triples": tr["verified_triples"],
+            "triples_total": tr["triples_total"],
+            "experiments_total": tr["experiments_total"],
+            "checkpoints_total": tr["checkpoints_total"],
+            "neural_checkpoints": tr["neural_checkpoints"],
+        },
+        "system": sys_info,
+    }
+    canonical = json.dumps(
+        {"metrics": metrics_snapshot, "overview_history": overview["overview_history"]},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    integrity_sha256 = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    generated_at = now_iso()
+
+    with conn:
+        conn.execute(
+            "INSERT INTO audit_logs (id, actor_id, actor_email, action, target, outcome, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(uuid.uuid4()),
+                actor_id,
+                actor_email_raw,
+                "ADMIN_OVERVIEW_PDF_SUMMARY",
+                "admin_overview",
+                f"GENERATED_{len(overview['overview_history'])}_BUCKETS",
+                json.dumps(
+                    {
+                        "schema": "zyrquen.admin-overview-summary.v1",
+                        "integrity_sha256": integrity_sha256,
+                        "successful_inference_requests": overview["successful_inference_requests"],
+                        "total_tokens": overview["total_tokens"],
+                    },
+                    ensure_ascii=False,
+                ),
+                generated_at,
+            ),
+        )
+    conn.close()
+    return {
+        "ok": True,
+        "schema": "zyrquen.admin-overview-summary.v1",
+        "generated_at": generated_at,
+        "generated_by": {
+            "id": actor_id,
+            "actor_email_masked": _mask_actor_email(actor_email_raw),
+        },
+        "integrity_sha256": integrity_sha256,
+        "metrics": metrics_snapshot,
+        "overview_history": overview["overview_history"],
+    }
+
+
 def handle_action(action: str, payload: dict) -> dict:
     conn = get_db()
 
@@ -1169,171 +1482,11 @@ def handle_action(action: str, payload: dict) -> dict:
         return {"ok": cur.rowcount > 0}
 
     if action == "admin_overview":
-        init_dataset_pipeline_schema(conn)
-        init_tool_center_schema(conn)
-        users = [
-            dict(r)
-            for r in conn.execute(
-                "SELECT id, email, display_name, role, created_at FROM users ORDER BY created_at ASC"
-            ).fetchall()
-        ]
-        pending_runs = [
-            dict(r)
-            for r in conn.execute(
-                "SELECT * FROM workflow_runs WHERE status='PENDING_APPROVAL' ORDER BY created_at DESC"
-            ).fetchall()
-        ]
-        audit_logs = [
-            dict(r)
-            for r in conn.execute(
-                "SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 40"
-            ).fetchall()
-        ]
-        pending_tool_invocations = [
-            dict(r)
-            for r in conn.execute(
-                "SELECT * FROM tool_invocations WHERE status='PENDING_APPROVAL' ORDER BY created_at DESC"
-            ).fetchall()
-        ]
-        tools = [
-            dict(r)
-            for r in conn.execute("SELECT * FROM external_tools ORDER BY id ASC").fetchall()
-        ]
-        pending_experiments = [
-            dict(r)
-            for r in conn.execute(
-                "SELECT * FROM experiments WHERE approval_status='PENDING_APPROVAL' ORDER BY created_at DESC"
-            ).fetchall()
-        ]
-        pending_kg_proposals = [
-            dict(r)
-            for r in conn.execute(
-                """
-                SELECT id, dataset_id, dataset_name, provenance, source_name, license,
-                       manifest_hash, proposal_checksum, triples_json, contradictions_json,
-                       triple_count, status, submitted_by, approved_by, decision_reason,
-                       created_at, reviewed_at
-                FROM kg_ingestion_proposals
-                WHERE status='PENDING_APPROVAL'
-                ORDER BY created_at DESC
-                """
-            ).fetchall()
-        ]
-        datasets = [
-            dict(r)
-            for r in conn.execute(
-                """
-                SELECT id, name, manifest_hash, total_records, train_count, val_count, test_count,
-                       leakage_detected, status, created_at,
-                       source_name, license, provenance, source_format, content_sha256
-                FROM datasets ORDER BY created_at DESC LIMIT 20
-                """
-            ).fetchall()
-        ]
-        checkpoints = [
-            dict(r)
-            for r in conn.execute(
-                "SELECT id, version, dataset_id, vocab_size, ngram_order, train_loss, val_loss, perplexity, eval_accuracy, eval_status, created_at FROM checkpoints ORDER BY version DESC LIMIT 20"
-            ).fetchall()
-        ]
-        experiments_recent = [
-            dict(r)
-            for r in conn.execute(
-                "SELECT id, hypothesis, dataset_id, baseline_ckpt_id, candidate_ckpt_id, baseline_metrics_json, candidate_metrics_json, improved, approval_status, approved_by, created_at FROM experiments ORDER BY created_at DESC LIMIT 12"
-            ).fetchall()
-        ]
-        triples_total = conn.execute("SELECT COUNT(*) FROM knowledge_triples").fetchone()[0]
-        verified_triples = conn.execute(
-            """
-            SELECT COUNT(*) FROM knowledge_triples
-            WHERE confidence >= 0.8
-              AND source NOT LIKE '%uncorroborated%'
-              AND source NOT LIKE '%conflicting%'
-              AND source NOT LIKE '%stale%'
-            """
-        ).fetchone()[0]
-        clean_datasets = sum(
-            1 for d in datasets if int(d.get("leakage_detected", 0)) == 0 and int(d.get("total_records", 0)) >= 5
-        )
-        eval_count = int(conn.execute("SELECT COUNT(*) FROM evaluations").fetchone()[0])
-        baseline_count = int(conn.execute("SELECT COUNT(*) FROM capability_baselines").fetchone()[0])
-        baseline_evaluations = eval_count + baseline_count
-        approved_training_runs = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM workflow_runs WHERE group_id='native_training' AND status='COMPLETED' AND approved_by IS NOT NULL"
-            ).fetchone()[0]
-        )
-        neural_checkpoints = sum(1 for c in checkpoints if str(c.get("eval_status") or "").startswith("NEURAL"))
-        approved_experiments = sum(1 for e in experiments_recent if e.get("approval_status") == "APPROVED")
-        pending_training_runs = sum(1 for r in pending_runs if r.get("group_id") == "native_training")
+        return _handle_admin_overview(conn)
 
-        if clean_datasets == 0:
-            gate_status = "BLOCKED"
-        elif baseline_evaluations == 0:
-            gate_status = "BLOCKED_NO_BASELINE"
-        elif len(pending_experiments) > 0 or pending_training_runs > 0:
-            gate_status = "AWAITING_APPROVAL"
-        elif len(checkpoints) == 0:
-            gate_status = "READY_FOR_TRAINING_GATE"
-        else:
-            gate_status = "VERIFIED"
+    if action == "admin_overview_summary":
+        return _handle_admin_overview_summary(conn, payload)
 
-        reasoning_traces = _query_reasoning_traces(conn, is_admin=True, limit=40)
-        recent_api_usage = [
-            dict(r)
-            for r in conn.execute(
-                "SELECT endpoint, method, status_code, latency_ms, created_at FROM api_usage_logs ORDER BY created_at DESC LIMIT 40"
-            ).fetchall()
-        ]
-
-        pending_tool_center_invocations = [
-            dict(r)
-            for r in conn.execute(
-                "SELECT * FROM tool_center_invocations WHERE status='PENDING_APPROVAL' ORDER BY created_at DESC"
-            ).fetchall()
-        ]
-        pending_improvement_proposals = [
-            dict(r)
-            for r in conn.execute(
-                "SELECT * FROM improvement_proposals WHERE approval_status='PENDING_APPROVAL' ORDER BY created_at DESC"
-            ).fetchall()
-        ]
-
-        conn.close()
-        return {
-            "ok": True,
-            "users": users,
-            "pending_runs": pending_runs,
-            "pending_tool_invocations": pending_tool_invocations,
-            "pending_tool_center_invocations": pending_tool_center_invocations,
-            "pending_improvement_proposals": pending_improvement_proposals,
-            "pending_experiments": pending_experiments,
-            "pending_kg_proposals": pending_kg_proposals,
-            "tools": tools,
-            "audit_logs": audit_logs,
-            "system": get_system_metrics(),
-            "reasoning_traces": reasoning_traces,
-            "recent_api_usage": recent_api_usage,
-            "training_readiness": {
-                "gate_status": gate_status,
-                "datasets_total": len(datasets),
-                "clean_datasets": clean_datasets,
-                "baseline_evaluations": baseline_evaluations,
-                "approved_training_runs": approved_training_runs,
-                "triples_total": triples_total,
-                "verified_triples": verified_triples,
-                "experiments_total": len(experiments_recent),
-                "approved_experiments": approved_experiments,
-                "pending_experiments": len(pending_experiments),
-                "pending_training_runs": pending_training_runs,
-                "pending_kg_proposals": len(pending_kg_proposals),
-                "checkpoints_total": len(checkpoints),
-                "neural_checkpoints": neural_checkpoints,
-                "datasets": datasets,
-                "checkpoints": checkpoints,
-                "experiments": experiments_recent,
-            },
-        }
 
     if action == "admin_export_audit_logs":
         focus = str(payload.get("focus") or "pii_redaction").strip().lower()

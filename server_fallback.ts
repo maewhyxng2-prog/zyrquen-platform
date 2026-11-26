@@ -1042,22 +1042,146 @@ export function runFallbackDbBridge(action: string, payload: AnyRecord = {}): An
     return { ok: true };
   }
 
-  if (action === 'admin_overview') {
+  if (action === 'admin_overview' || action === 'admin_overview_summary') {
+    const countTokensFallback = (txt: string): number => {
+      const cleaned = String(txt || '').trim();
+      if (!cleaned) return 0;
+      const matches = cleaned.match(/[A-Za-z0-9_]+|[\u0E00-\u0E7F]+|\S/g);
+      return matches ? matches.length : 0;
+    };
+    const msgMap = new Map<string, string>();
+    for (const m of store.messages) {
+      msgMap.set(m.id, m.content);
+    }
+    const orderedTraces = [...store.reasoningTraces].reverse();
+    const dailyBuckets = new Map<
+      string,
+      {
+        successful_inference_requests: number;
+        input_tokens: number;
+        output_tokens: number;
+        total_tokens: number;
+      }
+    >();
+    let successfulInferenceRequests = 0;
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    for (const tr of orderedTraces) {
+      const stUpper = String(tr.status || '').toUpperCase();
+      if (['FAILED', 'ERROR', 'BLOCKED', 'REJECTED'].includes(stUpper)) continue;
+      const promptText = String(tr.prompt || '');
+      const msgId = typeof tr.message_id === 'string' ? tr.message_id : '';
+      const responseText = (msgId && msgMap.get(msgId)) || String(tr.response_preview || '');
+      const inTok = countTokensFallback(promptText);
+      const outTok = countTokensFallback(responseText);
+      const totTok = inTok + outTok;
+      successfulInferenceRequests += 1;
+      totalInputTokens += inTok;
+      totalOutputTokens += outTok;
+      const rawDate = String(tr.created_at || '').slice(0, 10);
+      const bucketDate = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : 'unknown';
+      const existing = dailyBuckets.get(bucketDate) || {
+        successful_inference_requests: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+      };
+      existing.successful_inference_requests += 1;
+      existing.input_tokens += inTok;
+      existing.output_tokens += outTok;
+      existing.total_tokens += totTok;
+      dailyBuckets.set(bucketDate, existing);
+    }
+    const overviewHistory = Array.from(dailyBuckets.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, stats]) => ({ date, ...stats }));
+    const activeApiKeys = store.apiKeys.filter((k) => Number(k.revoked || 0) === 0).length;
+    const readiness = computeReadinessSummary();
+    const systemMetrics = getSystemMetrics();
+    const pendingRuns = store.workflowRuns.filter((r) => r.status === 'PENDING_APPROVAL');
+    const pendingToolInvocations = store.toolInvocations.filter((t) => t.status === 'PENDING_APPROVAL');
+    const pendingExperiments = store.experiments.filter((e) => e.approval_status === 'PENDING_APPROVAL');
+    const pendingKgProposals = store.kgProposals.filter((p) => p.status === 'PENDING_APPROVAL');
+
+    if (action === 'admin_overview_summary') {
+      const actorId = String(payload.actor_id || 'system');
+      const actorEmail = String(payload.actor_email || 'admin');
+      const metricsSnapshot = {
+        users: store.users.length,
+        successful_inference_requests: successfulInferenceRequests,
+        input_tokens: totalInputTokens,
+        output_tokens: totalOutputTokens,
+        total_tokens: totalInputTokens + totalOutputTokens,
+        active_api_keys: activeApiKeys,
+        pending_approvals:
+          pendingRuns.length +
+          pendingExperiments.length +
+          pendingKgProposals.length +
+          pendingToolInvocations.length,
+        audit_logs_count: store.auditLogs.length,
+        training_readiness: {
+          gate_status: readiness.gate_status,
+          datasets_total: readiness.datasets_total,
+          clean_datasets: readiness.clean_datasets,
+          verified_triples: readiness.verified_triples,
+          triples_total: readiness.triples_total,
+          experiments_total: readiness.experiments_total,
+          checkpoints_total: readiness.checkpoints_total,
+          neural_checkpoints: readiness.neural_checkpoints,
+        },
+        system: systemMetrics,
+      };
+      const integritySha256 = sha256(
+        JSON.stringify({ metrics: metricsSnapshot, overview_history: overviewHistory })
+      );
+      const generatedAt = nowIso();
+      store.auditLogs.unshift({
+        id: crypto.randomUUID(),
+        actor_id: actorId,
+        actor_email: actorEmail,
+        action: 'ADMIN_OVERVIEW_PDF_SUMMARY',
+        target: 'admin_overview',
+        outcome: `GENERATED_${overviewHistory.length}_BUCKETS`,
+        details_json: JSON.stringify({
+          schema: 'zyrquen.admin-overview-summary.v1',
+          integrity_sha256: integritySha256,
+          successful_inference_requests: successfulInferenceRequests,
+          total_tokens: totalInputTokens + totalOutputTokens,
+        }),
+        created_at: generatedAt,
+      });
+      return {
+        ok: true,
+        schema: 'zyrquen.admin-overview-summary.v1',
+        generated_at: generatedAt,
+        generated_by: { id: actorId, actor_email_masked: maskEmail(actorEmail) },
+        integrity_sha256: integritySha256,
+        metrics: metricsSnapshot,
+        overview_history: overviewHistory,
+      };
+    }
+
     return {
       ok: true,
       users: store.users.map(sanitizeUser),
-      pending_runs: store.workflowRuns.filter((r) => r.status === 'PENDING_APPROVAL'),
-      pending_tool_invocations: store.toolInvocations.filter((t) => t.status === 'PENDING_APPROVAL'),
+      pending_runs: pendingRuns,
+      pending_tool_invocations: pendingToolInvocations,
       pending_tool_center_invocations: store.toolCenterInvocations.filter((t) => t.status === 'PENDING_APPROVAL'),
       pending_improvement_proposals: store.improvementProposals.filter((p) => p.approval_status === 'PENDING_APPROVAL'),
-      pending_experiments: store.experiments.filter((e) => e.approval_status === 'PENDING_APPROVAL'),
-      pending_kg_proposals: store.kgProposals.filter((p) => p.status === 'PENDING_APPROVAL'),
+      pending_experiments: pendingExperiments,
+      pending_kg_proposals: pendingKgProposals,
       tools: store.externalTools,
       audit_logs: store.auditLogs.slice(0, 40),
-      system: getSystemMetrics(),
+      system: systemMetrics,
       reasoning_traces: store.reasoningTraces.slice(0, 40),
       recent_api_usage: store.apiUsageLogs.slice(0, 40),
-      training_readiness: computeReadinessSummary(),
+      successful_inference_requests: successfulInferenceRequests,
+      input_tokens: totalInputTokens,
+      output_tokens: totalOutputTokens,
+      total_tokens: totalInputTokens + totalOutputTokens,
+      active_api_keys: activeApiKeys,
+      overview_history: overviewHistory,
+      training_readiness: readiness,
     };
   }
 
