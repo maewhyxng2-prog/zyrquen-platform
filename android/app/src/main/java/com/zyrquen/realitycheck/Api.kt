@@ -44,8 +44,8 @@ interface RealityCheckApi {
     @POST("auth/logout")
     suspend fun logout(@Header("Authorization") authorization: String): LogoutResponse
 
-    @GET("health")
-    suspend fun health(): HealthResponse
+    @GET("livez")
+    suspend fun livez(): HealthResponse
 
     @GET("v1/workflows/runs")
     suspend fun workflows(@Header("Authorization") authorization: String): WorkflowListResponse
