@@ -5,6 +5,7 @@ import {
   Check,
   CheckCircle2,
   Database,
+  Download,
   KeyRound,
   LogOut,
   Moon,
@@ -18,6 +19,8 @@ import {
   X,
 } from 'lucide-react';
 import { apiRequest, ApiError } from '../lib/api';
+import { downloadText, isPiiAuditEvent, toSafeAuditCsv, toSafeAuditJson } from '../lib/auditExport';
+import type { AuditEvent } from '../lib/auditExport';
 import { runNativeCapabilityBenchmark } from '../lib/benchmark';
 import { serializeTableToTsv } from '../lib/clipboard';
 import { useZyrquenTheme } from '../lib/theme';
@@ -85,6 +88,13 @@ export function SettingsView({
   const [toolsData, setToolsData] = useState<ToolsOverview | null>(null);
   const [adminData, setAdminData] = useState<AdminOverview | null>(null);
   const [adminSubTab, setAdminSubTab] = useState<'governance' | 'stability'>('governance');
+  const [auditEventFilter, setAuditEventFilter] = useState('ALL');
+  const [auditSearch, setAuditSearch] = useState('');
+  const [auditFrom, setAuditFrom] = useState('');
+  const [auditTo, setAuditTo] = useState('');
+  const [auditFormat, setAuditFormat] = useState<'csv' | 'json'>('csv');
+  const [auditPiiOnly, setAuditPiiOnly] = useState(true);
+  const [exportingAudit, setExportingAudit] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -132,8 +142,11 @@ export function SettingsView({
     setLoading(true);
     setError(null);
     try {
-      const res = await apiRequest<AdminOverview>('/api/admin/overview', { token });
-      setAdminData(res);
+      const [res, auditLogs] = await Promise.all([
+        apiRequest<AdminOverview>('/api/admin/overview', { token }),
+        apiRequest<AuditEvent[]>('/api/admin/audit-logs?limit=500', { token }),
+      ]);
+      setAdminData({ ...res, audit_logs: auditLogs });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'ไม่สามารถโหลดส่วนผู้ดูแลระบบได้');
     } finally {
@@ -429,6 +442,44 @@ export function SettingsView({
       await loadAdmin();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'ดำเนินการอนุมัติการทดลองไม่สำเร็จ');
+    }
+  }
+
+  const filteredAuditLogs = (adminData?.audit_logs || []).filter((log) => {
+    const event = log.action.toUpperCase();
+    if (auditEventFilter !== 'ALL' && !event.includes(auditEventFilter)) return false;
+    if (auditPiiOnly && !isPiiAuditEvent(log as AuditEvent)) return false;
+    const created = new Date(log.created_at).getTime();
+    if (auditFrom && created < new Date(`${auditFrom}T00:00:00`).getTime()) return false;
+    if (auditTo && created > new Date(`${auditTo}T23:59:59.999`).getTime()) return false;
+    const haystack = [log.action, log.actor_email, log.target, log.outcome].join(' ').toLowerCase();
+    return haystack.includes(auditSearch.trim().toLowerCase());
+  });
+
+  async function handleExportAudit() {
+    setExportingAudit(true);
+    setError(null);
+    try {
+      const rows = filteredAuditLogs as AuditEvent[];
+      const date = new Date().toISOString().slice(0, 10);
+      const content = auditFormat === 'csv'
+        ? toSafeAuditCsv(rows, auditPiiOnly)
+        : toSafeAuditJson(rows, auditPiiOnly);
+      await apiRequest('/api/admin/audit-logs/export', {
+        method: 'POST',
+        token,
+        body: { format: auditFormat, exported_count: rows.length },
+      });
+      downloadText(
+        `zyrquen-audit-pii-${date}.${auditFormat}`,
+        content,
+        auditFormat === 'csv' ? 'text/csv;charset=utf-8' : 'application/json;charset=utf-8'
+      );
+      await loadAdmin();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'ส่งออก Audit Logs ไม่สำเร็จ');
+    } finally {
+      setExportingAudit(false);
     }
   }
 
@@ -2014,55 +2065,88 @@ export function SettingsView({
               <details className="rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-5 sm:p-6">
                 <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 text-sm font-semibold text-[var(--color-text)]">
                   <span>บันทึกการตรวจสอบความปลอดภัย (Audit Logs)</span>
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs text-[var(--color-text-secondary)]">
-                      {adminData?.audit_logs?.length ?? 0} รายการ
-                    </span>
-                    {(adminData?.audit_logs?.length ?? 0) > 0 && (
+                  <span className="font-mono text-xs text-[var(--color-text-secondary)]">
+                    {adminData?.audit_logs?.length ?? 0} รายการ · แสดง {filteredAuditLogs.length}
+                  </span>
+                </summary>
+                <div className="mt-4 space-y-3">
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                    <select aria-label="ตัวกรองเหตุการณ์ Audit" value={auditEventFilter} onChange={(e) => setAuditEventFilter(e.target.value)} className="h-10 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-xs text-[var(--color-text)]">
+                      <option value="ALL">เหตุการณ์ทั้งหมด</option>
+                      <option value="PII_REDACTED">PII_REDACTED</option>
+                      <option value="PII_DETECTED">PII_DETECTED</option>
+                      <option value="EXPORT">EXPORT</option>
+                      <option value="LOGIN">LOGIN</option>
+                      <option value="APPROVAL">APPROVAL</option>
+                    </select>
+                    <input aria-label="ค้นหา Audit Logs" value={auditSearch} onChange={(e) => setAuditSearch(e.target.value)} placeholder="ค้นหาเหตุการณ์ / ผู้ใช้ / เป้าหมาย" className="h-10 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-xs text-[var(--color-text)]" />
+                    <input aria-label="Audit Logs ตั้งแต่วันที่" type="date" value={auditFrom} onChange={(e) => setAuditFrom(e.target.value)} className="h-10 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-xs text-[var(--color-text)]" />
+                    <input aria-label="Audit Logs ถึงวันที่" type="date" value={auditTo} onChange={(e) => setAuditTo(e.target.value)} className="h-10 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-xs text-[var(--color-text)]" />
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
+                    <div className="flex flex-wrap items-center gap-3 text-xs text-[var(--color-text-secondary)]">
+                      <label className="inline-flex items-center gap-2">
+                        <input type="checkbox" checked={auditPiiOnly} onChange={(e) => setAuditPiiOnly(e.target.checked)} className="h-4 w-4 accent-[var(--color-primary)]" />
+                        เฉพาะเหตุการณ์ PII
+                      </label>
+                      <label className="inline-flex items-center gap-2">
+                        รูปแบบ
+                        <select aria-label="รูปแบบไฟล์ส่งออก" value={auditFormat} onChange={(e) => setAuditFormat(e.target.value as 'csv' | 'json')} className="h-8 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-raised)] px-2 text-xs text-[var(--color-text)]">
+                          <option value="csv">CSV</option>
+                          <option value="json">JSON (Redacted)</option>
+                        </select>
+                      </label>
+                      <span>ปกปิด PII ทุกแถว · ไม่รวม IP / User-Agent</span>
+                    </div>
+                    <div className="flex items-center gap-2">
                       <CopyButton
                         stopPropagation
-                        getText={() =>
-                          serializeTableToTsv(
-                            ['เวลา', 'ผู้ดำเนินการ', 'การกระทำ', 'ผลลัพธ์'],
-                            (adminData?.audit_logs || []).map((log) => [
-                              new Date(log.created_at).toLocaleString('th-TH'),
-                              log.actor_email,
-                              log.action,
-                              log.outcome,
-                            ])
-                          )
-                        }
+                        getText={() => serializeTableToTsv(
+                          ['เวลา', 'ผู้ดำเนินการ', 'การกระทำ', 'ผลลัพธ์'],
+                          filteredAuditLogs.map((log) => [
+                            new Date(log.created_at).toLocaleString('th-TH'),
+                            log.actor_email.replace(/^(.).+(@.*)$/, '**$2'),
+                            log.action,
+                            log.outcome,
+                          ])
+                        )}
                         label="คัดลอกตาราง"
                         ariaLabel="คัดลอกตาราง Audit Logs"
-                        title="คัดลอกตาราง Audit Logs เป็นรูปแบบคั่นด้วยแท็บ (TSV)"
                         size="xs"
                       />
-                    )}
+                      <button type="button" disabled={exportingAudit || filteredAuditLogs.length === 0} onClick={() => void handleExportAudit()} className="inline-flex min-h-[36px] items-center gap-2 rounded-lg bg-[var(--color-primary)] px-3 text-xs font-semibold text-white hover:bg-[var(--color-primary-hover)] disabled:opacity-40">
+                        <Download className="h-3.5 w-3.5" />
+                        {exportingAudit ? 'กำลังส่งออก...' : 'ส่งออกบันทึก PII'}
+                      </button>
+                    </div>
                   </div>
-                </summary>
-                <div className="mt-4 overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead>
-                      <tr className="border-b border-[var(--color-border)] text-[var(--color-text-secondary)]">
-                        <th className="py-2 pr-4 font-medium">เวลา</th>
-                        <th className="py-2 pr-4 font-medium">ผู้ดำเนินการ</th>
-                        <th className="py-2 pr-4 font-medium">การกระทำ</th>
-                        <th className="py-2 font-medium">ผลลัพธ์</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[var(--color-border)] tabular-nums">
-                      {(adminData?.audit_logs || []).map((log) => (
-                        <tr key={log.id}>
-                          <td className="py-2.5 pr-4 font-mono text-[var(--color-text-muted)]">
-                            {new Date(log.created_at).toLocaleString('th-TH')}
-                          </td>
-                          <td className="py-2.5 pr-4 text-[var(--color-text)]">{log.actor_email}</td>
-                          <td className="py-2.5 pr-4 font-mono text-[var(--color-accent)]">{log.action}</td>
-                          <td className="py-2.5 text-[var(--color-text-secondary)]">{log.outcome}</td>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="border-b border-[var(--color-border)] text-[var(--color-text-secondary)]">
+                          <th className="py-2 pr-4 font-medium">เวลา</th>
+                          <th className="py-2 pr-4 font-medium">ผู้ดำเนินการ</th>
+                          <th className="py-2 pr-4 font-medium">การกระทำ</th>
+                          <th className="py-2 pr-4 font-medium">เป้าหมาย</th>
+                          <th className="py-2 font-medium">ผลลัพธ์</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody className="divide-y divide-[var(--color-border)] tabular-nums">
+                        {filteredAuditLogs.map((log) => (
+                          <tr key={log.id}>
+                            <td className="py-2.5 pr-4 font-mono text-[var(--color-text-muted)]">{new Date(log.created_at).toLocaleString('th-TH')}</td>
+                            <td className="py-2.5 pr-4 text-[var(--color-text)]">{log.actor_email.replace(/^(.).+(@.*)$/, '**$2')}</td>
+                            <td className="py-2.5 pr-4 font-mono text-[var(--color-accent)]">{log.action}</td>
+                            <td className="py-2.5 pr-4 text-[var(--color-text-secondary)]">{log.target}</td>
+                            <td className="py-2.5 text-[var(--color-text-secondary)]">{log.outcome}</td>
+                          </tr>
+                        ))}
+                        {filteredAuditLogs.length === 0 && (
+                          <tr><td colSpan={5} className="py-5 text-center text-[var(--color-text-muted)]">ไม่พบเหตุการณ์ตามตัวกรอง</td></tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </details>
             </>
