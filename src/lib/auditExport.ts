@@ -44,6 +44,13 @@ function redactValue(key: string, value: unknown): unknown {
   if (normalizedKey.includes("email") && typeof value === "string") {
     return redactString(value);
   }
+  if (normalizedKey === "details_json" && typeof value === "string") {
+    try {
+      return JSON.stringify(redactValue("", JSON.parse(value)));
+    } catch {
+      return redactString(value);
+    }
+  }
   if (Array.isArray(value)) {
     return value.map((item) => redactValue("", item));
   }
