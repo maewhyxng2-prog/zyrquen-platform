@@ -108,16 +108,68 @@ def test_non_admin_cannot_start_training(api_client, monkeypatch):
     assert response.status_code == 403
 
 
-def test_missing_training_artifacts_return_503(api_client):
-    client, _, _ = api_client
+def test_missing_training_artifacts_return_503(api_client, tmp_path, monkeypatch):
+    client, _, user = api_client
 
-    response = client.post(
+    # The security gate must reject requests without approval before checking artifacts.
+    no_approval = client.post(
         "/training/runs",
         json={"dataset_version": "0.1.0"},
     )
+    assert no_approval.status_code == 403
+    assert "approval_id is required" in no_approval.json()["detail"]
 
-    assert response.status_code == 503
-    assert "dataset and tokenizer paths are not configured" in response.json()["detail"]
+    from apps.api.routers import training as training_router
+    from apps.api.routers import workflows as workflows_router
+    from apps.core.workflow import CentralWorkflowOrchestrator, WorkflowStepSpec
+
+    isolated_engine = CentralWorkflowOrchestrator(
+        db_path=tmp_path / "wf-missing-artifacts.db",
+        work_dir=tmp_path / "wf-missing-artifacts-work",
+        approval_secret="unit-test-approval-secret-minimum-32-chars",
+    )
+    monkeypatch.setattr(workflows_router, "_ENGINE", isolated_engine)
+    monkeypatch.setattr(training_router, "get_workflow_engine", lambda: isolated_engine)
+
+    try:
+        wf_run, _ = isolated_engine.store.create_run(
+            workflow_key="training.native_controlled_run",
+            workflow_version="1.0.0",
+            trigger_type="manual",
+            trigger_payload={},
+            steps=[{"step_key": "execute_training", "handler_key": "training.execute"}],
+            requested_by_user_id=str(user.id),
+        )
+        pending = isolated_engine.governance.ensure_pending_approval(
+            run_id=wf_run["id"],
+            step=WorkflowStepSpec(
+                step_key="execute_training",
+                handler_key="training.execute",
+                description="Execute training",
+                tier="tier2_approval",
+                action_type="training.execute",
+            ),
+            requested_by_user_id=str(user.id),
+            scope="dataset:0.1.0",
+        )
+        approved = isolated_engine.governance.decide_approval(
+            pending["id"],
+            approve=True,
+            approver_user_id=str(user.id),
+            approver_role="admin",
+            reason="Missing artifacts API test",
+        )
+
+        response = client.post(
+            "/training/runs",
+            json={"dataset_version": "0.1.0", "approval_id": approved["id"]},
+        )
+
+        assert response.status_code == 503
+        assert "dataset directory and tokenizer path are not configured" in response.json()["detail"]
+        assert isolated_engine.store.get_approval(approved["id"])["status"] == "approved"
+    finally:
+        isolated_engine.shutdown(wait=True)
 
 
 def test_orphaned_running_job_is_reported_failed(api_client):
