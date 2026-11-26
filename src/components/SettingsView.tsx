@@ -144,9 +144,9 @@ export function SettingsView({
     try {
       const [res, auditLogs] = await Promise.all([
         apiRequest<AdminOverview>('/api/admin/overview', { token }),
-        apiRequest<AuditEvent[]>('/api/admin/audit-logs?limit=500', { token }),
+        apiRequest<AuditEvent[]>('/api/admin/audit-logs?limit=500', { token }).catch(() => null),
       ]);
-      setAdminData({ ...res, audit_logs: auditLogs });
+      setAdminData({ ...res, audit_logs: auditLogs || res.audit_logs || [] });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'ไม่สามารถโหลดส่วนผู้ดูแลระบบได้');
     } finally {
