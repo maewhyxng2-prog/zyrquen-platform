@@ -89,6 +89,30 @@ describe('Full-Stack Real E2E: Express + SQLite + Python Native Core (Zero Fetch
     expect(adminOverviewJson.training_readiness?.datasets_total).toBe(0);
     expect(adminOverviewJson.training_readiness?.clean_datasets).toBe(0);
 
+    const auditBeforeRes = await fetch(`${baseUrl}/api/admin/audit-logs?limit=500`, {
+      headers: authHeaders,
+    });
+    expect(auditBeforeRes.status).toBe(200);
+    expect(Array.isArray(await auditBeforeRes.json())).toBe(true);
+
+    const auditExportRes = await fetch(`${baseUrl}/api/admin/audit-logs/export`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ format: 'json', exported_count: 0 }),
+    });
+    expect(auditExportRes.status).toBe(201);
+    const auditAfterRes = await fetch(`${baseUrl}/api/admin/audit-logs?limit=500`, {
+      headers: authHeaders,
+    });
+    const auditAfter = (await auditAfterRes.json()) as Array<{ action: string; details_json: string }>;
+    const exportEvent = auditAfter.find((row) => row.action === 'PII_AUDIT_EXPORT');
+    expect(exportEvent).toBeTruthy();
+    expect(JSON.parse(exportEvent!.details_json)).toMatchObject({
+      format: 'JSON',
+      exported_count: 0,
+      includes_raw_pii: false,
+    });
+
     // 3. Create conversation & test real Python AST math + KG learn/recall + OOD abstention
     const convRes = await fetch(`${baseUrl}/api/conversations`, {
       method: 'POST',

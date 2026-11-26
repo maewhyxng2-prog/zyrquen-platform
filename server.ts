@@ -1883,6 +1883,39 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
     }
   );
 
+  app.get('/api/admin/audit-logs', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+    const requestedLimit = Number(req.query.limit ?? 500);
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.max(1, Math.min(Math.trunc(requestedLimit), 500))
+      : 500;
+    const logs = await runPythonScript('db_bridge.py', {
+      action: 'admin_audit_logs',
+      payload: { limit },
+    });
+    res.json(logs);
+  });
+
+  app.post('/api/admin/audit-logs/export', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+    const format = req.body?.format === 'json' ? 'JSON' : 'CSV';
+    const exportedCount = Number(req.body?.exported_count);
+    if (!Number.isInteger(exportedCount) || exportedCount < 0 || exportedCount > 500) {
+      res.status(400).json({ error: 'Invalid exported_count' });
+      return;
+    }
+    await runPythonScript('db_bridge.py', {
+      action: 'log_audit',
+      payload: {
+        actor_id: req.user!.id,
+        actor_email: req.user!.email,
+        action: 'PII_AUDIT_EXPORT',
+        target: 'PII_AUDIT_LOGS',
+        outcome: 'SUCCESS',
+        details: { format, exported_count: exportedCount, includes_raw_pii: false },
+      },
+    });
+    res.status(201).json({ ok: true });
+  });
+
   app.get('/api/admin/overview', requireAuth, requireAdmin, async (_req: AuthedRequest, res: Response) => {
     const data = await runPythonScript('db_bridge.py', {
       action: 'admin_overview',
