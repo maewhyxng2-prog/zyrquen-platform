@@ -4,7 +4,9 @@ ZYRQUEN Parameterized SQLite Bridge
 Handles structured CRUD operations for Express API routes using parameterized queries.
 """
 
+import hashlib
 import json
+import re
 import sys
 import uuid
 from zyrquen_core import (
@@ -28,7 +30,7 @@ from tools_engine import (
     list_workspace_files,
     save_workspace_file,
 )
-from dataset_ingestion import init_dataset_pipeline_schema
+from dataset_ingestion import init_dataset_pipeline_schema, redact_pii_with_stats
 from tool_center import (
     ToolDependencyManager,
     analyze_failure_patterns,
@@ -41,6 +43,114 @@ from tool_center import (
     run_engineering_benchmark,
     run_self_improvement_evaluation,
 )
+
+
+_EXPORT_SECRET_PATTERNS = (
+    re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_-]{16,}\b"),
+    re.compile(r"\bghp_[0-9A-Za-z]{16,}\b"),
+    re.compile(r"\bzyrq_[0-9A-Za-z_-]{12,}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END .*?PRIVATE KEY-----"),
+)
+
+_SENSITIVE_EXPORT_KEYS = frozenset({
+    "password",
+    "password_hash",
+    "token",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "api_key",
+    "apikey",
+    "plaintextkey",
+    "secret",
+    "secret_hash",
+    "authorization",
+    "cookie",
+    "set-cookie",
+    "private_key",
+    "session_id",
+    "internal_reasoning",
+    "hidden_metadata",
+})
+
+
+def _mask_actor_email(email: str) -> str:
+    raw = str(email or "").strip()
+    if "@" not in raw:
+        return "[REDACTED_EMAIL]" if raw else "unknown"
+    local, domain = raw.split("@", 1)
+    if len(local) <= 2:
+        masked_local = f"{local[:1]}***"
+    else:
+        masked_local = f"{local[:2]}***"
+    return f"{masked_local}@{domain}"
+
+
+def _sanitize_export_string(val: str) -> tuple[str, int]:
+    out = str(val or "")
+    redactions = 0
+    for pat in _EXPORT_SECRET_PATTERNS:
+        out, n = pat.subn("[REDACTED_SECRET]", out)
+        redactions += n
+    out, pii_counts = redact_pii_with_stats(out)
+    redactions += int(pii_counts.get("total_redacted", 0))
+    return out, redactions
+
+
+def _sanitize_export_value(val, depth: int = 0):
+    if depth > 8 or val is None:
+        return val, 0
+    if isinstance(val, str):
+        return _sanitize_export_string(val)
+    if isinstance(val, list):
+        out_list = []
+        total = 0
+        for item in val[:200]:
+            cleaned, count = _sanitize_export_value(item, depth + 1)
+            out_list.append(cleaned)
+            total += count
+        return out_list, total
+    if isinstance(val, dict):
+        out_dict = {}
+        total = 0
+        for k, v in val.items():
+            kl = str(k).lower()
+            if kl in _SENSITIVE_EXPORT_KEYS:
+                out_dict[k] = "[REDACTED]"
+                total += 1
+            else:
+                cleaned, count = _sanitize_export_value(v, depth + 1)
+                out_dict[k] = cleaned
+                total += count
+        return out_dict, total
+    return val, 0
+
+
+def _is_pii_redaction_event(row: dict, details: dict) -> bool:
+    action_up = str(row.get("action") or "").upper()
+    outcome_up = str(row.get("outcome") or "").upper()
+    if "PII" in action_up or "REDACT" in action_up or "PII" in outcome_up or "REDACT" in outcome_up:
+        return True
+    if str(details.get("event_category") or "").lower() == "pii_redaction":
+        return True
+    if details.get("pii_redacted") is True:
+        return True
+    for count_key in ("redacted_count", "total_redacted"):
+        try:
+            if int(details.get(count_key) or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+    summary = details.get("pii_redaction_summary")
+    if isinstance(summary, dict):
+        try:
+            if int(summary.get("total_redacted") or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
 
 
 def row_to_dict(row):
@@ -944,6 +1054,119 @@ def handle_action(action: str, payload: dict) -> dict:
                 "checkpoints": checkpoints,
                 "experiments": experiments_recent,
             },
+        }
+
+    if action == "admin_export_audit_logs":
+        focus = str(payload.get("focus") or "pii_redaction").strip().lower()
+        if focus not in ("pii_redaction", "all"):
+            focus = "pii_redaction"
+        export_format = str(payload.get("format") or "json").strip().lower()
+        if export_format not in ("json", "csv"):
+            export_format = "json"
+        try:
+            limit = max(1, min(5000, int(payload.get("limit") or 1000)))
+        except (TypeError, ValueError):
+            limit = 1000
+
+        actor_id = str(payload.get("actor_id") or "system")
+        actor_email_raw = str(payload.get("actor_email") or "admin")
+        raw_rows = conn.execute(
+            "SELECT id, actor_id, actor_email, action, target, outcome, details_json, created_at FROM audit_logs ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+        sanitized_all = []
+        pii_events = []
+        for raw in raw_rows:
+            row = dict(raw)
+            parsed_details = {}
+            raw_details_str = row.get("details_json")
+            if isinstance(raw_details_str, str) and raw_details_str.strip():
+                try:
+                    loaded = json.loads(raw_details_str)
+                    parsed_details = loaded if isinstance(loaded, dict) else {"value": loaded}
+                except json.JSONDecodeError:
+                    parsed_details = {"raw": raw_details_str}
+
+            is_pii = _is_pii_redaction_event(row, parsed_details)
+            clean_target, target_red = _sanitize_export_string(str(row.get("target") or ""))
+            clean_outcome, outcome_red = _sanitize_export_string(str(row.get("outcome") or ""))
+            clean_details, details_red = _sanitize_export_value(parsed_details)
+
+            entry = {
+                "id": str(row.get("id") or ""),
+                "created_at": str(row.get("created_at") or ""),
+                "actor_id": str(row.get("actor_id") or ""),
+                "actor_email_masked": _mask_actor_email(str(row.get("actor_email") or "")),
+                "action": str(row.get("action") or ""),
+                "target": clean_target,
+                "outcome": clean_outcome,
+                "is_pii_redaction_event": is_pii,
+                "pii_redaction_summary": (
+                    clean_details.get("pii_redaction_summary")
+                    if isinstance(clean_details, dict)
+                    and isinstance(clean_details.get("pii_redaction_summary"), dict)
+                    else (
+                        clean_details.get("categories")
+                        if isinstance(clean_details, dict)
+                        and isinstance(clean_details.get("categories"), dict)
+                        else None
+                    )
+                ),
+                "details": clean_details,
+                "export_redactions_applied": target_red + outcome_red + details_red,
+            }
+            sanitized_all.append(entry)
+            if is_pii:
+                pii_events.append(entry)
+
+        selected_events = pii_events if focus == "pii_redaction" else sanitized_all
+        canonical_events_json = json.dumps(
+            selected_events, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        integrity_sha256 = hashlib.sha256(canonical_events_json.encode("utf-8")).hexdigest()
+        exported_at = now_iso()
+
+        with conn:
+            conn.execute(
+                "INSERT INTO audit_logs (id, actor_id, actor_email, action, target, outcome, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(uuid.uuid4()),
+                    actor_id,
+                    actor_email_raw,
+                    "AUDIT_LOG_EXPORT",
+                    f"focus:{focus}|format:{export_format}",
+                    f"EXPORTED_{len(selected_events)}_EVENTS",
+                    json.dumps(
+                        {
+                            "focus": focus,
+                            "format": export_format,
+                            "exported_count": len(selected_events),
+                            "pii_redaction_event_count": len(pii_events),
+                            "integrity_sha256": integrity_sha256,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    exported_at,
+                ),
+            )
+        conn.close()
+        return {
+            "ok": True,
+            "schema": "zyrquen.audit-export.v1",
+            "focus": focus,
+            "format": export_format,
+            "exported_at": exported_at,
+            "exported_by": {
+                "id": actor_id,
+                "actor_email_masked": _mask_actor_email(actor_email_raw),
+            },
+            "total_scanned": len(sanitized_all),
+            "pii_redaction_event_count": len(pii_events),
+            "exported_count": len(selected_events),
+            "integrity_sha256": integrity_sha256,
+            "sanitization_applied": True,
+            "events": selected_events,
         }
 
     if action == "admin_user_role":

@@ -1184,7 +1184,189 @@ describe('Isolated 6-Step Non-Skippable Native Training Pipeline Gate E2E', () =
     };
     expect(capsParsed.tool_center).toBeDefined();
     expect(capsParsed.tool_center?.selected_capabilities.length).toBeGreaterThanOrEqual(1);
-  }, 90_000);
+
+    // 8. PII Redaction Audit Logging & Secure Audit Export (JSON + formula-safe CSV + RBAC)
+    const piiIngestRes = await fetch(`${gateBaseUrl}/api/developer/datasets`, {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({
+        name: 'pii-audit-corpus',
+        provenance: 'internal_pii_test',
+        sourceName: 'internal_pii_test',
+        format: 'text',
+        extractKg: false,
+        redactPii: true,
+        content: [
+          'Contact customer alice.secret@example.org for ticket 101',
+          'Backup phone 081-234-5678 recorded in support queue',
+          'Citizen ID 1-1004-00123-45-6 verified before masking',
+          'Non-PII technical note alpha on neural pipeline',
+          'Non-PII technical note beta on safety verification',
+        ].join('\n'),
+      }),
+    });
+    expect(piiIngestRes.status).toBe(201);
+    const piiIngestJson = (await piiIngestRes.json()) as {
+      ok: boolean;
+      pii_redaction_summary?: { email: number; phone: number; thai_id: number; total_redacted: number };
+    };
+    expect(piiIngestJson.ok).toBe(true);
+    expect(piiIngestJson.pii_redaction_summary?.email).toBe(1);
+    expect(piiIngestJson.pii_redaction_summary?.phone).toBe(1);
+    expect(piiIngestJson.pii_redaction_summary?.thai_id).toBe(1);
+    expect(piiIngestJson.pii_redaction_summary?.total_redacted).toBeGreaterThanOrEqual(3);
+
+    // Non-admin user must be blocked with 403
+    const userRegRes = await fetch(`${gateBaseUrl}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'regular-user@zyrquen.local',
+        displayName: 'Regular User',
+        password: 'RegularPassword123!',
+      }),
+    });
+    expect(userRegRes.status).toBe(201);
+    const userRegJson = (await userRegRes.json()) as { token: string };
+    const forbiddenExportRes = await fetch(
+      `${gateBaseUrl}/api/admin/audit-logs/export?focus=pii_redaction&format=json`,
+      { headers: { Authorization: `Bearer ${userRegJson.token}` } }
+    );
+    expect(forbiddenExportRes.status).toBe(403);
+
+    // Admin exports PII-redaction-focused audit logs in secure JSON format
+    const exportJsonRes = await fetch(
+      `${gateBaseUrl}/api/admin/audit-logs/export?focus=pii_redaction&format=json`,
+      { headers: { Authorization: `Bearer ${adminToken}` } }
+    );
+    expect(exportJsonRes.status).toBe(200);
+    expect(exportJsonRes.headers.get('content-disposition')).toContain('attachment; filename="zyrquen-audit-pii_redaction-');
+    expect(exportJsonRes.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(exportJsonRes.headers.get('cache-control')).toContain('no-store');
+    const shaHeader = exportJsonRes.headers.get('x-zyrquen-export-sha256') || '';
+    expect(shaHeader.length).toBe(64);
+
+    const exportBodyText = await exportJsonRes.text();
+    expect(exportBodyText).not.toContain('alice.secret@example.org');
+    expect(exportBodyText).not.toContain('081-234-5678');
+    expect(exportBodyText).not.toContain('1-1004-00123-45-6');
+    const exportPayload = JSON.parse(exportBodyText) as {
+      ok: boolean;
+      schema: string;
+      focus: string;
+      sanitization_applied: boolean;
+      integrity_sha256: string;
+      pii_redaction_event_count: number;
+      exported_count: number;
+      events: Array<{
+        action: string;
+        actor_email_masked: string;
+        is_pii_redaction_event: boolean;
+      }>;
+    };
+    expect(exportPayload.ok).toBe(true);
+    expect(exportPayload.schema).toBe('zyrquen.audit-export.v1');
+    expect(exportPayload.focus).toBe('pii_redaction');
+    expect(exportPayload.sanitization_applied).toBe(true);
+    expect(exportPayload.integrity_sha256).toBe(shaHeader);
+    expect(exportPayload.pii_redaction_event_count).toBeGreaterThanOrEqual(1);
+    expect(exportPayload.events.every((e) => e.is_pii_redaction_event)).toBe(true);
+    expect(exportPayload.events.some((e) => e.action === 'PII_REDACTION')).toBe(true);
+    expect(exportPayload.events.every((e) => e.actor_email_masked.includes('***@'))).toBe(true);
+
+    // Admin exports sanitized CSV format
+    const exportCsvRes = await fetch(
+      `${gateBaseUrl}/api/admin/audit-logs/export?focus=pii_redaction&format=csv`,
+      { headers: { Authorization: `Bearer ${adminToken}` } }
+    );
+    expect(exportCsvRes.status).toBe(200);
+    expect(exportCsvRes.headers.get('content-type')).toContain('text/csv');
+    const csvText = await exportCsvRes.text();
+    expect(csvText).toContain('PII_REDACTION');
+    expect(csvText).not.toContain('alice.secret@example.org');
+
+    // 9. Native Code Understanding & Problem-Solving Training Pipeline (AST + Sandbox + Approval Gate)
+    const codeCurateRes = await fetch(`${gateBaseUrl}/api/developer/code-training/curate`, {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ name: 'code-problem-solving-e2e' }),
+    });
+    expect(codeCurateRes.status).toBe(201);
+    const codeCurateJson = (await codeCurateRes.json()) as {
+      ok: boolean;
+      dataset: { id: string; leakage_detected: number };
+      code_verification: {
+        total_tasks: number;
+        verified_tasks: number;
+        failed_tasks: number;
+        ast_records_added: number;
+        splits_counts: { train: number; val: number; test: number };
+      };
+    };
+    expect(codeCurateJson.ok).toBe(true);
+    expect(codeCurateJson.dataset.leakage_detected).toBe(0);
+    expect(codeCurateJson.code_verification.verified_tasks).toBeGreaterThanOrEqual(14);
+    expect(codeCurateJson.code_verification.failed_tasks).toBe(0);
+    expect(codeCurateJson.code_verification.splits_counts.train).toBeGreaterThan(0);
+    expect(codeCurateJson.code_verification.splits_counts.val).toBeGreaterThan(0);
+    expect(codeCurateJson.code_verification.splits_counts.test).toBeGreaterThan(0);
+
+    const codeExpRes = await fetch(`${gateBaseUrl}/api/developer/code-training/experiment`, {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({
+        datasetId: codeCurateJson.dataset.id,
+        epochs: 3,
+        seed: 42,
+      }),
+    });
+    expect(codeExpRes.status).toBe(201);
+    const codeExpJson = (await codeExpRes.json()) as {
+      ok: boolean;
+      improved: boolean;
+      external_models_used: boolean;
+      experiment: { id: string; approval_status: string };
+      metrics: {
+        initial_train_loss: number;
+        final_train_loss: number;
+        initial_val_loss: number;
+        final_val_loss: number;
+        unseen_execution_verified: boolean;
+      };
+    };
+    expect(codeExpJson.ok).toBe(true);
+    expect(codeExpJson.external_models_used).toBe(false);
+    expect(codeExpJson.metrics.unseen_execution_verified).toBe(true);
+    expect(codeExpJson.metrics.final_train_loss).toBeLessThan(codeExpJson.metrics.initial_train_loss);
+
+    if (codeExpJson.experiment.approval_status === 'PENDING_APPROVAL') {
+      const approveCodeExpRes = await fetch(
+        `${gateBaseUrl}/api/admin/experiments/${codeExpJson.experiment.id}/decide`,
+        {
+          method: 'POST',
+          headers: adminHeaders,
+          body: JSON.stringify({ decision: 'approve' }),
+        }
+      );
+      expect(approveCodeExpRes.status).toBe(200);
+    }
+
+    const codeEvalRes = await fetch(`${gateBaseUrl}/api/developer/code-training/evaluate`, {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({}),
+    });
+    expect(codeEvalRes.status).toBe(200);
+    const codeEvalJson = (await codeEvalRes.json()) as {
+      ok: boolean;
+      status: string;
+      external_models_used: boolean;
+      contrastive_probe?: { total: number; passed: number; accuracy: number };
+    };
+    expect(codeEvalJson.ok).toBe(true);
+    expect(codeEvalJson.external_models_used).toBe(false);
+    expect(['VERIFIED', 'PARTIAL', 'NOT_RUN']).toContain(codeEvalJson.status);
+  }, 120_000);
 });
 
 

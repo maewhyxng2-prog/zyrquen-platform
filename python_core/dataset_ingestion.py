@@ -112,11 +112,24 @@ def clean_text(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
+def redact_pii_with_stats(text: str) -> tuple[str, dict[str, int]]:
+    out, email_n = _EMAIL_RE.subn("[EMAIL]", text)
+    out, thai_id_n = _THAI_ID_RE.subn("[ID]", out)
+    out, card_n = _CARD_RE.subn("[NUMBER]", out)
+    out, phone_n = _PHONE_RE.subn("[PHONE]", out)
+    stats = {
+        "email": email_n,
+        "thai_id": thai_id_n,
+        "card_number": card_n,
+        "phone": phone_n,
+        "total_redacted": email_n + thai_id_n + card_n + phone_n,
+    }
+    return out, stats
+
+
 def redact_pii(text: str) -> str:
-    text = _EMAIL_RE.sub("[EMAIL]", text)
-    text = _THAI_ID_RE.sub("[ID]", text)
-    text = _CARD_RE.sub("[NUMBER]", text)
-    return _PHONE_RE.sub("[PHONE]", text)
+    redacted, _ = redact_pii_with_stats(text)
+    return redacted
 
 
 def _default_canonical_key(text: str) -> str:
@@ -228,17 +241,26 @@ def validate_provenance_metadata(
     return clean_name, clean_prov, clean_source, clean_license
 
 
+def _apply_redact_pii(text: str, pii_stats: dict[str, int] | None) -> str:
+    redacted, counts = redact_pii_with_stats(text)
+    if pii_stats is not None:
+        for k, v in counts.items():
+            pii_stats[k] = int(pii_stats.get(k, 0)) + int(v)
+    return redacted
+
+
 def _record_from_obj(
     obj: Any,
     *,
     default_source: str,
     do_redact_pii: bool,
+    pii_stats: dict[str, int] | None = None,
 ) -> dict[str, Any] | None:
     """Convert raw dict or string record into normalized internal record dict."""
     if isinstance(obj, str):
         txt = clean_text(obj)
         if do_redact_pii:
-            txt = redact_pii(txt)
+            txt = _apply_redact_pii(txt, pii_stats)
         if not txt:
             return None
         return {"text": txt, "source": default_source, "kind": "text"}
@@ -256,9 +278,9 @@ def _record_from_obj(
         rel = clean_text(str(obj["relation"]))
         target_obj = clean_text(str(obj["object"]))
         if do_redact_pii:
-            subj = redact_pii(subj)
-            rel = redact_pii(rel)
-            target_obj = redact_pii(target_obj)
+            subj = _apply_redact_pii(subj, pii_stats)
+            rel = _apply_redact_pii(rel, pii_stats)
+            target_obj = _apply_redact_pii(target_obj, pii_stats)
         if not subj or not rel or not target_obj:
             return None
         txt = f"{subj} -> {rel} -> {target_obj}"
@@ -276,8 +298,8 @@ def _record_from_obj(
         inp = clean_text(str(obj["input"]))
         tgt = clean_text(str(obj["target"]))
         if do_redact_pii:
-            inp = redact_pii(inp)
-            tgt = redact_pii(tgt)
+            inp = _apply_redact_pii(inp, pii_stats)
+            tgt = _apply_redact_pii(tgt, pii_stats)
         if not inp or not tgt:
             return None
         rec = {
@@ -294,7 +316,7 @@ def _record_from_obj(
     if "text" in obj or "content" in obj:
         txt = clean_text(str(obj.get("text") if "text" in obj else obj.get("content")))
         if do_redact_pii:
-            txt = redact_pii(txt)
+            txt = _apply_redact_pii(txt, pii_stats)
         if not txt:
             return None
         rec = {"text": txt, "source": rec_source, "kind": "text"}
@@ -348,6 +370,7 @@ def parse_real_dataset_payload(
     explicit_splits: dict[str, Any] | None = None,
     default_source: str,
     do_redact_pii: bool = True,
+    pii_stats: dict[str, int] | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, list[dict[str, Any]]] | None]:
     """
     Parse real datasets in text, jsonl, json, csv, or pre-split JSON format.
@@ -375,7 +398,7 @@ def parse_real_dataset_payload(
             if raw_k in splits_obj and isinstance(splits_obj[raw_k], list):
                 bucket = parsed_splits.setdefault(target_k, [])
                 for item in splits_obj[raw_k]:
-                    rec = _record_from_obj(item, default_source=default_source, do_redact_pii=do_redact_pii)
+                    rec = _record_from_obj(item, default_source=default_source, do_redact_pii=do_redact_pii, pii_stats=pii_stats)
                     if rec is not None:
                         rec["split"] = target_k
                         bucket.append(rec)
@@ -389,7 +412,7 @@ def parse_real_dataset_payload(
         if not isinstance(parsed, list):
             raise ValueError("JSON dataset must be an array of records or a pre-split object.")
         for item in parsed:
-            rec = _record_from_obj(item, default_source=default_source, do_redact_pii=do_redact_pii)
+            rec = _record_from_obj(item, default_source=default_source, do_redact_pii=do_redact_pii, pii_stats=pii_stats)
             if rec is not None:
                 records.append(rec)
     elif fmt == "jsonl":
@@ -401,7 +424,7 @@ def parse_real_dataset_payload(
                 obj = json.loads(stripped)
             except json.JSONDecodeError as exc:
                 raise ValueError(f"Invalid JSONL at line {idx}: {exc}") from exc
-            rec = _record_from_obj(obj, default_source=default_source, do_redact_pii=do_redact_pii)
+            rec = _record_from_obj(obj, default_source=default_source, do_redact_pii=do_redact_pii, pii_stats=pii_stats)
             if rec is not None:
                 records.append(rec)
     elif fmt == "csv":
@@ -410,7 +433,7 @@ def parse_real_dataset_payload(
             raise ValueError("CSV dataset requires a header row.")
         for row in reader:
             cleaned_row = {str(k or "").strip().lower(): (v or "") for k, v in row.items()}
-            rec = _record_from_obj(cleaned_row, default_source=default_source, do_redact_pii=do_redact_pii)
+            rec = _record_from_obj(cleaned_row, default_source=default_source, do_redact_pii=do_redact_pii, pii_stats=pii_stats)
             if rec is not None:
                 records.append(rec)
     else:
@@ -418,7 +441,7 @@ def parse_real_dataset_payload(
             stripped = line.strip()
             if not stripped:
                 continue
-            rec = _record_from_obj(stripped, default_source=default_source, do_redact_pii=do_redact_pii)
+            rec = _record_from_obj(stripped, default_source=default_source, do_redact_pii=do_redact_pii, pii_stats=pii_stats)
             if rec is not None:
                 records.append(rec)
 
@@ -808,6 +831,13 @@ def ingest_dataset(
         raw_text if raw_text else json.dumps(explicit_splits, ensure_ascii=False, sort_keys=True)
     )
 
+    pii_stats: dict[str, int] = {
+        "email": 0,
+        "thai_id": 0,
+        "card_number": 0,
+        "phone": 0,
+        "total_redacted": 0,
+    }
     try:
         resolved_fmt, parsed_records, pre_split_records = parse_real_dataset_payload(
             raw_text=raw_text,
@@ -815,6 +845,7 @@ def ingest_dataset(
             explicit_splits=explicit_splits if isinstance(explicit_splits, dict) else None,
             default_source=source_name,
             do_redact_pii=do_redact_pii,
+            pii_stats=pii_stats,
         )
     except (ValueError, json.JSONDecodeError) as exc:
         return {"ok": False, "error": f"Dataset parsing failed: {exc}"}
@@ -891,6 +922,7 @@ def ingest_dataset(
         "provenance": provenance,
         "source_format": resolved_fmt,
         "pii_redacted": do_redact_pii,
+        "pii_redaction_summary": pii_stats,
         "input_sha256": input_sha256,
         "total_records": len(unique_records),
         "deduplicated_removed": deduplicated_removed,
@@ -1048,6 +1080,7 @@ def ingest_dataset(
         "leakage_report": leakage_report,
         "kg_proposal": kg_proposal,
         "deduplicated_removed": deduplicated_removed,
+        "pii_redaction_summary": pii_stats,
     }
 
 

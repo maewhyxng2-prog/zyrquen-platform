@@ -4,7 +4,9 @@ import {
   AlertTriangle,
   Check,
   CheckCircle2,
+  Code2,
   Database,
+  Download,
   KeyRound,
   LogOut,
   Moon,
@@ -30,7 +32,11 @@ const AdminStabilityPanel = lazy(() =>
 );
 import type {
   AdminOverview,
+  AuditLogItem,
   ClientLatencySample,
+  CodeCorpusCurateResult,
+  CodeModelEvaluationResult,
+  CodeTrainingExperimentResult,
   DatasetVerifyResult,
   DeveloperOverview,
   MemorySnapshot,
@@ -109,6 +115,24 @@ export function SettingsView({
   const [curatingCorpus, setCuratingCorpus] = useState(false);
   const [runningExperiment, setRunningExperiment] = useState(false);
   const [experimentMsg, setExperimentMsg] = useState<string | null>(null);
+  const [curatingCodeCorpus, setCuratingCodeCorpus] = useState(false);
+  const [runningCodeExperiment, setRunningCodeExperiment] = useState(false);
+  const [evaluatingCodeModel, setEvaluatingCodeModel] = useState(false);
+  const [codeCorpusRes, setCodeCorpusRes] = useState<CodeCorpusCurateResult | null>(null);
+  const [codeExpRes, setCodeExpRes] = useState<CodeTrainingExperimentResult | null>(null);
+  const [codeEvalRes, setCodeEvalRes] = useState<CodeModelEvaluationResult | null>(null);
+  const [codeTrainMsg, setCodeTrainMsg] = useState<string | null>(null);
+  const [exportingAudit, setExportingAudit] = useState(false);
+  const [auditExportFormat, setAuditExportFormat] = useState<'json' | 'csv'>('json');
+  const [auditExportFocus, setAuditExportFocus] = useState<'pii_redaction' | 'all'>('pii_redaction');
+  const [auditExportNotice, setAuditExportNotice] = useState<{
+    filename: string;
+    count: number;
+    piiCount: number;
+    sha256: string;
+    focus: 'pii_redaction' | 'all';
+    format: 'json' | 'csv';
+  } | null>(null);
 
   const loadDeveloper = useCallback(async () => {
     setLoading(true);
@@ -418,6 +442,89 @@ export function SettingsView({
     }
   }
 
+  async function handleCurateCodeCorpus() {
+    setCuratingCodeCorpus(true);
+    setError(null);
+    setCodeTrainMsg(null);
+    try {
+      const res = await apiRequest<CodeCorpusCurateResult>('/api/developer/code-training/curate', {
+        method: 'POST',
+        token,
+        body: { name: 'code-problem-solving-corpus' },
+      });
+      setCodeCorpusRes(res);
+      const verified = res.code_verification?.verified_tasks ?? 0;
+      const total = res.code_verification?.total_tasks ?? 0;
+      const astCount = res.code_verification?.ast_records_added ?? 0;
+      setCodeTrainMsg(
+        `เตรียมชุดข้อมูลโค้ด "${res.dataset?.name || 'code-problem-solving-corpus'}" สำเร็จ (Sandbox Verified ${verified}/${total} งาน + AST ${astCount} รายการ)`
+      );
+      await loadDeveloper();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'เตรียมชุดข้อมูลโค้ดและแก้ปัญหาไม่สำเร็จ');
+    } finally {
+      setCuratingCodeCorpus(false);
+    }
+  }
+
+  async function handleRunCodeExperiment() {
+    setRunningCodeExperiment(true);
+    setError(null);
+    setCodeTrainMsg(null);
+    try {
+      const targetDsId =
+        codeCorpusRes?.dataset?.id ||
+        (devData?.datasets || []).find(
+          (d) =>
+            !d.leakage_detected &&
+            (d.provenance === 'native_ast_and_sandbox_verified' || d.name.includes('code'))
+        )?.id ||
+        null;
+      const res = await apiRequest<CodeTrainingExperimentResult>(
+        '/api/developer/code-training/experiment',
+        {
+          method: 'POST',
+          token,
+          body: { datasetId: targetDsId, epochs: 3, seed: 42 },
+        }
+      );
+      setCodeExpRes(res);
+      setCodeTrainMsg(
+        res.improved
+          ? `ฝึก Native Transformer ด้านโค้ดและแก้ปัญหาสำเร็จ (สถานะ: ${res.experiment.approval_status}) — ส่งเข้า Approval Gate แล้ว`
+          : `การฝึกทดลองด้านโค้ดเสร็จสิ้น (สถานะ: ${res.experiment.approval_status})`
+      );
+      await loadDeveloper();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'ฝึกทดลองโมเดลด้านโค้ดไม่สำเร็จ');
+    } finally {
+      setRunningCodeExperiment(false);
+    }
+  }
+
+  async function handleEvaluateCodeModel() {
+    setEvaluatingCodeModel(true);
+    setError(null);
+    try {
+      const res = await apiRequest<CodeModelEvaluationResult>(
+        '/api/developer/code-training/evaluate',
+        {
+          method: 'POST',
+          token,
+          body: {},
+        }
+      );
+      setCodeEvalRes(res);
+      if (res.status === 'NOT_RUN' && res.reason) {
+        setCodeTrainMsg(res.reason);
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'ประเมินผลโมเดลด้านโค้ดไม่สำเร็จ');
+    } finally {
+      setEvaluatingCodeModel(false);
+    }
+  }
+
   async function handleExperimentDecision(expId: string, decision: 'approve' | 'reject') {
     setError(null);
     try {
@@ -443,6 +550,128 @@ export function SettingsView({
       await loadAdmin();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'เปลี่ยนสิทธิ์ผู้ใช้ไม่สำเร็จ');
+    }
+  }
+
+  function isPiiRedactionAuditLog(log: AuditLogItem): boolean {
+    const actionUp = (log.action || '').toUpperCase();
+    const outcomeUp = (log.outcome || '').toUpperCase();
+    if (
+      actionUp.includes('PII') ||
+      actionUp.includes('REDACT') ||
+      outcomeUp.includes('PII') ||
+      outcomeUp.includes('REDACT')
+    ) {
+      return true;
+    }
+    if (!log.details_json) return false;
+    try {
+      const parsed = JSON.parse(log.details_json) as Record<string, unknown>;
+      if (parsed.event_category === 'pii_redaction' || parsed.pii_redacted === true) {
+        return true;
+      }
+      if (Number(parsed.total_redacted || parsed.redacted_count || 0) > 0) {
+        return true;
+      }
+      const summary = parsed.pii_redaction_summary as Record<string, unknown> | undefined;
+      if (summary && Number(summary.total_redacted || 0) > 0) {
+        return true;
+      }
+    } catch {
+      return false;
+    }
+    return false;
+  }
+
+  async function handleExportAuditLogs() {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      setError('ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อส่งออก Audit Logs');
+      return;
+    }
+    setExportingAudit(true);
+    setError(null);
+    try {
+      const headers: Record<string, string> = {
+        'X-Requested-With': 'XMLHttpRequest',
+      };
+      if (token && token !== '__cookie__') {
+        headers.Authorization = `Bearer ${token}`;
+      }
+      const res = await fetch(
+        `/api/admin/audit-logs/export?focus=${encodeURIComponent(auditExportFocus)}&format=${encodeURIComponent(auditExportFormat)}`,
+        {
+          method: 'GET',
+          headers,
+          credentials: 'include',
+        }
+      );
+      if (!res.ok) {
+        const errPayload = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new ApiError(errPayload.error || `ส่งออก Audit Log ไม่สำเร็จ (${res.status})`, res.status);
+      }
+
+      const disposition = res.headers.get('content-disposition') || '';
+      const filenameMatch = disposition.match(/filename="?([^";\n]+)"?/i);
+      const filename =
+        filenameMatch?.[1] || `zyrquen-audit-${auditExportFocus}.${auditExportFormat}`;
+      const sha256Header = res.headers.get('x-zyrquen-export-sha256') || '';
+      const countHeader = Number(res.headers.get('x-zyrquen-export-count') || '0');
+      const piiCountHeader = Number(res.headers.get('x-zyrquen-pii-events') || '0');
+
+      const rawText = await res.text();
+      let resolvedCount = countHeader;
+      let resolvedPiiCount = piiCountHeader;
+      let resolvedSha256 = sha256Header;
+
+      if (auditExportFormat === 'json') {
+        try {
+          const parsed = JSON.parse(rawText) as {
+            exported_count?: number;
+            pii_redaction_event_count?: number;
+            integrity_sha256?: string;
+          };
+          if (typeof parsed.exported_count === 'number') resolvedCount = parsed.exported_count;
+          if (typeof parsed.pii_redaction_event_count === 'number') {
+            resolvedPiiCount = parsed.pii_redaction_event_count;
+          }
+          if (typeof parsed.integrity_sha256 === 'string' && !resolvedSha256) {
+            resolvedSha256 = parsed.integrity_sha256;
+          }
+        } catch {
+          // keep header metadata if body is custom JSON
+        }
+      }
+
+      const mimeType =
+        auditExportFormat === 'csv'
+          ? 'text/csv;charset=utf-8'
+          : 'application/json;charset=utf-8';
+      const blob = new Blob([rawText], { type: mimeType });
+      if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+        const objectUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = objectUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(objectUrl);
+      }
+
+      setAuditExportNotice({
+        filename,
+        count: Number.isFinite(resolvedCount) ? resolvedCount : 0,
+        piiCount: Number.isFinite(resolvedPiiCount) ? resolvedPiiCount : 0,
+        sha256: resolvedSha256,
+        focus: auditExportFocus,
+        format: auditExportFormat,
+      });
+
+      await loadAdmin().catch(() => null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'ส่งออก Audit Log ไม่สำเร็จ');
+    } finally {
+      setExportingAudit(false);
     }
   }
 
@@ -1444,6 +1673,137 @@ export function SettingsView({
                 </div>
               </section>
 
+              <section className="rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-5 sm:p-6">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <Code2 className="h-4 w-4 text-[var(--color-accent)]" />
+                      <h3 className="text-base font-semibold text-[var(--color-text)]">
+                        ฝึกโมเดลให้เข้าใจโค้ดและแก้ปัญหา (Code &amp; Debugging Training)
+                      </h3>
+                    </div>
+                    <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
+                      สร้างชุดข้อมูลโค้ดที่ตรวจผ่าน Python AST และ Sandbox Test แยก Train/Val/Test ไม่ปนกัน แล้วฝึก NativeTransformerLM พร้อมวัดผล Pre/Post บนโจทย์ Unseen (ไม่ใช้โมเดลภายนอก)
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={curatingCodeCorpus}
+                      onClick={() => void handleCurateCodeCorpus()}
+                      className="min-h-[38px] rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3.5 text-xs font-medium text-[var(--color-accent)] hover:border-[var(--color-accent)] disabled:opacity-50"
+                    >
+                      {curatingCodeCorpus ? 'กำลังตรวจ AST & Sandbox...' : 'เตรียมชุดข้อมูลโค้ด & แก้บั๊ก'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={runningCodeExperiment}
+                      onClick={() => void handleRunCodeExperiment()}
+                      className="min-h-[38px] rounded-xl bg-[var(--color-primary)] px-3.5 text-xs font-medium text-white hover:bg-[var(--color-primary-hover)] disabled:opacity-50"
+                    >
+                      {runningCodeExperiment ? 'กำลังฝึกโมเดลโค้ด...' : 'ฝึกทดลอง Native Model ด้านโค้ด'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={evaluatingCodeModel}
+                      onClick={() => void handleEvaluateCodeModel()}
+                      className="min-h-[38px] rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3.5 text-xs font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] disabled:opacity-50"
+                    >
+                      {evaluatingCodeModel ? 'กำลังประเมิน Unseen...' : 'ทดสอบบนโจทย์โค้ด Unseen'}
+                    </button>
+                  </div>
+                </div>
+
+                {codeTrainMsg && (
+                  <p className="mt-3 text-xs text-[var(--color-accent)]">{codeTrainMsg}</p>
+                )}
+
+                {codeCorpusRes?.code_verification && (
+                  <div className="mt-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-3.5 text-xs">
+                    <p className="font-semibold text-[var(--color-text)]">
+                      ผลการตรวจ AST &amp; Sandbox ก่อนฝึก ({codeCorpusRes.code_verification.verified_tasks}/{codeCorpusRes.code_verification.total_tasks} งานผ่านเงื่อนไข)
+                    </p>
+                    <p className="mt-1 font-mono text-[11px] text-[var(--color-text-secondary)]">
+                      Train: {codeCorpusRes.code_verification.splits_counts.train ?? 0} · Val:{' '}
+                      {codeCorpusRes.code_verification.splits_counts.val ?? 0} · Test (Unseen):{' '}
+                      {codeCorpusRes.code_verification.splits_counts.test ?? 0} · AST:{' '}
+                      {codeCorpusRes.code_verification.ast_records_added}
+                    </p>
+                  </div>
+                )}
+
+                {codeExpRes && (
+                  <div className="mt-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-semibold text-[var(--color-text)]">
+                        {codeExpRes.experiment.hypothesis}
+                      </span>
+                      <span className="font-mono text-[var(--color-accent)]">
+                        {codeExpRes.experiment.approval_status} · external_models={String(codeExpRes.external_models_used)}
+                      </span>
+                    </div>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-4 font-mono text-[11px] tabular-nums">
+                      <div className="rounded-xl border border-[var(--color-border)] p-2.5">
+                        <span className="block text-[var(--color-text-muted)]">Train Loss</span>
+                        <span className="font-semibold text-[var(--color-text)]">
+                          {codeExpRes.metrics.initial_train_loss.toFixed(4)} → {codeExpRes.metrics.final_train_loss.toFixed(4)}
+                        </span>
+                      </div>
+                      <div className="rounded-xl border border-[var(--color-border)] p-2.5">
+                        <span className="block text-[var(--color-text-muted)]">Val Loss</span>
+                        <span className="font-semibold text-[var(--color-text)]">
+                          {codeExpRes.metrics.initial_val_loss.toFixed(4)} → {codeExpRes.metrics.final_val_loss.toFixed(4)}
+                        </span>
+                      </div>
+                      <div className="rounded-xl border border-[var(--color-border)] p-2.5">
+                        <span className="block text-[var(--color-text-muted)]">Unseen Test PPL</span>
+                        <span className="font-semibold text-[var(--color-text)]">
+                          {codeExpRes.metrics.test_perplexity.toFixed(2)} (acc {(codeExpRes.metrics.test_accuracy * 100).toFixed(1)}%)
+                        </span>
+                      </div>
+                      <div className="rounded-xl border border-[var(--color-border)] p-2.5">
+                        <span className="block text-[var(--color-text-muted)]">Fix-vs-Bug Probe</span>
+                        <span className="font-semibold text-[var(--color-text)]">
+                          {(codeExpRes.metrics.pre_contrastive_accuracy * 100).toFixed(0)}% → {(codeExpRes.metrics.post_contrastive_accuracy * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    </div>
+                    {(codeExpRes.metrics.honest_limitations || []).length > 0 && (
+                      <p className="mt-2 text-[11px] text-[var(--color-text-secondary)]">
+                        ข้อจำกัดจริง: {codeExpRes.metrics.honest_limitations![0]}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {codeEvalRes && (
+                  <div className="mt-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-3.5 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-semibold text-[var(--color-text)]">
+                        ผลประเมิน Checkpoint บนชุด Unseen Code
+                      </span>
+                      <span className="font-mono text-[var(--color-accent)]">
+                        {codeEvalRes.status}
+                        {codeEvalRes.checkpoint_version ? ` · v${codeEvalRes.checkpoint_version}` : ''}
+                      </span>
+                    </div>
+                    {codeEvalRes.status === 'NOT_RUN' ? (
+                      <p className="mt-1 text-[11px] text-[var(--color-text-secondary)]">
+                        {codeEvalRes.reason}
+                      </p>
+                    ) : (
+                      <p className="mt-1 font-mono text-[11px] text-[var(--color-text-secondary)] tabular-nums">
+                        test_loss: {codeEvalRes.unseen_test_loss?.toFixed(4) ?? '-'} · ppl:{' '}
+                        {codeEvalRes.unseen_test_perplexity?.toFixed(2) ?? '-'} · contrastive:{' '}
+                        {codeEvalRes.contrastive_probe
+                          ? `${codeEvalRes.contrastive_probe.passed}/${codeEvalRes.contrastive_probe.total} (${(codeEvalRes.contrastive_probe.accuracy * 100).toFixed(0)}%)`
+                          : '-'}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </section>
+
               <ToolRegistry
                 token={token}
                 userRole={user.role}
@@ -2011,16 +2371,66 @@ export function SettingsView({
                 </div>
               </details>
 
-              <details className="rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-5 sm:p-6">
-                <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 text-sm font-semibold text-[var(--color-text)]">
-                  <span>บันทึกการตรวจสอบความปลอดภัย (Audit Logs)</span>
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs text-[var(--color-text-secondary)]">
-                      {adminData?.audit_logs?.length ?? 0} รายการ
-                    </span>
+              <section className="rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-5 sm:p-6">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-sm font-semibold text-[var(--color-text)]">
+                        บันทึกการตรวจสอบความปลอดภัย (Audit Logs)
+                      </h3>
+                      <span className="font-mono text-xs text-[var(--color-text-secondary)]">
+                        {adminData?.audit_logs?.length ?? 0} รายการ
+                      </span>
+                      <span className="rounded-md border border-[var(--color-accent)]/30 bg-[var(--color-surface)] px-2 py-0.5 font-mono text-[11px] text-[var(--color-accent)]">
+                        PII Redaction:{' '}
+                        {(adminData?.audit_logs || []).filter(isPiiRedactionAuditLog).length}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
+                      ส่งออกบันทึกเหตุการณ์ในรูปแบบไฟล์ที่คัดกรองข้อมูลส่วนบุคคล/ความลับและแนบ SHA-256 ตรวจสอบความถูกต้อง
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select
+                      aria-label="ขอบเขตการส่งออก Audit Log"
+                      value={auditExportFocus}
+                      onChange={(e) =>
+                        setAuditExportFocus(e.target.value === 'all' ? 'all' : 'pii_redaction')
+                      }
+                      className="h-9 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 text-xs text-[var(--color-text)] focus:border-[var(--color-focus)] focus:outline-none"
+                    >
+                      <option value="pii_redaction">เฉพาะ PII Redaction</option>
+                      <option value="all">Audit Logs ทั้งหมด</option>
+                    </select>
+                    <select
+                      aria-label="รูปแบบไฟล์ส่งออก Audit Log"
+                      value={auditExportFormat}
+                      onChange={(e) =>
+                        setAuditExportFormat(e.target.value === 'csv' ? 'csv' : 'json')
+                      }
+                      className="h-9 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 text-xs text-[var(--color-text)] focus:border-[var(--color-focus)] focus:outline-none"
+                    >
+                      <option value="json">JSON (SHA-256)</option>
+                      <option value="csv">CSV (Sanitized)</option>
+                    </select>
+                    <button
+                      type="button"
+                      disabled={exportingAudit}
+                      onClick={() => void handleExportAuditLogs()}
+                      className="flex h-9 items-center gap-1.5 rounded-xl bg-[var(--color-primary)] px-3.5 text-xs font-medium text-white hover:bg-[var(--color-primary-hover)] disabled:opacity-50 whitespace-nowrap"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      <span>
+                        {exportingAudit
+                          ? 'กำลังส่งออก...'
+                          : auditExportFocus === 'pii_redaction'
+                            ? 'ส่งออก Audit Log (PII Redaction)'
+                            : 'ส่งออก Audit Log (ทั้งหมด)'}
+                      </span>
+                    </button>
                     {(adminData?.audit_logs?.length ?? 0) > 0 && (
                       <CopyButton
-                        stopPropagation
                         getText={() =>
                           serializeTableToTsv(
                             ['เวลา', 'ผู้ดำเนินการ', 'การกระทำ', 'ผลลัพธ์'],
@@ -2039,32 +2449,69 @@ export function SettingsView({
                       />
                     )}
                   </div>
-                </summary>
-                <div className="mt-4 overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead>
-                      <tr className="border-b border-[var(--color-border)] text-[var(--color-text-secondary)]">
-                        <th className="py-2 pr-4 font-medium">เวลา</th>
-                        <th className="py-2 pr-4 font-medium">ผู้ดำเนินการ</th>
-                        <th className="py-2 pr-4 font-medium">การกระทำ</th>
-                        <th className="py-2 font-medium">ผลลัพธ์</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[var(--color-border)] tabular-nums">
-                      {(adminData?.audit_logs || []).map((log) => (
-                        <tr key={log.id}>
-                          <td className="py-2.5 pr-4 font-mono text-[var(--color-text-muted)]">
-                            {new Date(log.created_at).toLocaleString('th-TH')}
-                          </td>
-                          <td className="py-2.5 pr-4 text-[var(--color-text)]">{log.actor_email}</td>
-                          <td className="py-2.5 pr-4 font-mono text-[var(--color-accent)]">{log.action}</td>
-                          <td className="py-2.5 text-[var(--color-text-secondary)]">{log.outcome}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
                 </div>
-              </details>
+
+                {auditExportNotice && (
+                  <div
+                    role="status"
+                    className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--color-success)]/40 bg-[var(--color-success-bg)] px-3.5 py-2.5 text-xs text-[var(--color-success)]"
+                  >
+                    <span>
+                      ส่งออกไฟล์ <strong className="font-mono">{auditExportNotice.filename}</strong>{' '}
+                      สำเร็จ ({auditExportNotice.count} รายการ · PII Redaction{' '}
+                      {auditExportNotice.piiCount} รายการ · {auditExportNotice.format.toUpperCase()})
+                    </span>
+                    {auditExportNotice.sha256 && (
+                      <span className="font-mono text-[11px]">
+                        SHA-256: {auditExportNotice.sha256.slice(0, 16)}…
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                <div className="mt-4 overflow-x-auto">
+                  {(adminData?.audit_logs || []).length === 0 ? (
+                    <p className="py-3 text-xs text-[var(--color-text-secondary)]">
+                      ยังไม่มีบันทึก Audit Logs ในระบบ
+                    </p>
+                  ) : (
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="border-b border-[var(--color-border)] text-[var(--color-text-secondary)]">
+                          <th className="py-2 pr-4 font-medium">เวลา</th>
+                          <th className="py-2 pr-4 font-medium">ผู้ดำเนินการ</th>
+                          <th className="py-2 pr-4 font-medium">การกระทำ</th>
+                          <th className="py-2 font-medium">ผลลัพธ์</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[var(--color-border)] tabular-nums">
+                        {(adminData?.audit_logs || []).map((log) => {
+                          const isPii = isPiiRedactionAuditLog(log);
+                          return (
+                            <tr key={log.id}>
+                              <td className="py-2.5 pr-4 font-mono text-[var(--color-text-muted)]">
+                                {new Date(log.created_at).toLocaleString('th-TH')}
+                              </td>
+                              <td className="py-2.5 pr-4 text-[var(--color-text)]">{log.actor_email}</td>
+                              <td className="py-2.5 pr-4 font-mono text-[var(--color-accent)]">
+                                <span className="inline-flex items-center gap-1.5">
+                                  <span>{log.action}</span>
+                                  {isPii && (
+                                    <span className="rounded border border-[var(--color-accent)]/40 bg-[var(--color-surface)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--color-accent)]">
+                                      PII
+                                    </span>
+                                  )}
+                                </span>
+                              </td>
+                              <td className="py-2.5 text-[var(--color-text-secondary)]">{log.outcome}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </section>
             </>
           )}
         </div>

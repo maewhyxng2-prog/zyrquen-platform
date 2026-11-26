@@ -556,6 +556,7 @@ export interface AuditLogItem {
   action: string;
   target: string;
   outcome: string;
+  details_json?: string | null;
   created_at: string;
 }
 
@@ -832,3 +833,69 @@ export interface NativeBenchmarkEvaluation {
   abstentionAccuracy: AbstentionAccuracyMetrics;
   integrityVerified: boolean;
 }
+
+export interface CodeCorpusCurateResult {
+  ok: boolean;
+  dataset?: {
+    id: string;
+    name: string;
+    total_records: number;
+    train_count?: number;
+    val_count?: number;
+    test_count?: number;
+    manifest_hash?: string;
+  };
+  code_verification?: {
+    total_tasks: number;
+    verified_tasks: number;
+    failed_tasks: number;
+    ast_records_added: number;
+    splits_counts: Record<string, number>;
+  };
+}
+
+export interface CodeTrainingExperimentResult {
+  ok: boolean;
+  improved: boolean;
+  external_models_used: boolean;
+  experiment: {
+    id: string;
+    hypothesis: string;
+    approval_status: string;
+    dataset_id: string;
+  };
+  metrics: {
+    training_focus: string;
+    param_count: number;
+    initial_train_loss: number;
+    final_train_loss: number;
+    initial_val_loss: number;
+    final_val_loss: number;
+    val_perplexity: number;
+    test_loss: number;
+    test_perplexity: number;
+    test_accuracy: number;
+    pre_contrastive_accuracy: number;
+    post_contrastive_accuracy: number;
+    unseen_execution_verified: boolean;
+    regression_detected: boolean;
+    honest_limitations?: string[];
+  };
+}
+
+export interface CodeModelEvaluationResult {
+  ok: boolean;
+  status: string;
+  reason?: string;
+  checkpoint_version?: number;
+  unseen_test_loss?: number;
+  unseen_test_perplexity?: number;
+  unseen_token_accuracy?: number;
+  contrastive_probe?: {
+    total: number;
+    passed: number;
+    accuracy: number;
+  };
+  external_models_used: boolean;
+}
+

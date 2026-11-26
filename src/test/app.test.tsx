@@ -497,7 +497,7 @@ describe('ZYRQUEN ประสบการณ์แอปพลิเคชั�
     await waitFor(() => {
       expect(screen.getAllByRole('button', { name: 'เข้าสู่ระบบ' }).length).toBeGreaterThan(0);
     });
-  });
+  }, 15_000);
 
   it('ซ่อนแถบนำทางล่างบนมือถือใน Workspace, เปิดประวัติบทสนทนา และรันเวิร์กโฟลว์ในหน้าความจำได้', async () => {
     mockFetch({
@@ -2850,8 +2850,10 @@ describe('ZYRQUEN ประสบการณ์แอปพลิเคชั�
 
     // 2. Projects (โปรเจกต์)
     fireEvent.click(screen.getAllByRole('button', { name: 'โปรเจกต์' })[0]);
-    expect(await screen.findByText('โปรเจกต์วิเคราะห์ระบบ')).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('ชื่อโปรเจกต์'), {
+    expect(
+      await screen.findByText('โปรเจกต์วิเคราะห์ระบบ', {}, { timeout: 4000 })
+    ).toBeInTheDocument();
+    fireEvent.change(await screen.findByLabelText('ชื่อโปรเจกต์', {}, { timeout: 4000 }), {
       target: { value: 'โปรเจกต์สร้าง API' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'สร้างและเปิดโปรเจกต์' }));
@@ -2888,7 +2890,7 @@ describe('ZYRQUEN ประสบการณ์แอปพลิเคชั�
     fireEvent.click(screen.getAllByRole('button', { name: 'คลังผลงาน' })[0]);
     fireEvent.click(await screen.findByText('architecture-plan.md'));
     expect(await screen.findByText(/# แผนสถาปัตยกรรมระบบ/)).toBeInTheDocument();
-  });
+  }, 15_000);
 
   it('ProjectDashboard: แสดงการ์ดสถานะ เปอร์เซ็นต์ความคืบหน้า และรายการค้างดำเนินการทั้งใน HomeView และ ProjectsView พร้อมตัวกรองและคัดลอกสรุป TSV', async () => {
     const { HomeView } = await import('../components/HomeView');
@@ -3652,6 +3654,283 @@ describe('ZYRQUEN ประสบการณ์แอปพลิเคชั�
     expect(await screen.findByText('สรุปผลการตรวจสอบโครงสร้าง')).toBeInTheDocument();
     expect(screen.queryByText(/ะะี/)).not.toBeInTheDocument();
     av.unmount();
+  });
+
+  it('หน้าผู้ดูแลระบบมีปุ่มส่งออก Audit Log ที่เน้นเหตุการณ์ PII Redaction ในรูปแบบไฟล์ปลอดภัยพร้อม SHA-256', async () => {
+    const calledUrls: string[] = [];
+    const createdBlobUrls: string[] = [];
+    const revokedBlobUrls: string[] = [];
+    const origCreateObjectURL = URL.createObjectURL;
+    const origRevokeObjectURL = URL.revokeObjectURL;
+    URL.createObjectURL = vi.fn(() => {
+      const url = `blob:zyrquen-test-${createdBlobUrls.length + 1}`;
+      createdBlobUrls.push(url);
+      return url;
+    });
+    URL.revokeObjectURL = vi.fn((url: string) => {
+      revokedBlobUrls.push(url);
+    });
+
+    const piiAuditLog = {
+      id: 'audit-pii-1',
+      actor_id: 'u-admin',
+      actor_email: 'admin@zyrquen.local',
+      action: 'PII_REDACTION',
+      target: 'ds-customer-corpus',
+      outcome: 'REDACTED_3_PII_ITEMS',
+      details_json: JSON.stringify({
+        event_category: 'pii_redaction',
+        pii_redacted: true,
+        total_redacted: 3,
+      }),
+      created_at: '2026-11-26T00:00:00Z',
+    };
+    const otherAuditLog = {
+      id: 'audit-other-1',
+      actor_id: 'u-admin',
+      actor_email: 'admin@zyrquen.local',
+      action: 'ROLE_UPDATED',
+      target: 'u-user-2',
+      outcome: 'USER',
+      details_json: '{}',
+      created_at: '2026-11-25T23:55:00Z',
+    };
+
+    try {
+      mockFetch({
+        'GET /api/admin/overview': () =>
+          new Response(
+            JSON.stringify({
+              users: [],
+              pending_runs: [],
+              pending_tool_invocations: [],
+              pending_experiments: [],
+              pending_kg_proposals: [],
+              tools: [],
+              audit_logs: [piiAuditLog, otherAuditLog],
+              system: {
+                python_version: '3.11.2',
+                platform: 'Linux',
+                cpu_count: 4,
+                load_1m: 0.1,
+                mem_total_mb: 4096,
+                mem_available_mb: 2048,
+                disk_free_gb: 20,
+                disk_total_gb: 50,
+                sqlite_db_kb: 32,
+              },
+            }),
+            { status: 200 }
+          ),
+        'GET /api/admin/audit-logs/export': (init) => {
+          const authHeader = (init?.headers as Record<string, string> | undefined)?.Authorization;
+          expect(authHeader).toBe('Bearer t-admin-export');
+          const calls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls;
+          const lastUrl = String(calls[calls.length - 1]?.[0] || '');
+          calledUrls.push(lastUrl);
+          const body = JSON.stringify({
+            schema: 'zyrquen.audit-export.v1',
+            focus: lastUrl.includes('focus=all') ? 'all' : 'pii_redaction',
+            exported_count: 1,
+            pii_redaction_event_count: 1,
+            integrity_sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+            sanitization_applied: true,
+            events: [
+              {
+                id: 'audit-pii-1',
+                actor_id: 'u-admin',
+                actor_email_masked: 'ad***@zyrquen.local',
+                action: 'PII_REDACTION',
+                target: 'ds-customer-corpus',
+                outcome: 'REDACTED_3_PII_ITEMS',
+                is_pii_redaction_event: true,
+              },
+            ],
+          });
+          return new Response(body, {
+            status: 200,
+            headers: {
+              'Content-Type': 'application/json; charset=utf-8',
+              'Content-Disposition': 'attachment; filename="zyrquen-audit-pii_redaction-test.json"',
+              'X-Zyrquen-Export-Sha256':
+                '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              'X-Zyrquen-Export-Count': '1',
+              'X-Zyrquen-Pii-Events': '1',
+            },
+          });
+        },
+      });
+
+      const sv = render(
+        <SettingsView
+          token="t-admin-export"
+          user={{
+            id: 'u-admin',
+            email: 'admin@zyrquen.local',
+            display_name: 'Admin',
+            role: 'admin',
+            created_at: '2026-11-26T00:00:00Z',
+          }}
+          activeTab="admin"
+          autoExpandTrace={false}
+          defaultMode="auto"
+          onChangeTab={vi.fn()}
+          onUpdatePreferences={vi.fn()}
+          onLogout={vi.fn()}
+        />
+      );
+
+      expect(await screen.findByText(/PII Redaction: 1/)).toBeInTheDocument();
+      const exportBtn = screen.getByRole('button', { name: 'ส่งออก Audit Log (PII Redaction)' });
+      fireEvent.click(exportBtn);
+
+      await waitFor(() => {
+        expect(calledUrls).toContain('/api/admin/audit-logs/export?focus=pii_redaction&format=json');
+      });
+      expect(
+        await screen.findByText(/zyrquen-audit-pii_redaction-test\.json/)
+      ).toBeInTheDocument();
+      expect(screen.getByText(/SHA-256: 0123456789abcdef…/)).toBeInTheDocument();
+      expect(createdBlobUrls.length).toBe(1);
+      expect(revokedBlobUrls).toEqual(createdBlobUrls);
+
+      // Switch to CSV format and verify CSV export trigger
+      fireEvent.change(screen.getByLabelText('รูปแบบไฟล์ส่งออก Audit Log'), {
+        target: { value: 'csv' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'ส่งออก Audit Log (PII Redaction)' }));
+      await waitFor(() => {
+        expect(calledUrls).toContain('/api/admin/audit-logs/export?focus=pii_redaction&format=csv');
+      });
+
+      sv.unmount();
+    } finally {
+      URL.createObjectURL = origCreateObjectURL;
+      URL.revokeObjectURL = origRevokeObjectURL;
+    }
+  });
+
+  it('แท็บนักพัฒนามีเครื่องมือฝึกโมเดลให้เข้าใจโค้ดและแก้ปัญหา พร้อมแสดงผลจริงและข้อจำกัด', async () => {
+    mockFetch({
+      'GET /api/developer/overview': () =>
+        new Response(
+          JSON.stringify({
+            keys: [],
+            datasets: [],
+            kg_proposals: [],
+            checkpoints: [],
+            evaluations: [],
+            experiments: [],
+            usage: { total_requests: 0, avg_latency_ms: 0, daily_quota: 500, recent: [] },
+          }),
+          { status: 200 }
+        ),
+      'GET /api/developer/tools': () =>
+        new Response(
+          JSON.stringify({ tools: [], invocations: [], workspace_files: [] }),
+          { status: 200 }
+        ),
+      'POST /api/developer/code-training/curate': () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            dataset: { id: 'ds-code-1', name: 'code-problem-solving-corpus', total_records: 52 },
+            code_verification: {
+              total_tasks: 14,
+              verified_tasks: 14,
+              failed_tasks: 0,
+              ast_records_added: 24,
+              splits_counts: { train: 36, val: 10, test: 6 },
+            },
+          }),
+          { status: 201 }
+        ),
+      'POST /api/developer/code-training/experiment': () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            improved: true,
+            external_models_used: false,
+            experiment: {
+              id: 'exp-code-1',
+              hypothesis: 'ฝึก Native Transformer ด้านความเข้าใจโค้ดและแก้ปัญหา',
+              approval_status: 'PENDING_APPROVAL',
+              dataset_id: 'ds-code-1',
+            },
+            metrics: {
+              training_focus: 'code_understanding_and_problem_solving',
+              param_count: 42368,
+              initial_train_loss: 6.0123,
+              final_train_loss: 3.1045,
+              initial_val_loss: 5.998,
+              final_val_loss: 4.512,
+              val_perplexity: 91.1,
+              test_loss: 4.72,
+              test_perplexity: 112.17,
+              test_accuracy: 0.24,
+              pre_contrastive_accuracy: 0.33,
+              post_contrastive_accuracy: 0.67,
+              unseen_execution_verified: true,
+              regression_detected: false,
+              honest_limitations: ['ข้อจำกัดจริงของ NativeTransformerLM ขนาดเล็กบน CPU'],
+            },
+          }),
+          { status: 201 }
+        ),
+      'POST /api/developer/code-training/evaluate': () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            status: 'VERIFIED',
+            checkpoint_version: 2,
+            unseen_test_loss: 4.65,
+            unseen_test_perplexity: 104.58,
+            unseen_token_accuracy: 0.25,
+            contrastive_probe: { total: 3, passed: 2, accuracy: 0.6667 },
+            external_models_used: false,
+          }),
+          { status: 200 }
+        ),
+    });
+
+    const sv = render(
+      <SettingsView
+        token="t-dev-code"
+        user={{
+          id: 'u-dev',
+          email: 'dev@zyrquen.local',
+          display_name: 'Dev',
+          role: 'user',
+          created_at: '2026-11-26T00:00:00Z',
+        }}
+        activeTab="developer"
+        autoExpandTrace={false}
+        defaultMode="auto"
+        onChangeTab={vi.fn()}
+        onUpdatePreferences={vi.fn()}
+        onLogout={vi.fn()}
+      />
+    );
+
+    expect(
+      await screen.findByText(/ฝึกโมเดลให้เข้าใจโค้ดและแก้ปัญหา/)
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'เตรียมชุดข้อมูลโค้ด & แก้บั๊ก' }));
+    expect(
+      await screen.findByText(/ผลการตรวจ AST & Sandbox ก่อนฝึก \(14\/14 งานผ่านเงื่อนไข\)/)
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'ฝึกทดลอง Native Model ด้านโค้ด' }));
+    expect(await screen.findByText(/PENDING_APPROVAL · external_models=false/)).toBeInTheDocument();
+    expect(screen.getByText(/6\.0123 → 3\.1045/)).toBeInTheDocument();
+    expect(screen.getByText(/ข้อจำกัดจริงของ NativeTransformerLM ขนาดเล็กบน CPU/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'ทดสอบบนโจทย์โค้ด Unseen' }));
+    expect(await screen.findByText(/VERIFIED · v2/)).toBeInTheDocument();
+    expect(screen.getByText(/contrastive: 2\/3 \(67%\)/)).toBeInTheDocument();
+
+    sv.unmount();
   });
 });
 

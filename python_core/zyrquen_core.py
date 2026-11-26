@@ -55,6 +55,11 @@ from continual_learning import (
     run_continual_learning_round,
     synthesize_failure_curriculum,
 )
+from code_problem_training import (
+    curate_code_problem_corpus,
+    evaluate_code_problem_model,
+    run_code_problem_experiment,
+)
 from dataset_ingestion import (
     decide_kg_proposal,
     ingest_dataset as _ingest_dataset_pipeline,
@@ -6704,6 +6709,34 @@ def dispatch_command(cmd: str, payload: dict) -> dict:
             handle_ingest_dataset,
             name=str(payload.get("name", "verified-knowledge-corpus")),
         )
+        conn.close()
+        return res
+    if cmd == "curate_code_corpus":
+        conn = get_db()
+        res = curate_code_problem_corpus(
+            conn,
+            str(payload.get("user_id", "system")),
+            handle_ingest_dataset,
+            name=str(payload.get("name", "code-problem-solving-corpus")),
+            extra_tasks=payload.get("extra_tasks") if isinstance(payload.get("extra_tasks"), list) else None,
+        )
+        conn.close()
+        return res
+    if cmd == "run_code_training_experiment":
+        conn = get_db()
+        res = run_code_problem_experiment(
+            conn,
+            CHECKPOINT_DIR,
+            str(payload.get("user_id", "system")),
+            dataset_id=payload.get("dataset_id"),
+            epochs=int(payload.get("epochs", 3)),
+            seed=int(payload.get("seed", 42)),
+        )
+        conn.close()
+        return res
+    if cmd == "evaluate_code_model":
+        conn = get_db()
+        res = evaluate_code_problem_model(conn)
         conn.close()
         return res
     if cmd == "synthesize_curriculum":

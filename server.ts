@@ -1347,8 +1347,15 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
     }
     const result = await runPythonScript<{
       ok: boolean;
-      dataset?: { id: string; name: string; total_records: number; status?: string };
+      dataset?: { id: string; name: string; total_records: number; status?: string; source_format?: string };
       kg_proposal?: { id: string; status: string; triple_count: number } | null;
+      pii_redaction_summary?: {
+        email: number;
+        thai_id: number;
+        card_number: number;
+        phone: number;
+        total_redacted: number;
+      };
       error?: string;
     }>('zyrquen_core.py', {
       cmd: 'ingest_dataset',
@@ -1370,6 +1377,8 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
       res.status(400).json({ error: result.error || 'Dataset ingestion failed' });
       return;
     }
+    const piiSummary = result.pii_redaction_summary;
+    const totalPiiRedacted = Number(piiSummary?.total_redacted || 0);
     await runPythonScript('db_bridge.py', {
       action: 'log_audit',
       payload: {
@@ -1378,8 +1387,32 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
         action: 'DATASET_INGEST',
         target: String(result.dataset?.id || name),
         outcome: `${String(result.dataset?.status || 'READY')} (${result.dataset?.total_records ?? 0} records)`,
+        details: {
+          pii_redacted: Boolean(redactPii),
+          pii_redaction_summary: piiSummary || null,
+          source_format: result.dataset?.source_format || format,
+        },
       },
     });
+    if (Boolean(redactPii) && totalPiiRedacted > 0) {
+      await runPythonScript('db_bridge.py', {
+        action: 'log_audit',
+        payload: {
+          actor_id: req.user!.id,
+          actor_email: req.user!.email,
+          action: 'PII_REDACTION',
+          target: String(result.dataset?.id || name),
+          outcome: `REDACTED_${totalPiiRedacted}_PII_ITEMS`,
+          details: {
+            event_category: 'pii_redaction',
+            pii_redacted: true,
+            total_redacted: totalPiiRedacted,
+            categories: piiSummary,
+            dataset_name: name,
+          },
+        },
+      });
+    }
     res.status(201).json(result);
   });
 
@@ -1500,6 +1533,107 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
       },
     });
     res.status(201).json(result);
+  });
+
+  app.post('/api/developer/code-training/curate', requireAuth, async (req: AuthedRequest, res: Response) => {
+    const name =
+      String(req.body?.name || 'code-problem-solving-corpus').trim().slice(0, 80) ||
+      'code-problem-solving-corpus';
+    const extraTasks = Array.isArray(req.body?.extraTasks) ? req.body.extraTasks.slice(0, 25) : undefined;
+    const result = await runPythonScript<{
+      ok: boolean;
+      error?: string;
+      dataset?: Record<string, unknown>;
+      code_verification?: Record<string, unknown>;
+    }>('zyrquen_core.py', {
+      cmd: 'curate_code_corpus',
+      payload: {
+        user_id: req.user!.id,
+        name,
+        extra_tasks: extraTasks,
+      },
+    });
+    if (!result.ok) {
+      res.status(400).json({ error: result.error || 'Code corpus curation failed' });
+      return;
+    }
+    await runPythonScript('db_bridge.py', {
+      action: 'log_audit',
+      payload: {
+        actor_id: req.user!.id,
+        actor_email: req.user!.email,
+        action: 'CODE_CORPUS_CURATED',
+        target: String(result.dataset?.id || name),
+        outcome: `VERIFIED_${String(result.code_verification?.verified_tasks ?? 0)}`,
+      },
+    });
+    res.status(201).json(result);
+  });
+
+  app.post('/api/developer/code-training/experiment', requireAuth, async (req: AuthedRequest, res: Response) => {
+    const datasetId = req.body?.datasetId ? String(req.body.datasetId).trim().slice(0, 64) : null;
+    const rawEpochs = Number(req.body?.epochs ?? 3);
+    const epochs = Number.isFinite(rawEpochs) ? Math.max(2, Math.min(8, Math.round(rawEpochs))) : 3;
+    const rawSeed = Number(req.body?.seed ?? 42);
+    const seed = Number.isFinite(rawSeed) ? Math.round(rawSeed) : 42;
+    const result = await runPythonScript<{
+      ok: boolean;
+      error?: string;
+      experiment?: Record<string, unknown>;
+      improved?: boolean;
+      metrics?: Record<string, unknown>;
+      external_models_used?: boolean;
+    }>('zyrquen_core.py', {
+      cmd: 'run_code_training_experiment',
+      payload: {
+        user_id: req.user!.id,
+        dataset_id: datasetId,
+        epochs,
+        seed,
+      },
+    });
+    if (!result.ok) {
+      res.status(400).json({ error: result.error || 'Code training experiment failed' });
+      return;
+    }
+    await runPythonScript('db_bridge.py', {
+      action: 'log_audit',
+      payload: {
+        actor_id: req.user!.id,
+        actor_email: req.user!.email,
+        action: 'CODE_TRAINING_EXPERIMENT',
+        target: String(result.experiment?.id || 'code-experiment'),
+        outcome: String(result.experiment?.approval_status || 'RECORDED'),
+      },
+    });
+    res.status(201).json(result);
+  });
+
+  app.post('/api/developer/code-training/evaluate', requireAuth, async (req: AuthedRequest, res: Response) => {
+    const result = await runPythonScript<{
+      ok: boolean;
+      status?: string;
+      error?: string;
+      external_models_used?: boolean;
+    }>('zyrquen_core.py', {
+      cmd: 'evaluate_code_model',
+      payload: {},
+    });
+    if (!result.ok) {
+      res.status(400).json({ error: result.error || 'Code model evaluation failed' });
+      return;
+    }
+    await runPythonScript('db_bridge.py', {
+      action: 'log_audit',
+      payload: {
+        actor_id: req.user!.id,
+        actor_email: req.user!.email,
+        action: 'CODE_MODEL_EVALUATED',
+        target: 'native_code_probe',
+        outcome: String(result.status || 'UNKNOWN'),
+      },
+    });
+    res.status(200).json(result);
   });
 
   app.post('/api/developer/curriculum/synthesize', requireAuth, async (req: AuthedRequest, res: Response) => {
@@ -1890,6 +2024,119 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
     });
     res.json(data);
   });
+
+  app.get(
+    '/api/admin/audit-logs/export',
+    requireAuth,
+    requireAdmin,
+    async (req: AuthedRequest, res: Response) => {
+      const rawFocus = String(req.query.focus || 'pii_redaction').trim().toLowerCase();
+      const focus = rawFocus === 'all' ? 'all' : 'pii_redaction';
+      const rawFormat = String(req.query.format || 'json').trim().toLowerCase();
+      const format = rawFormat === 'csv' ? 'csv' : 'json';
+      const rawLimit = Number(req.query.limit ?? 1000);
+      const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(5000, Math.floor(rawLimit))) : 1000;
+
+      const exportData = await runPythonScript<{
+        ok: boolean;
+        error?: string;
+        schema: string;
+        focus: 'pii_redaction' | 'all';
+        format: 'json' | 'csv';
+        exported_at: string;
+        exported_by: { id: string; actor_email_masked: string };
+        total_scanned: number;
+        pii_redaction_event_count: number;
+        exported_count: number;
+        integrity_sha256: string;
+        sanitization_applied: boolean;
+        events: Array<{
+          id: string;
+          created_at: string;
+          actor_id: string;
+          actor_email_masked: string;
+          action: string;
+          target: string;
+          outcome: string;
+          is_pii_redaction_event: boolean;
+          pii_redaction_summary: Record<string, unknown> | null;
+          details: Record<string, unknown>;
+          export_redactions_applied: number;
+        }>;
+      }>('db_bridge.py', {
+        action: 'admin_export_audit_logs',
+        payload: {
+          actor_id: req.user!.id,
+          actor_email: req.user!.email,
+          focus,
+          format,
+          limit,
+        },
+      });
+
+      if (!exportData.ok) {
+        res.status(500).json({ error: exportData.error || 'Audit log export failed' });
+        return;
+      }
+
+      const safeStamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const filename = `zyrquen-audit-${focus}-${safeStamp}.${format}`;
+
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('X-Zyrquen-Export-Sha256', exportData.integrity_sha256);
+      res.setHeader('X-Zyrquen-Export-Count', String(exportData.exported_count));
+      res.setHeader('X-Zyrquen-Pii-Events', String(exportData.pii_redaction_event_count));
+
+      if (format === 'csv') {
+        const escapeSafeCsvCell = (val: unknown): string => {
+          const raw = val === null || val === undefined ? '' : String(val);
+          const flattened = raw.replace(/\r?\n/g, ' ');
+          const neutralized = /^[=+\-@\t\r]/.test(flattened) ? `'${flattened}` : flattened;
+          return /[",]/.test(neutralized) ? `"${neutralized.replace(/"/g, '""')}"` : neutralized;
+        };
+        const headers = [
+          'id',
+          'created_at',
+          'actor_id',
+          'actor_email_masked',
+          'action',
+          'target',
+          'outcome',
+          'is_pii_redaction_event',
+          'pii_redaction_summary',
+          'details_json',
+          'integrity_sha256',
+        ];
+        const rows = exportData.events.map((ev) =>
+          [
+            ev.id,
+            ev.created_at,
+            ev.actor_id,
+            ev.actor_email_masked,
+            ev.action,
+            ev.target,
+            ev.outcome,
+            ev.is_pii_redaction_event ? 'true' : 'false',
+            ev.pii_redaction_summary ? JSON.stringify(ev.pii_redaction_summary) : '',
+            JSON.stringify(ev.details || {}),
+            exportData.integrity_sha256,
+          ]
+            .map(escapeSafeCsvCell)
+            .join(',')
+        );
+        const csvBody = [headers.join(','), ...rows].join('\r\n');
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.status(200).send(csvBody);
+        return;
+      }
+
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.status(200).send(JSON.stringify(exportData, null, 2));
+    }
+  );
 
   app.patch(
     '/api/admin/users/:id/role',
