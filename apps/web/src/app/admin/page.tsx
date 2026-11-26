@@ -23,8 +23,101 @@ type AdminOverview = {
     runtime_status?: string;
     native_model_loaded?: boolean;
     inference_available?: boolean;
+    model_version?: string | null;
+    platform_version?: string | null;
+    artifact_origin?: string | null;
+    is_trained?: boolean;
   };
 };
+
+type ModelArtifactLineageNode = {
+  version: string;
+  parent?: string | null;
+  lifecycle_status: string;
+  created_at?: string | null;
+  dataset_version?: string | null;
+  dataset_sha256?: string | null;
+  checkpoint_sha256?: string | null;
+  tokenizer_sha256?: string | null;
+  eval_report_sha256?: string | null;
+  eval_passed?: boolean | null;
+  workflow_lineage?: Record<string, unknown>;
+};
+
+type ModelRegistryVersionRecord = {
+  version: string;
+  parent?: string | null;
+  lifecycle_status?: string;
+  created_at?: string;
+  frozen?: boolean;
+  checkpoint?: { path?: string; step?: number; sha256?: string } | null;
+  dataset?: { version?: string; path?: string; content_sha256?: string } | null;
+  tokenizer?: { path?: string; sha256?: string } | null;
+  evaluation_evidence?: {
+    eval_run_id?: string;
+    passed?: boolean;
+    zero_regression?: boolean;
+    report_sha256?: string;
+    evaluated_at?: string;
+  } | null;
+  workflow_lineage?: Record<string, unknown>;
+};
+
+type ModelLineageResponse = {
+  record: ModelRegistryVersionRecord;
+  lineage: {
+    version: string;
+    depth: number;
+    ancestors: ModelArtifactLineageNode[];
+  };
+  compatibility: {
+    version: string;
+    compatible: boolean;
+    checks: {
+      artifacts_sha256: boolean;
+      tokenizer_sha256: boolean;
+      architecture_config: boolean;
+    };
+    reasons: string[];
+  };
+};
+
+type ModelRegistrySummary = {
+  configured?: boolean;
+  active_version?: string | null;
+  versions?: Array<{ version: string; lifecycle_status?: string }>;
+};
+
+function shortDigest(value?: string | null): string {
+  if (!value) return "—";
+  if (value.length <= 16) return value;
+  return `${value.slice(0, 12)}…${value.slice(-6)}`;
+}
+
+function formatLineageTimestamp(value?: string | null): string {
+  if (!value) return "ไม่ระบุ";
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) return value;
+  return new Date(ms).toLocaleString("th-TH");
+}
+
+function lifecycleTone(status?: string | null): "good" | "warn" | "bad" | "info" | "neutral" {
+  switch (status) {
+    case "production":
+    case "verified":
+      return "good";
+    case "staging":
+    case "evaluated":
+      return "warn";
+    case "quarantined":
+    case "rejected":
+      return "bad";
+    case "registered":
+      return "info";
+    default:
+      return "neutral";
+  }
+}
 
 type AdminUser = {
   id: string;
@@ -49,6 +142,11 @@ export default function AdminPage() {
   const [users, setUsers] = useState<AdminUser[] | null>(null);
   const [auditLogs, setAuditLogs] = useState<AuditEntry[] | null>(null);
   const [error, setError] = useState("");
+  const [lineageOpen, setLineageOpen] = useState(false);
+  const [lineageLoading, setLineageLoading] = useState(false);
+  const [lineageError, setLineageError] = useState("");
+  const [lineageData, setLineageData] = useState<ModelLineageResponse | null>(null);
+  const [resolvedModelVersion, setResolvedModelVersion] = useState<string | null>(null);
 
   const fetchAdminData = useCallback(async (isCancelled?: () => boolean) => {
     try {
@@ -105,6 +203,63 @@ export default function AdminPage() {
     setError("");
     await fetchAdminData();
   }, [fetchAdminData]);
+
+  const loadModelLineage = useCallback(async () => {
+    setLineageLoading(true);
+    setLineageError("");
+    try {
+      let targetVersion = overview?.native_ai.model_version?.trim() || null;
+      if (!targetVersion) {
+        const registry = await apiRequest<ModelRegistrySummary>("v1/models/registry");
+        targetVersion =
+          registry.active_version?.trim() ||
+          registry.versions?.find((item) => item.lifecycle_status === "production")?.version ||
+          registry.versions?.[0]?.version ||
+          null;
+      }
+      setResolvedModelVersion(targetVersion);
+      if (!targetVersion) {
+        setLineageData(null);
+        return;
+      }
+      const data = await apiRequest<ModelLineageResponse>(
+        `v1/models/registry/${encodeURIComponent(targetVersion)}/lineage`,
+      );
+      setLineageData(data);
+    } catch (reason) {
+      setLineageData(null);
+      setLineageError(
+        reason instanceof Error
+          ? reason.message
+          : "ไม่สามารถโหลดประวัติ Training Artifact Lineage ได้",
+      );
+    } finally {
+      setLineageLoading(false);
+    }
+  }, [overview?.native_ai.model_version]);
+
+  const handleToggleLineage = useCallback(() => {
+    setLineageOpen((prev) => {
+      const next = !prev;
+      if (next) {
+        void loadModelLineage();
+      }
+      return next;
+    });
+  }, [loadModelLineage]);
+
+  useEffect(() => {
+    if (!lineageOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setLineageOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [lineageOpen]);
 
   useEffect(() => {
     let active = true;
@@ -254,9 +409,21 @@ export default function AdminPage() {
                   <div className="eyebrow">รันไทม์โมเดล</div>
                   <h2>สถานะ Native Model</h2>
                 </div>
-                <span className="metric-icon metric-icon-cyan">
-                  <Icon name="cpu" />
-                </span>
+                <div className="panel-heading-actions">
+                  <button
+                    aria-expanded={lineageOpen}
+                    aria-haspopup="dialog"
+                    className="button button-secondary button-compact"
+                    onClick={handleToggleLineage}
+                    type="button"
+                  >
+                    <Icon name="history" size={15} />
+                    View Lineage
+                  </button>
+                  <span className="metric-icon metric-icon-cyan">
+                    <Icon name="cpu" />
+                  </span>
+                </div>
               </div>
               {overview ? (
                 <div className="readiness-list">
@@ -324,6 +491,20 @@ export default function AdminPage() {
                           : "ไม่พร้อมใช้งาน"}
                     </StatusBadge>
                   </div>
+                  {overview.native_ai.model_version ? (
+                    <div className="readiness-row">
+                      <span className="readiness-symbol">
+                        <Icon name="file-check" size={16} />
+                      </span>
+                      <div className="readiness-copy">
+                        <strong>Loaded Model Version</strong>
+                        <small>รุ่นโมเดลที่โหลดหรืออ้างอิงในระบบ</small>
+                      </div>
+                      <StatusBadge tone="info">
+                        {overview.native_ai.model_version}
+                      </StatusBadge>
+                    </div>
+                  ) : null}
                 </div>
               ) : (
                 <div className="unavailable-block">
@@ -479,6 +660,227 @@ export default function AdminPage() {
           </div>
         </>
       )}
+
+      {lineageOpen ? (
+        <div
+          className="modal-backdrop"
+          onClick={() => setLineageOpen(false)}
+          role="presentation"
+        >
+          <div
+            aria-labelledby="native-lineage-modal-title"
+            aria-modal="true"
+            className="modal-dialog panel"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+          >
+            <div className="modal-header">
+              <div>
+                <div className="eyebrow">
+                  <Icon name="history" size={14} />
+                  <span>MODEL ARTIFACT HISTORY</span>
+                </div>
+                <h2 id="native-lineage-modal-title">
+                  Training Artifact Lineage
+                  {resolvedModelVersion || overview?.native_ai.model_version
+                    ? ` · ${resolvedModelVersion ?? overview?.native_ai.model_version}`
+                    : ""}
+                </h2>
+              </div>
+              <button
+                aria-label="ปิดหน้าต่าง Lineage"
+                className="icon-button"
+                onClick={() => setLineageOpen(false)}
+                type="button"
+              >
+                <Icon name="close" size={18} />
+              </button>
+            </div>
+
+            <div className="modal-body">
+              {lineageLoading ? (
+                <div className="unavailable-block" role="status">
+                  <strong>กำลังโหลดประวัติ Training Artifacts...</strong>
+                  <p>กำลังตรวจสอบข้อมูลจาก Model Registry และสายประวัติ Checkpoint</p>
+                </div>
+              ) : lineageError ? (
+                <div className="unavailable-block">
+                  <strong>ไม่สามารถโหลดประวัติ Lineage ได้</strong>
+                  <p className="form-alert form-alert-error" role="alert">
+                    <Icon name="close" size={15} />
+                    <span>{lineageError}</span>
+                  </p>
+                </div>
+              ) : !lineageData ? (
+                <div className="unavailable-block">
+                  <strong>ยังไม่มีข้อมูลโมเดลที่โหลดอยู่ในขณะนี้</strong>
+                  <p>
+                    {overview?.native_ai.native_model_loaded === false
+                      ? "Runtime รายงานว่ายังไม่ได้โหลด Native Model และไม่พบ Active Version ใน Registry"
+                      : "ไม่พบข้อมูล Training Artifact สำหรับโมเดลปัจจุบัน"}
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div className="lineage-summary-strip">
+                    <div className="lineage-badges">
+                      <StatusBadge tone={lifecycleTone(lineageData.record.lifecycle_status)}>
+                        {lineageData.record.lifecycle_status ?? "registered"}
+                      </StatusBadge>
+                      <StatusBadge
+                        tone={lineageData.compatibility.compatible ? "good" : "bad"}
+                      >
+                        {lineageData.compatibility.compatible
+                          ? "Compatibility PASS"
+                          : "Compatibility FAIL"}
+                      </StatusBadge>
+                      <StatusBadge tone="info">
+                        Depth {lineageData.lineage.depth}
+                      </StatusBadge>
+                    </div>
+                    {lineageData.compatibility.reasons.length > 0 ? (
+                      <ul className="lineage-reasons">
+                        {lineageData.compatibility.reasons.map((reason) => (
+                          <li key={reason}>{reason}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
+
+                  <div className="lineage-artifact-grid tabular-nums">
+                    <div className="lineage-artifact-item">
+                      <span>Checkpoint</span>
+                      <strong>
+                        {lineageData.record.checkpoint?.path ??
+                          (lineageData.record.checkpoint?.step !== undefined
+                            ? `step ${lineageData.record.checkpoint.step}`
+                            : "—")}
+                      </strong>
+                      <code>{shortDigest(lineageData.record.checkpoint?.sha256)}</code>
+                    </div>
+                    <div className="lineage-artifact-item">
+                      <span>Dataset</span>
+                      <strong>{lineageData.record.dataset?.version ?? "—"}</strong>
+                      <code>{shortDigest(lineageData.record.dataset?.content_sha256)}</code>
+                    </div>
+                    <div className="lineage-artifact-item">
+                      <span>Tokenizer</span>
+                      <strong>{lineageData.record.tokenizer?.path ?? "—"}</strong>
+                      <code>{shortDigest(lineageData.record.tokenizer?.sha256)}</code>
+                    </div>
+                    <div className="lineage-artifact-item">
+                      <span>Evaluation Evidence</span>
+                      <strong>
+                        {lineageData.record.evaluation_evidence
+                          ? lineageData.record.evaluation_evidence.passed
+                            ? "PASS"
+                            : "FAIL"
+                          : "NOT RUN"}
+                      </strong>
+                      <code>
+                        {shortDigest(lineageData.record.evaluation_evidence?.report_sha256)}
+                      </code>
+                    </div>
+                  </div>
+
+                  <div className="lineage-chain-section">
+                    <div className="lineage-section-title">
+                      <strong>Training Artifact History ({lineageData.lineage.ancestors.length})</strong>
+                      <small>เรียงจากรุ่นที่โหลดปัจจุบันย้อนกลับไปยัง Baseline</small>
+                    </div>
+                    <div className="lineage-chain">
+                      {lineageData.lineage.ancestors.map((node, index) => {
+                        const workflowEntries = Object.entries(
+                          node.workflow_lineage ?? {},
+                        ).filter(([, val]) => val !== null && val !== undefined && val !== "");
+                        return (
+                          <div className="lineage-node-card" key={`${node.version}-${index}`}>
+                            <div className="lineage-node-head">
+                              <div className="lineage-node-title">
+                                <strong>{node.version}</strong>
+                                {index === 0 ? (
+                                  <StatusBadge tone="info">Current</StatusBadge>
+                                ) : null}
+                                {node.parent ? (
+                                  <span className="lineage-parent-tag">
+                                    parent: <code>{node.parent}</code>
+                                  </span>
+                                ) : (
+                                  <span className="lineage-parent-tag">root baseline</span>
+                                )}
+                              </div>
+                              <StatusBadge tone={lifecycleTone(node.lifecycle_status)}>
+                                {node.lifecycle_status}
+                              </StatusBadge>
+                            </div>
+
+                            <div className="lineage-meta-grid tabular-nums">
+                              <div>
+                                <span>Dataset</span>
+                                <code>
+                                  {node.dataset_version ?? "—"}{" "}
+                                  {node.dataset_sha256 ? `(${shortDigest(node.dataset_sha256)})` : ""}
+                                </code>
+                              </div>
+                              <div>
+                                <span>Checkpoint SHA-256</span>
+                                <code>{shortDigest(node.checkpoint_sha256)}</code>
+                              </div>
+                              <div>
+                                <span>Tokenizer SHA-256</span>
+                                <code>{shortDigest(node.tokenizer_sha256)}</code>
+                              </div>
+                              <div>
+                                <span>Evaluation</span>
+                                <code>
+                                  {node.eval_passed === null || node.eval_passed === undefined
+                                    ? "NOT RUN"
+                                    : node.eval_passed
+                                      ? "PASS"
+                                      : "FAIL"}
+                                  {node.eval_report_sha256
+                                    ? ` (${shortDigest(node.eval_report_sha256)})`
+                                    : ""}
+                                </code>
+                              </div>
+                              {node.created_at ? (
+                                <div>
+                                  <span>Created</span>
+                                  <code>{formatLineageTimestamp(node.created_at)}</code>
+                                </div>
+                              ) : null}
+                              {workflowEntries.map(([key, val]) => (
+                                <div key={key}>
+                                  <span>{key}</span>
+                                  <code>{String(val)}</code>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="modal-footer">
+              <Link className="text-link" href="/developer/console">
+                เปิด Model Registry &amp; Workflows
+                <Icon name="arrow-right" size={15} />
+              </Link>
+              <button
+                className="button button-secondary"
+                onClick={() => setLineageOpen(false)}
+                type="button"
+              >
+                ปิด
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
