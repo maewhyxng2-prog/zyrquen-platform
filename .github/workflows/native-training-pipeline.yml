@@ -62,6 +62,15 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
+      - name: Validate Docker Compose application and training profiles
+        env:
+          POSTGRES_USER: zyrquen_ci
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+          POSTGRES_DB: zyrquen_ci
+          JWT_SECRET_KEY: ci-only-placeholder-secret
+          ZYRQUEN_INSTALL_TORCH: "0"
+        run: docker compose --profile training config --quiet
+
       - name: Build reproducible Native Training Docker image
         run: |
           INSTALL_TORCH=0
