@@ -1678,6 +1678,58 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
     res.status(200).json(result);
   });
 
+  app.post('/api/developer/real-only-training', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+    const dataPath = String(req.body?.dataPath || '').trim().slice(0, 300);
+    if (!dataPath) {
+      res.status(400).json({ ok: false, status: 'BLOCKED', error: 'STOP: dataPath is required for real-only JSONL training.' });
+      return;
+    }
+    const rawEpochs = Number(req.body?.epochs ?? 5);
+    const epochs = Number.isFinite(rawEpochs) ? Math.max(1, Math.min(200, Math.round(rawEpochs))) : 5;
+    const rawLr = Number(req.body?.lr ?? 0.05);
+    const lr = Number.isFinite(rawLr) && rawLr > 0 && rawLr <= 1.0 ? rawLr : 0.05;
+    const rawSeed = Number(req.body?.seed ?? 42);
+    const seed = Number.isFinite(rawSeed) ? Math.round(rawSeed) : 42;
+    const rawMinSamples = Number(req.body?.minSamples ?? 30);
+    const minSamples = Number.isFinite(rawMinSamples) ? Math.max(30, Math.min(10000, Math.round(rawMinSamples))) : 30;
+
+    const result = await runPythonScript<{
+      ok: boolean;
+      status?: string;
+      error?: string;
+      run_id?: string;
+      approval?: string;
+      external_models_used?: boolean;
+    }>('zyrquen_core.py', {
+      cmd: 'run_real_only_jsonl_training',
+      payload: {
+        user_id: req.user!.id,
+        data_path: dataPath,
+        epochs,
+        lr,
+        seed,
+        min_samples: minSamples,
+        sandbox_audit: Boolean(req.body?.sandboxAudit),
+        require_sandbox_pass: Boolean(req.body?.requireSandboxPass),
+      },
+    });
+    if (!result.ok) {
+      res.status(400).json(result);
+      return;
+    }
+    await runPythonScript('db_bridge.py', {
+      action: 'log_audit',
+      payload: {
+        actor_id: req.user!.id,
+        actor_email: req.user!.email,
+        action: 'REAL_ONLY_JSONL_TRAINING',
+        target: String(result.run_id || 'real-only-run'),
+        outcome: String(result.approval || result.status || 'RECORDED'),
+      },
+    });
+    res.status(201).json(result);
+  });
+
   app.post('/api/developer/curriculum/synthesize', requireAuth, async (req: AuthedRequest, res: Response) => {
     const rawLimit = Number(req.body?.limit ?? 50);
     const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(200, Math.round(rawLimit))) : 50;

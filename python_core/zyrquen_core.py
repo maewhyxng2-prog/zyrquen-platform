@@ -60,6 +60,7 @@ from code_problem_training import (
     evaluate_code_problem_model,
     run_code_problem_experiment,
 )
+from real_only_trainer import record_real_only_training_in_db
 from dataset_ingestion import (
     decide_kg_proposal,
     ingest_dataset as _ingest_dataset_pipeline,
@@ -6737,6 +6738,48 @@ def dispatch_command(cmd: str, payload: dict) -> dict:
     if cmd == "evaluate_code_model":
         conn = get_db()
         res = evaluate_code_problem_model(conn)
+        conn.close()
+        return res
+    if cmd == "run_real_only_jsonl_training":
+        raw_data_path = str(payload.get("data_path") or "").strip()
+        if not raw_data_path:
+            return {
+                "ok": False,
+                "status": "BLOCKED",
+                "reason": "MISSING_DATA_PATH",
+                "error": "STOP: กรุณาระบุพาธไฟล์ JSONL ข้อมูลจริง (data_path)",
+                "external_models_used": False,
+                "synthetic_data_used": False,
+            }
+        cand_path = Path(raw_data_path)
+        if not cand_path.is_absolute():
+            cand_path = (DATA_DIR / cand_path).resolve()
+        else:
+            cand_path = cand_path.resolve()
+        data_root = DATA_DIR.resolve()
+        base_root = BASE_DIR.resolve()
+        if not (cand_path.is_relative_to(data_root) or cand_path.is_relative_to(base_root)):
+            return {
+                "ok": False,
+                "status": "BLOCKED",
+                "reason": "PATH_OUTSIDE_WORKSPACE",
+                "error": "STOP: พาธไฟล์ข้อมูลต้องอยู่ภายในพื้นที่ข้อมูลของระบบเท่านั้น",
+                "external_models_used": False,
+                "synthetic_data_used": False,
+            }
+        conn = get_db()
+        res = record_real_only_training_in_db(
+            conn,
+            checkpoint_dir=CHECKPOINT_DIR,
+            user_id=str(payload.get("user_id", "system")),
+            data_path=cand_path,
+            epochs=int(payload.get("epochs", 5)),
+            lr=float(payload.get("lr", 0.05)),
+            seed=int(payload.get("seed", 42)),
+            min_samples=int(payload.get("min_samples", 30)),
+            run_sandbox_audit=bool(payload.get("sandbox_audit", False)),
+            require_sandbox_pass=bool(payload.get("require_sandbox_pass", False)),
+        )
         conn.close()
         return res
     if cmd == "synthesize_curriculum":

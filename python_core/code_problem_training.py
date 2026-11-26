@@ -34,8 +34,11 @@ bug diagnosis, and verified patch patterns:
 from __future__ import annotations
 
 import ast
+import copy
 import hashlib
 import json
+import math
+import random
 import sqlite3
 import sys
 import time
@@ -43,7 +46,13 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from native_neural import NativeTransformerLM, train_neural_model
+from continual_learning import _add_l2_anchor_grads, _mean_parameter_drift
+from native_neural import (
+    NativeTransformerLM,
+    _adamw_step,
+    _grad_l2_norm,
+    train_neural_model,
+)
 from native_tokenizer import NativeBPETokenizer
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -447,6 +456,140 @@ def _score_contrastive_code_probe(
     }
 
 
+def _continue_neural_training_from_checkpoint(
+    model: NativeTransformerLM,
+    tokenizer: NativeBPETokenizer,
+    train_lines: list[str],
+    val_lines: list[str],
+    test_lines: list[str],
+    *,
+    epochs: int,
+    lr: float = 0.014,
+    grad_accum_steps: int = 2,
+    max_grad_norm: float = 1.0,
+    anchor_l2_lambda: float = 0.01,
+    seed: int = 42,
+) -> dict[str, Any]:
+    """Continue updating weights of an existing approved NativeTransformerLM checkpoint."""
+    anchor_params = copy.deepcopy(model.params)
+    max_seq_len = int(model.config["max_seq_len"])
+
+    train_seqs = [tokenizer.encode(ln, add_bos=True, add_eos=True) for ln in train_lines if ln.strip()]
+    val_seqs = [tokenizer.encode(ln, add_bos=True, add_eos=True) for ln in val_lines if ln.strip()]
+    test_seqs = [tokenizer.encode(ln, add_bos=True, add_eos=True) for ln in test_lines if ln.strip()]
+
+    init_train_eval = model.evaluate_sequences(train_seqs)
+    init_val_eval = model.evaluate_sequences(val_seqs) if val_seqs else init_train_eval
+    init_test_eval = model.evaluate_sequences(test_seqs) if test_seqs else init_val_eval
+
+    m_state = model.zero_grads()
+    v_state = model.zero_grads()
+    rng = random.Random(seed)
+    opt_step = 0
+    total_opt_steps = max(1, (len(train_seqs) * epochs + grad_accum_steps - 1) // grad_accum_steps)
+    accum_grads = model.zero_grads()
+    accum_count = 0
+    history: list[dict[str, Any]] = []
+
+    for ep in range(1, epochs + 1):
+        order = list(range(len(train_seqs)))
+        rng.shuffle(order)
+        ep_loss = 0.0
+        ep_items = 0
+
+        for idx in order:
+            seq = train_seqs[idx]
+            if len(seq) < 2:
+                continue
+            inp = seq[:-1][:max_seq_len]
+            tgt = seq[1 : len(inp) + 1]
+            loss_val, _, accum_grads = model.forward_loss_and_backward(inp, tgt, grads=accum_grads)
+            if math.isnan(loss_val) or math.isinf(loss_val):
+                return {"ok": False, "error": "Training halted: NaN/Inf loss detected"}
+            ep_loss += loss_val
+            ep_items += 1
+            accum_count += 1
+
+            if accum_count >= grad_accum_steps:
+                opt_step += 1
+                g_scale = 1.0 / accum_count
+                _add_l2_anchor_grads(model.params, anchor_params, accum_grads, anchor_l2_lambda)
+                gnorm = _grad_l2_norm(accum_grads, g_scale)
+                clip_scale = min(1.0, max_grad_norm / gnorm) if gnorm > max_grad_norm and gnorm > 0 else 1.0
+                warmup = max(1, int(0.1 * total_opt_steps))
+                if opt_step <= warmup:
+                    cur_lr = lr * (opt_step / warmup)
+                else:
+                    prog = min(1.0, (opt_step - warmup) / max(1, total_opt_steps - warmup))
+                    cur_lr = lr * (0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * prog)))
+                _adamw_step(
+                    model.params,
+                    accum_grads,
+                    m_state,
+                    v_state,
+                    lr=cur_lr,
+                    beta1=0.9,
+                    beta2=0.98,
+                    eps=1e-8,
+                    weight_decay=0.01,
+                    step_num=opt_step,
+                    grad_scale=g_scale,
+                    clip_scale=clip_scale,
+                )
+                accum_grads = model.zero_grads()
+                accum_count = 0
+
+        if accum_count > 0:
+            opt_step += 1
+            g_scale = 1.0 / accum_count
+            _add_l2_anchor_grads(model.params, anchor_params, accum_grads, anchor_l2_lambda)
+            gnorm = _grad_l2_norm(accum_grads, g_scale)
+            clip_scale = min(1.0, max_grad_norm / gnorm) if gnorm > max_grad_norm and gnorm > 0 else 1.0
+            _adamw_step(
+                model.params,
+                accum_grads,
+                m_state,
+                v_state,
+                lr=lr * 0.2,
+                beta1=0.9,
+                beta2=0.98,
+                eps=1e-8,
+                weight_decay=0.01,
+                step_num=opt_step,
+                grad_scale=g_scale,
+                clip_scale=clip_scale,
+            )
+            accum_grads = model.zero_grads()
+            accum_count = 0
+
+        history.append({"epoch": ep, "train_loss": round(ep_loss / max(1, ep_items), 4)})
+
+    final_train_eval = model.evaluate_sequences(train_seqs)
+    final_val_eval = model.evaluate_sequences(val_seqs) if val_seqs else final_train_eval
+    final_test_eval = model.evaluate_sequences(test_seqs) if test_seqs else final_val_eval
+    drift_rms = _mean_parameter_drift(model.params, anchor_params)
+
+    return {
+        "ok": True,
+        "model": model,
+        "tokenizer": tokenizer,
+        "tokenizer_metrics": tokenizer.evaluate_corpus(train_lines),
+        "param_count": model.parameter_count(),
+        "param_drift_rms": drift_rms,
+        "initial_train_loss": init_train_eval["loss"],
+        "initial_val_loss": init_val_eval["loss"],
+        "initial_test_loss": init_test_eval["loss"],
+        "initial_test_perplexity": init_test_eval["perplexity"],
+        "final_train_loss": final_train_eval["loss"],
+        "final_val_loss": final_val_eval["loss"],
+        "val_perplexity": final_val_eval["perplexity"],
+        "test_loss": final_test_eval["loss"],
+        "test_perplexity": final_test_eval["perplexity"],
+        "test_accuracy": final_test_eval["accuracy"],
+        "history": history,
+    }
+
+
 def run_code_problem_experiment(
     conn: sqlite3.Connection,
     checkpoint_dir: Path,
@@ -455,11 +598,12 @@ def run_code_problem_experiment(
     dataset_id: str | None = None,
     epochs: int = 3,
     seed: int = 42,
+    continue_from_latest: bool = True,
 ) -> dict[str, Any]:
     """
-    Train a random-initialized `NativeTransformerLM` on code understanding &
-    debugging splits, evaluate pre- vs post-training loss & contrastive bug-vs-fix
-    generalization on unseen problem families, and stage behind Approval Gate.
+    Train or continue training `NativeTransformerLM` on AST/Sandbox-verified code
+    understanding & debugging splits, evaluate pre- vs post-training loss & contrastive
+    bug-vs-fix generalization on unseen problem families, and stage behind Approval Gate.
     """
     if dataset_id:
         ds = conn.execute("SELECT * FROM datasets WHERE id=?", (dataset_id,)).fetchone()
@@ -492,34 +636,69 @@ def run_code_problem_experiment(
     unseen_tasks = [t for t in _CODE_PROBLEM_TASKS if t["split"] == "test"]
     task_checks = [_verify_task_execution(t) for t in unseen_tasks]
 
-    # Measure random-init pre-training contrastive baseline with the same tokenizer & seed
-    pre_tok = NativeBPETokenizer.train(train_lines, target_vocab_size=310, min_pair_freq=2, version=1)
-    pre_model = NativeTransformerLM(
-        vocab_size=pre_tok.vocab_size,
-        d_model=16,
-        n_heads=2,
-        n_layers=1,
-        d_ff=32,
-        max_seq_len=32,
-        seed=seed,
-    )
-    pre_contrastive = _score_contrastive_code_probe(pre_model, pre_tok, unseen_tasks)
+    prev_neural = conn.execute(
+        "SELECT id, version, val_loss, perplexity, weights_path FROM checkpoints WHERE eval_status LIKE 'NEURAL%' ORDER BY version DESC LIMIT 1"
+    ).fetchone()
+    prev_val_loss = float(prev_neural["val_loss"]) if prev_neural else None
 
-    train_res = train_neural_model(
-        train_lines,
-        val_lines,
-        test_lines,
-        d_model=16,
-        n_heads=2,
-        n_layers=1,
-        d_ff=32,
-        max_seq_len=32,
-        epochs=safe_epochs,
-        lr=0.022,
-        grad_accum_steps=2,
-        target_vocab_size=310,
-        seed=seed,
-    )
+    continued_from_version: int | None = None
+    resumed_model: NativeTransformerLM | None = None
+    resumed_tok: NativeBPETokenizer | None = None
+    if continue_from_latest and prev_neural and prev_neural["weights_path"]:
+        wpath = Path(str(prev_neural["weights_path"]))
+        if wpath.exists():
+            try:
+                loaded_model, loaded_tok, _ = NativeTransformerLM.load_checkpoint(wpath)
+                resumed_model = loaded_model
+                resumed_tok = loaded_tok
+                continued_from_version = int(prev_neural["version"])
+            except Exception:
+                resumed_model = None
+                resumed_tok = None
+
+    if resumed_model is not None and resumed_tok is not None:
+        pre_contrastive = _score_contrastive_code_probe(resumed_model, resumed_tok, unseen_tasks)
+        train_res = _continue_neural_training_from_checkpoint(
+            resumed_model,
+            resumed_tok,
+            train_lines,
+            val_lines,
+            test_lines,
+            epochs=safe_epochs,
+            lr=0.014,
+            grad_accum_steps=2,
+            anchor_l2_lambda=0.01,
+            seed=seed,
+        )
+    else:
+        # Measure random-init pre-training contrastive baseline with the same tokenizer & seed
+        pre_tok = NativeBPETokenizer.train(train_lines, target_vocab_size=310, min_pair_freq=2, version=1)
+        pre_model = NativeTransformerLM(
+            vocab_size=pre_tok.vocab_size,
+            d_model=16,
+            n_heads=2,
+            n_layers=1,
+            d_ff=32,
+            max_seq_len=32,
+            seed=seed,
+        )
+        pre_contrastive = _score_contrastive_code_probe(pre_model, pre_tok, unseen_tasks)
+        train_res = train_neural_model(
+            train_lines,
+            val_lines,
+            test_lines,
+            d_model=16,
+            n_heads=2,
+            n_layers=1,
+            d_ff=32,
+            max_seq_len=32,
+            epochs=safe_epochs,
+            lr=0.022,
+            grad_accum_steps=2,
+            target_vocab_size=310,
+            seed=seed,
+        )
+
     if not train_res.get("ok"):
         return train_res
 
@@ -531,25 +710,31 @@ def run_code_problem_experiment(
     final_train = float(train_res["final_train_loss"])
     init_val = float(train_res["initial_val_loss"])
     final_val = float(train_res["final_val_loss"])
+    init_test = float(train_res["initial_test_loss"])
+    final_test = float(train_res["test_loss"])
 
-    prev_neural = conn.execute(
-        "SELECT id, version, val_loss, perplexity FROM checkpoints WHERE eval_status LIKE 'NEURAL%' ORDER BY version DESC LIMIT 1"
-    ).fetchone()
-    prev_val_loss = float(prev_neural["val_loss"]) if prev_neural else None
-    regression_detected = bool(prev_val_loss is not None and final_val > (prev_val_loss * 1.15))
+    regression_detected = bool(
+        (prev_val_loss is not None and final_val > (prev_val_loss * 1.15))
+        or (continued_from_version is not None and final_test > (init_test * 1.15))
+    )
     improved = (final_train < init_train) and (final_val < init_val) and not regression_detected
 
     exp_id = str(uuid.uuid4())
     cand_path = checkpoint_dir / f"exp_code_{exp_id[:8]}_neural.json.gz"
     metrics_payload = {
         "training_focus": "code_understanding_and_problem_solving",
+        "training_mode": "checkpoint_continuation" if continued_from_version is not None else "random_init",
+        "continued_from_checkpoint_version": continued_from_version,
         "param_count": train_res["param_count"],
+        "param_drift_rms": train_res.get("param_drift_rms"),
         "initial_train_loss": init_train,
         "final_train_loss": final_train,
         "initial_val_loss": init_val,
         "final_val_loss": final_val,
+        "initial_test_loss": init_test,
+        "initial_test_perplexity": train_res["initial_test_perplexity"],
         "val_perplexity": train_res["val_perplexity"],
-        "test_loss": train_res["test_loss"],
+        "test_loss": final_test,
         "test_perplexity": train_res["test_perplexity"],
         "test_accuracy": train_res["test_accuracy"],
         "pre_contrastive_accuracy": pre_contrastive["accuracy"],
@@ -565,26 +750,37 @@ def run_code_problem_experiment(
     }
     train_res["model"].save_checkpoint(cand_path, train_res["tokenizer"], metrics=metrics_payload)
 
+    mode_desc = (
+        f"ฝึกต่อจาก Checkpoint v{continued_from_version}"
+        if continued_from_version is not None
+        else "ฝึกจาก Random Init"
+    )
     hypothesis = (
-        f"ฝึก Native Transformer ด้านความเข้าใจโค้ดและแก้ปัญหา ({train_res['param_count']} params, "
+        f"{mode_desc} Native Transformer ด้านความเข้าใจโค้ดและแก้ปัญหา ({train_res['param_count']} params, "
         f"max_seq_len=32) บนชุดข้อมูล '{ds['name']}' {safe_epochs} epochs"
     )
     baseline_metrics = {
         "initial_train_loss": init_train,
         "initial_val_loss": init_val,
+        "initial_test_loss": init_test,
+        "initial_test_perplexity": train_res["initial_test_perplexity"],
         "pre_contrastive_accuracy": pre_contrastive["accuracy"],
         "prev_checkpoint_version": prev_neural["version"] if prev_neural else None,
+        "continued_from_checkpoint_version": continued_from_version,
         "prev_val_loss": prev_val_loss,
     }
     candidate_metrics = {
         "training_focus": "code_understanding_and_problem_solving",
+        "training_mode": metrics_payload["training_mode"],
+        "continued_from_checkpoint_version": continued_from_version,
         "final_train_loss": final_train,
         "final_val_loss": final_val,
         "val_perplexity": train_res["val_perplexity"],
-        "test_loss": train_res["test_loss"],
+        "test_loss": final_test,
         "test_perplexity": train_res["test_perplexity"],
         "test_accuracy": train_res["test_accuracy"],
         "post_contrastive_accuracy": post_contrastive["accuracy"],
+        "param_drift_rms": train_res.get("param_drift_rms"),
         "regression_detected": regression_detected,
         "param_count": train_res["param_count"],
         "vocab_size": train_res["tokenizer"].vocab_size,

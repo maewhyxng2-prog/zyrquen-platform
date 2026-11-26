@@ -1423,6 +1423,7 @@ export function runFallbackCoreCommand(cmd: string, payload: AnyRecord = {}): An
     cmd === 'curate_code_corpus' ||
     cmd === 'run_experiment' ||
     cmd === 'run_code_training_experiment' ||
+    cmd === 'run_real_only_jsonl_training' ||
     cmd === 'run_continual_round' ||
     cmd === 'decide_experiment' ||
     cmd === 'evaluate_code_model' ||

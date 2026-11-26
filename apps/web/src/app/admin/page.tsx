@@ -204,11 +204,13 @@ export default function AdminPage() {
     await fetchAdminData();
   }, [fetchAdminData]);
 
+  const overviewModelVersion = overview?.native_ai.model_version?.trim() || null;
+
   const loadModelLineage = useCallback(async () => {
     setLineageLoading(true);
     setLineageError("");
     try {
-      let targetVersion = overview?.native_ai.model_version?.trim() || null;
+      let targetVersion = overviewModelVersion;
       if (!targetVersion) {
         const registry = await apiRequest<ModelRegistrySummary>("v1/models/registry");
         targetVersion =
@@ -236,7 +238,7 @@ export default function AdminPage() {
     } finally {
       setLineageLoading(false);
     }
-  }, [overview?.native_ai.model_version]);
+  }, [overviewModelVersion]);
 
   const handleToggleLineage = useCallback(() => {
     setLineageOpen((prev) => {
