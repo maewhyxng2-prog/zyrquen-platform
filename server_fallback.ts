@@ -472,14 +472,9 @@ function computeReadinessSummary() {
   ).length;
   const verifiedTriples = store.triples.filter((t) => t.confidence >= 0.8).length;
 
-  let gateStatus = 'VERIFIED';
-  if (cleanDatasets === 0) gateStatus = 'BLOCKED';
-  else if (baselineEvaluations === 0) gateStatus = 'BLOCKED_NO_BASELINE';
-  else if (pendingExperiments.length > 0 || pendingTrainingRuns > 0) gateStatus = 'AWAITING_APPROVAL';
-  else if (store.checkpoints.length === 0) gateStatus = 'READY_FOR_TRAINING_GATE';
-
   return {
-    gate_status: gateStatus,
+    gate_status: 'BLOCKED',
+    blocked_reason: 'NativeTransformerLM and Python Native Core require Python 3.11+ runtime (unavailable in Node.js-only container).',
     datasets_total: store.datasets.length,
     clean_datasets: cleanDatasets,
     baseline_evaluations: baselineEvaluations,
@@ -511,11 +506,12 @@ function handleInferFallback(payload: AnyRecord) {
     return {
       ok: true,
       status: 'VERIFIED',
-      content: 'สวัสดีครับ ผมคือ ZYRQUEN Ω∞ Native Core พร้อมช่วยคำนวณเชิงสัญลักษณ์ ค้นหากราฟความรู้ และวางแผนงานเป็นขั้นตอนครับ',
+      content:
+        'สวัสดีครับ ขณะนี้ระบบทำงานบน Node.js Runtime (ไม่มี Python Native Core ในคอนเทนเนอร์นี้) รองรับการคำนวณ AST คณิตศาสตร์และการค้นหากราฟความรู้ครับ',
       trace: {
         mode,
         model_version: modelVersion,
-        engine_path: ['native_greeting_router'],
+        engine_path: ['node_greeting_router'],
         latency_ms: latency,
         external_models_used: false,
         task_timings: [{ order: 1, task: 'greeting_intent', duration_ms: latency, matched: true, status: 'VERIFIED' }],
@@ -553,30 +549,38 @@ function handleInferFallback(payload: AnyRecord) {
 
   if (mode === 'plan') {
     const latency = Math.max(0.5, Math.round((performance.now() - started) * 100) / 100);
-    const steps = [
-      { step_id: 'step-1', title: 'วิเคราะห์ขอบเขตเป้าหมายและข้อจำกัด', status: 'VERIFIED', detail: 'ตรวจสอบบริบทงานในระบบ' },
-      { step_id: 'step-2', title: 'ตรวจสอบความรู้และหลักฐานที่รองรับ', status: 'PENDING', depends_on: ['step-1'], detail: 'รอตรวจหลักฐานเพิ่มเติมจากผู้ใช้' },
-      { step_id: 'step-3', title: 'ยืนยันผลลัพธ์และเกณฑ์ความปลอดภัย', status: 'PENDING', depends_on: ['step-2'], requires_approval: false, detail: 'ตรวจสอบหลังดำเนินการ' },
-    ];
     return {
       ok: true,
-      status: 'VERIFIED',
-      content: `จัดทำแผนงานสำหรับ "${prompt.slice(0, 80)}" แล้ว (${steps.length} ขั้นตอน)`,
+      status: 'BLOCKED',
+      content:
+        'โหมดวางแผน (Native DAG Planner) ต้องใช้ Python 3.11+ Native Core ซึ่งไม่พร้อมใช้งานในคอนเทนเนอร์ Node.js-only นี้',
       trace: {
         mode,
         model_version: modelVersion,
-        engine_path: ['native_dag_planner'],
+        engine_path: ['python_runtime_unavailable'],
         latency_ms: latency,
         external_models_used: false,
-        plan: {
-          goal: prompt,
-          plan_status: 'READY',
-          is_actionable_goal: true,
-          plan_valid: true,
-          steps,
-        },
-        task_timings: [{ order: 1, task: 'native_dag_planner', duration_ms: latency, matched: true, status: 'VERIFIED' }],
+        task_timings: [{ order: 1, task: 'native_dag_planner', duration_ms: latency, matched: false, status: 'BLOCKED' }],
         bottleneck_task: { task: 'native_dag_planner', duration_ms: latency, share_pct: 100 },
+      },
+    };
+  }
+
+  if (mode === 'model') {
+    const latency = Math.max(0.5, Math.round((performance.now() - started) * 100) / 100);
+    return {
+      ok: true,
+      status: 'BLOCKED',
+      content:
+        'การอนุมานด้วยโมเดล NativeTransformerLM ต้องใช้ Python 3.11+ / PyTorch runtime ซึ่งไม่พร้อมใช้งานในคอนเทนเนอร์ Node.js-only นี้',
+      trace: {
+        mode,
+        model_version: modelVersion,
+        engine_path: ['python_runtime_unavailable'],
+        latency_ms: latency,
+        external_models_used: false,
+        task_timings: [{ order: 1, task: 'native_transformer_lm', duration_ms: latency, matched: false, status: 'BLOCKED' }],
+        bottleneck_task: { task: 'native_transformer_lm', duration_ms: latency, share_pct: 100 },
       },
     };
   }
@@ -648,42 +652,34 @@ function handleInferFallback(payload: AnyRecord) {
 function handleRunWorkflowFallback(payload: AnyRecord) {
   const groupId = String(payload.group_id || 'system_ops');
   const userId = String(payload.user_id || 'system');
-  const approvedBy = payload.approved_by ? String(payload.approved_by) : null;
-  const existingRunId = payload.run_id ? String(payload.run_id) : null;
   const group = WORKFLOW_GROUPS.find((g) => g.id === groupId);
   if (!group) {
     return { ok: false, error: `Unknown workflow group '${groupId}'` };
   }
 
+  if (groupId === 'native_training') {
+    return {
+      ok: false,
+      status: 'BLOCKED',
+      error: 'Native Training workflow requires Python 3.11+ Native Core (unavailable in Node.js-only container).',
+    };
+  }
+
   const ts = nowIso();
-  const needsApproval = group.requires_approval && !approvedBy;
-  const status = needsApproval ? 'PENDING_APPROVAL' : 'COMPLETED';
   const stages = group.stages.map((stage) => ({
     stage,
-    status: needsApproval && stage === 'approval_gate' ? 'PENDING_APPROVAL' : needsApproval ? 'PENDING' : 'COMPLETED',
-    detail: needsApproval && stage === 'approval_gate' ? 'Awaiting Tier-2 Admin Approval' : 'Executed in Node runtime',
+    status: 'COMPLETED',
+    detail: 'Executed in Node.js runtime',
   }));
-
-  if (existingRunId) {
-    const existing = store.workflowRuns.find((r) => r.id === existingRunId);
-    if (existing) {
-      existing.status = status;
-      existing.approved_by = approvedBy;
-      existing.stages_json = JSON.stringify(stages);
-      existing.summary = `Approved and completed by ${approvedBy || 'admin'}.`;
-      existing.updated_at = ts;
-      return { ok: true, run: existing };
-    }
-  }
 
   const run: WorkflowRunRow = {
     id: crypto.randomUUID(),
     group_id: groupId,
-    status,
-    requires_approval: group.requires_approval ? 1 : 0,
+    status: 'COMPLETED',
+    requires_approval: 0,
     triggered_by: userId,
-    approved_by: approvedBy,
-    summary: needsApproval ? 'Pending administrator approval at approval_gate.' : `Workflow ${groupId} completed.`,
+    approved_by: null,
+    summary: `Workflow ${groupId} completed in Node.js runtime.`,
     stages_json: JSON.stringify(stages),
     created_at: ts,
     updated_at: ts,
@@ -1268,47 +1264,17 @@ export function runFallbackDbBridge(action: string, payload: AnyRecord = {}): An
     };
   }
 
-  if (action === 'tool_center_resolve') {
-    const goal = String(payload.goal || '');
+  if (
+    action === 'tool_center_resolve' ||
+    action === 'tool_center_execute' ||
+    action === 'tool_center_orchestrate' ||
+    action === 'tool_center_verify'
+  ) {
     return {
-      ok: true,
-      goal,
-      steps: [{ capability_id: 'dev.ast_inspect', reason: 'Default inspection capability' }],
+      ok: false,
+      status: 'BLOCKED',
+      error: 'Native Tool Center execution requires Python 3.11+ Native Core (unavailable in Node.js-only container).',
     };
-  }
-
-  if (action === 'tool_center_execute') {
-    const capId = String(payload.capability_id || '').trim();
-    const inv = {
-      id: crypto.randomUUID(),
-      invocation_id: crypto.randomUUID(),
-      capability_id: capId,
-      toolkit_id: capId.split('.')[0] || 'development',
-      user_id: String(payload.user_id || 'system'),
-      status: 'COMPLETED',
-      latency_ms: 1.4,
-      created_at: nowIso(),
-    };
-    store.toolCenterInvocations.unshift(inv);
-    return { ok: true, ...inv, qa: { verdict: 'SUCCESS' } };
-  }
-
-  if (action === 'tool_center_orchestrate') {
-    const orch = {
-      id: crypto.randomUUID(),
-      goal: String(payload.goal || ''),
-      user_id: String(payload.user_id || 'system'),
-      status: 'COMPLETED',
-      total_latency_ms: 2.1,
-      created_at: nowIso(),
-      updated_at: nowIso(),
-    };
-    store.orchestrations.unshift(orch);
-    return { ok: true, status: 'COMPLETED', orchestration: orch };
-  }
-
-  if (action === 'tool_center_verify') {
-    return { ok: true, verified: true, toolkit_id: payload.toolkit_id || null };
   }
 
   if (action === 'tool_center_decide') {
@@ -1320,14 +1286,11 @@ export function runFallbackDbBridge(action: string, payload: AnyRecord = {}): An
   }
 
   if (action === 'tool_center_self_improve') {
-    const proposal = {
-      id: crypto.randomUUID(),
-      created_by: String(payload.user_id || 'system'),
-      approval_status: 'PENDING_APPROVAL',
-      created_at: nowIso(),
+    return {
+      ok: false,
+      status: 'BLOCKED',
+      error: 'Self-improvement evaluation requires Python 3.11+ Native Core (unavailable in Node.js-only container).',
     };
-    store.improvementProposals.unshift(proposal);
-    return { ok: true, proposal };
   }
 
   if (action === 'tool_center_decide_improvement') {
@@ -1339,7 +1302,11 @@ export function runFallbackDbBridge(action: string, payload: AnyRecord = {}): An
   }
 
   if (action === 'tool_center_engineering_benchmark') {
-    return { ok: true, status: 'VERIFIED', score: 100 };
+    return {
+      ok: false,
+      status: 'BLOCKED',
+      error: 'Engineering benchmark requires Python 3.11+ Native Core (unavailable in Node.js-only container).',
+    };
   }
 
   return { ok: false, error: `Unknown bridge action '${action}'` };
@@ -1347,12 +1314,14 @@ export function runFallbackDbBridge(action: string, payload: AnyRecord = {}): An
 
 export function runFallbackCoreCommand(cmd: string, payload: AnyRecord = {}): AnyRecord {
   if (cmd === 'init') {
-    return { ok: true, db_path: 'in-memory-node-fallback' };
+    return { ok: true, db_path: 'in-memory-node-fallback', native_core_ready: false };
   }
 
   if (cmd === 'health') {
     return {
       ok: true,
+      native_core_ready: false,
+      native_training_ready: false,
       metrics: getSystemMetrics(),
       counts: {
         triples: store.triples.length,
@@ -1406,7 +1375,8 @@ export function runFallbackCoreCommand(cmd: string, payload: AnyRecord = {}): An
       dataset_id: ds.id,
       name: ds.name,
       verified: true,
-      disk_verified: true,
+      disk_verified: false,
+      storage_mode: 'in-memory-node-fallback',
       content_sha256: ds.content_sha256,
       manifest_sha256: ds.manifest_hash,
       leakage_detected: ds.leakage_detected,
@@ -1429,145 +1399,41 @@ export function runFallbackCoreCommand(cmd: string, payload: AnyRecord = {}): An
   }
 
   if (cmd === 'evaluate') {
-    const evaluation = {
-      id: crypto.randomUUID(),
-      checkpoint_version: store.checkpoints[0]?.version || null,
-      suite_name: String(payload.suite_name || 'ZYRQUEN Scientific Benchmark v1'),
-      overall_status: 'VERIFIED',
-      math_score: 100,
-      knowledge_score: store.triples.length > 0 ? 100 : 0,
-      planning_score: 100,
-      test_accuracy: 100,
-      perplexity: 1.0,
-      baseline_delta_json: null,
-      created_at: nowIso(),
+    return {
+      ok: false,
+      status: 'BLOCKED',
+      error: 'Scientific model evaluation requires Python 3.11+ Native Core (unavailable in Node.js-only container).',
     };
-    store.evaluations.unshift(evaluation);
-    return { ok: true, evaluation };
   }
 
   if (cmd === 'evaluations_list') {
     return { ok: true, evaluations: store.evaluations.slice(0, 15) };
   }
 
-  if (cmd === 'run_mission') {
-    const ts = nowIso();
-    const goal = String(payload.goal || '').trim();
-    const stages = [
-      { stage: 'think', label: 'วิเคราะห์เป้าหมาย', status: 'COMPLETED', detail: 'วิเคราะห์โครงสร้างคำขอ' },
-      { stage: 'plan', label: 'วางแผน DAG', status: 'COMPLETED', detail: 'สร้างขั้นตอนการดำเนินงาน' },
-      { stage: 'verify', label: 'ตรวจสอบผลลัพธ์', status: 'COMPLETED', detail: 'ตรวจสอบความถูกต้องใน Node runtime' },
-    ];
-    const mission = {
-      id: crypto.randomUUID(),
-      goal,
-      status: 'COMPLETED',
-      capabilities_json: JSON.stringify(['reasoning', 'planning']),
-      stages_json: JSON.stringify(stages),
-      knowledge_developed_json: JSON.stringify([]),
-      research_summary_json: JSON.stringify({ summary: 'Completed in Node runtime' }),
-      report_markdown: `### รายงานภารกิจ\n\nเป้าหมาย: ${goal}\n\nสถานะ: เสร็จสมบูรณ์`,
-      external_models_used: 0,
-      created_by: String(payload.user_id || 'system'),
-      created_at: ts,
-      updated_at: ts,
-    };
-    store.missions.unshift(mission);
-    return { ok: true, mission };
-  }
-
-  if (cmd === 'resume_mission' || cmd === 'cancel_mission') {
-    const mid = String(payload.mission_id || '');
-    const mission = store.missions.find((m) => m.id === mid);
-    if (!mission) return { ok: false, error: 'Mission not found' };
-    mission.status = cmd === 'cancel_mission' ? 'CANCELLED' : 'COMPLETED';
-    mission.updated_at = nowIso();
-    return { ok: true, mission };
-  }
-
-  if (cmd === 'curate_corpus' || cmd === 'curate_code_corpus') {
-    const name = String(payload.name || 'curated-corpus');
-    const ds: DatasetRow = {
-      id: crypto.randomUUID(),
-      name,
-      manifest_hash: sha256(name + nowIso()),
-      total_records: 8,
-      train_count: 5,
-      val_count: 2,
-      test_count: 1,
-      leakage_detected: 0,
-      status: 'READY',
-      created_at: nowIso(),
-      source_name: name,
-      license: 'INTERNAL_VERIFIED',
-      provenance: 'curated',
-      source_format: 'jsonl',
-      content_sha256: sha256(name),
-    };
-    store.datasets.unshift(ds);
+  if (cmd === 'run_mission' || cmd === 'resume_mission' || cmd === 'cancel_mission') {
     return {
-      ok: true,
-      dataset: ds,
-      code_verification: { total_tasks: 8, verified_tasks: 8, failed_tasks: 0, ast_records_added: 8, splits_counts: { train: 5, val: 2, test: 1 } },
+      ok: false,
+      status: 'BLOCKED',
+      error: 'Autonomous DAG missions require Python 3.11+ Native Core (unavailable in Node.js-only container).',
     };
   }
 
-  if (cmd === 'run_experiment' || cmd === 'run_code_training_experiment' || cmd === 'run_continual_round') {
-    const experiment = {
-      id: crypto.randomUUID(),
-      hypothesis: `Native experiment (${cmd})`,
-      dataset_id: payload.dataset_id || store.datasets[0]?.id || null,
-      baseline_ckpt_id: null,
-      candidate_ckpt_id: null,
-      baseline_metrics_json: JSON.stringify({ loss: 1.5 }),
-      candidate_metrics_json: JSON.stringify({ loss: 1.1 }),
-      improved: 1,
-      approval_status: 'PENDING_APPROVAL',
-      approved_by: null,
-      created_by: String(payload.user_id || 'system'),
-      created_at: nowIso(),
-    };
-    store.experiments.unshift(experiment);
+  if (
+    cmd === 'curate_corpus' ||
+    cmd === 'curate_code_corpus' ||
+    cmd === 'run_experiment' ||
+    cmd === 'run_code_training_experiment' ||
+    cmd === 'run_continual_round' ||
+    cmd === 'decide_experiment' ||
+    cmd === 'evaluate_code_model' ||
+    cmd === 'synthesize_curriculum'
+  ) {
     return {
-      ok: true,
-      improved: true,
+      ok: false,
+      status: 'BLOCKED',
+      error: 'NativeTransformerLM training, corpus curation, and Python evaluation require Python 3.11+ / PyTorch runtime (unavailable in Node.js-only container).',
       external_models_used: false,
-      catastrophic_forgetting_detected: false,
-      experiment,
-      metrics: {
-        training_focus: 'native_node_fallback',
-        param_count: 0,
-        initial_train_loss: 1.5,
-        final_train_loss: 1.1,
-        initial_val_loss: 1.5,
-        final_val_loss: 1.1,
-        val_perplexity: 3.0,
-        test_loss: 1.1,
-        test_perplexity: 3.0,
-        test_accuracy: 0.85,
-        pre_contrastive_accuracy: 0.8,
-        post_contrastive_accuracy: 0.85,
-        unseen_execution_verified: true,
-        regression_detected: false,
-      },
     };
-  }
-
-  if (cmd === 'decide_experiment') {
-    const eid = String(payload.experiment_id || '');
-    const exp = store.experiments.find((e) => e.id === eid);
-    if (!exp) return { ok: false, error: 'Experiment not found' };
-    exp.approval_status = payload.decision === 'reject' ? 'REJECTED' : 'APPROVED';
-    exp.approved_by = payload.admin_email || 'admin';
-    return { ok: true, experiment: exp };
-  }
-
-  if (cmd === 'evaluate_code_model') {
-    return { ok: true, status: 'VERIFIED', external_models_used: false };
-  }
-
-  if (cmd === 'synthesize_curriculum') {
-    return { ok: true, curriculum_count: 0, manifest_sha256: sha256('curriculum') };
   }
 
   if (cmd === 'workflow_groups') {
@@ -1587,83 +1453,10 @@ export function runFallbackCoreCommand(cmd: string, payload: AnyRecord = {}): An
   return { ok: false, error: `Unknown command '${cmd}'` };
 }
 
-export function runFallbackBenchmark(modelVersion: string): AnyRecord {
-  const mathCheck = safeEvalArithmetic('(10 + 15) * 4');
-  const mathPassed = mathCheck.ok && mathCheck.value === 100;
-  const oodRes = handleInferFallback({ prompt: 'ทฤษฎีสัมพัทธภาพทั่วไปคืออะไร', mode: 'auto', model_version: modelVersion });
-  const oodPassed = oodRes.status === 'NOT_LEARNED';
-
-  const cases = [
-    {
-      id: 'math_ast_1',
-      category: 'reasoning',
-      polarity: 'positive',
-      input: '(10 + 15) * 4',
-      passed: mathPassed,
-      expected: '100',
-      actual: String(mathCheck.value ?? 'error'),
-      failure_type: mathPassed ? null : 'MATH_MISMATCH',
-      engine_path: ['safe_ast_math'],
-      detail: 'Symbolic arithmetic verification',
-    },
-    {
-      id: 'ood_abstain_1',
-      category: 'negative_abstention',
-      polarity: 'negative',
-      input: 'ทฤษฎีสัมพัทธภาพทั่วไปคืออะไร',
-      passed: oodPassed,
-      expected: 'NOT_LEARNED',
-      actual: String(oodRes.status),
-      failure_type: oodPassed ? null : 'HALLUCINATION',
-      engine_path: ['unlearned_boundary'],
-      detail: 'Unseen OOD abstention check',
-    },
-  ];
-  const passed = cases.filter((c) => c.passed).length;
-
+export function runFallbackBenchmark(_modelVersion: string): AnyRecord {
   return {
-    benchmark_version: 'fallback-v1',
-    environment: {
-      python_version: `node-${process.version}`,
-      platform: `${os.platform()} ${os.release()}`,
-      model_version: modelVersion,
-      checkpoint_version: 0,
-      checkpoint_vocab_size: 0,
-      external_models_used: false,
-    },
-    summary: {
-      total_cases: cases.length,
-      passed,
-      failed: cases.length - passed,
-      overall_score: Math.round((passed / cases.length) * 100),
-      false_positives: 0,
-      negative_cases_total: 1,
-      false_positive_rate: 0,
-      false_negatives: 0,
-      positive_cases_total: 1,
-      false_negative_rate: 0,
-    },
-    category_scores: {
-      reasoning: { total: 1, passed: mathPassed ? 1 : 0, failed: mathPassed ? 0 : 1, score: mathPassed ? 100 : 0 },
-      negative_abstention: { total: 1, passed: oodPassed ? 1 : 0, failed: oodPassed ? 0 : 1, score: oodPassed ? 100 : 0 },
-    },
-    leakage_detection: {
-      fixture_isolation: { isolated: true, overlaps: [] },
-      clean_split_leakage_detected: 0,
-      exact_dedup_passed: true,
-      near_dup_leakage_caught: true,
-    },
-    builtin_core_eval: {
-      overall_status: 'VERIFIED',
-      math_score: 100,
-      knowledge_score: 100,
-      planning_score: 100,
-      test_accuracy: 100,
-      perplexity: 1.0,
-    },
-    failure_types: {},
-    failures: [],
-    unmeasurable_limitations: ['Python Native Core unavailable in Node-only deployment container; running Node fallback engine.'],
-    cases,
+    ok: false,
+    status: 'BLOCKED',
+    error: 'Native capability benchmark requires Python 3.11+ Native Core (unavailable in Node.js-only container).',
   };
 }

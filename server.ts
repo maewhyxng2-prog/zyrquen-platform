@@ -441,9 +441,14 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
     try {
       const pyHealth = await runPythonScript<{
         ok: boolean;
+        native_core_ready?: boolean;
+        native_training_ready?: boolean;
         metrics: Record<string, unknown>;
         counts: Record<string, number>;
       }>('zyrquen_core.py', { cmd: 'health', payload: {} });
+      const nativeReady = !pythonUnavailable && pyHealth.ok && pyHealth.native_core_ready !== false;
+      const nativeTrainingReady =
+        !pythonUnavailable && pyHealth.ok && pyHealth.native_training_ready !== false;
       res.json({
         platform: 'ZYRQUEN',
         tagline: 'Autonomous Foundational Intelligence',
@@ -455,7 +460,8 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
         external_models_used: false,
         data_portability: ['json', 'jsonl', 'sqlite-wal', 'json.gz-checkpoint'],
         native_core: {
-          status: pyHealth.ok ? 'ready' : 'degraded',
+          status: nativeReady ? 'ready' : 'degraded',
+          native_training_ready: nativeTrainingReady,
           counts: pyHealth.counts,
           python_version: pyHealth.metrics?.python_version,
         },
@@ -474,7 +480,7 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
       res.status(503).json({
         platform: 'ZYRQUEN',
         api_version: 'v1',
-        native_core: { status: 'offline' },
+        native_core: { status: 'offline', native_training_ready: false },
       });
     }
   });
@@ -483,12 +489,18 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
     try {
       const pyHealth = await runPythonScript<{
         ok: boolean;
+        native_core_ready?: boolean;
+        native_training_ready?: boolean;
         metrics: Record<string, unknown>;
         counts: Record<string, number>;
       }>('zyrquen_core.py', { cmd: 'health', payload: {} });
+      const nativeReady = !pythonUnavailable && pyHealth.ok && pyHealth.native_core_ready !== false;
+      const nativeTrainingReady =
+        !pythonUnavailable && pyHealth.ok && pyHealth.native_training_ready !== false;
       res.json({
         ok: true,
-        nativeCore: pyHealth.ok ? 'ready' : 'degraded',
+        nativeCore: nativeReady ? 'ready' : 'degraded',
+        nativeTrainingReady,
         pythonVersion: pyHealth.metrics?.python_version,
         counts: pyHealth.counts,
         timestamp: new Date().toISOString(),
@@ -1765,67 +1777,70 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
     }
 
     try {
-      let report: Record<string, unknown>;
       if (pythonUnavailable) {
-        report = runFallbackBenchmark(requestedModel);
-      } else {
-        try {
-          report = await new Promise<Record<string, unknown>>((resolve, reject) => {
-            const pyCode = [
-              'import json, sys',
-              'from tests.benchmark_suite import run_capability_benchmark',
-              'print(json.dumps(run_capability_benchmark(model_version=sys.argv[1], persist_baseline=True), ensure_ascii=False))',
-            ].join('; ');
-            const child = spawn('python3', ['-c', pyCode, requestedModel], {
-              cwd: __dirname,
-              stdio: ['ignore', 'pipe', 'pipe'],
-              env: {
-                ...process.env,
-                PYTHONPATH: path.resolve(__dirname, 'python_core'),
-              },
-            });
+        const blocked = runFallbackBenchmark(requestedModel);
+        res.status(503).json(blocked);
+        return;
+      }
 
-            let stdout = '';
-            let stderr = '';
-            const timer = setTimeout(() => {
-              child.kill('SIGTERM');
-              reject(new Error('Native capability benchmark timed out'));
-            }, 60_000);
-
-            child.stdout.on('data', (chunk: Buffer) => {
-              stdout += chunk.toString('utf-8');
-            });
-            child.stderr.on('data', (chunk: Buffer) => {
-              stderr += chunk.toString('utf-8');
-            });
-            child.on('error', (err) => {
-              clearTimeout(timer);
-              reject(err);
-            });
-            child.on('close', (code) => {
-              clearTimeout(timer);
-              if (code !== 0) {
-                reject(new Error(stderr.trim() || `Benchmark exited with code ${code}`));
-                return;
-              }
-              try {
-                const parsed = JSON.parse(stdout.trim()) as Record<string, unknown>;
-                resolve(parsed);
-              } catch (err) {
-                reject(new Error(`Invalid JSON from benchmark_suite.py: ${(err as Error).message}`));
-              }
-            });
+      let report: Record<string, unknown>;
+      try {
+        report = await new Promise<Record<string, unknown>>((resolve, reject) => {
+          const pyCode = [
+            'import json, sys',
+            'from tests.benchmark_suite import run_capability_benchmark',
+            'print(json.dumps(run_capability_benchmark(model_version=sys.argv[1], persist_baseline=True), ensure_ascii=False))',
+          ].join('; ');
+          const child = spawn('python3', ['-c', pyCode, requestedModel], {
+            cwd: __dirname,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: {
+              ...process.env,
+              PYTHONPATH: path.resolve(__dirname, 'python_core'),
+            },
           });
-        } catch (spawnErr) {
-          const code = (spawnErr as NodeJS.ErrnoException | undefined)?.code;
-          const msg = spawnErr instanceof Error ? spawnErr.message : String(spawnErr);
-          if (code === 'ENOENT' || code === 'EACCES' || /spawn python3 ENOENT/i.test(msg)) {
-            pythonUnavailable = true;
-            report = runFallbackBenchmark(requestedModel);
-          } else {
-            throw spawnErr;
-          }
+
+          let stdout = '';
+          let stderr = '';
+          const timer = setTimeout(() => {
+            child.kill('SIGTERM');
+            reject(new Error('Native capability benchmark timed out'));
+          }, 60_000);
+
+          child.stdout.on('data', (chunk: Buffer) => {
+            stdout += chunk.toString('utf-8');
+          });
+          child.stderr.on('data', (chunk: Buffer) => {
+            stderr += chunk.toString('utf-8');
+          });
+          child.on('error', (err) => {
+            clearTimeout(timer);
+            reject(err);
+          });
+          child.on('close', (code) => {
+            clearTimeout(timer);
+            if (code !== 0) {
+              reject(new Error(stderr.trim() || `Benchmark exited with code ${code}`));
+              return;
+            }
+            try {
+              const parsed = JSON.parse(stdout.trim()) as Record<string, unknown>;
+              resolve(parsed);
+            } catch (err) {
+              reject(new Error(`Invalid JSON from benchmark_suite.py: ${(err as Error).message}`));
+            }
+          });
+        });
+      } catch (spawnErr) {
+        const code = (spawnErr as NodeJS.ErrnoException | undefined)?.code;
+        const msg = spawnErr instanceof Error ? spawnErr.message : String(spawnErr);
+        if (code === 'ENOENT' || code === 'EACCES' || /spawn python3 ENOENT/i.test(msg)) {
+          pythonUnavailable = true;
+          const blocked = runFallbackBenchmark(requestedModel);
+          res.status(503).json(blocked);
+          return;
         }
+        throw spawnErr;
       }
 
       const summary = (report.summary || {}) as Record<string, unknown>;
