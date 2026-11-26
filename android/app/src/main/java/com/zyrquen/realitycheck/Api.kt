@@ -3,19 +3,19 @@ package com.zyrquen.realitycheck
 import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
-import okhttp3.OkHttpClient
 import okhttp3.Interceptor
+import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.POST
-import retrofit2.http.Path
 import java.util.concurrent.TimeUnit
 
 data class LoginRequest(val email: String, val password: String)
 data class LoginResponse(val access_token: String, val token_type: String)
+data class LogoutResponse(val authenticated: Boolean, val revoked: Boolean)
 data class HealthResponse(val status: String?, val service: String?)
 data class UserResponse(val id: String, val email: String, val is_active: Boolean)
 data class WorkflowListResponse(val items: List<Map<String, Any?>> = emptyList())
@@ -40,6 +40,9 @@ interface RealityCheckApi {
 
     @GET("auth/me")
     suspend fun me(@Header("Authorization") authorization: String): UserResponse
+
+    @POST("auth/logout")
+    suspend fun logout(@Header("Authorization") authorization: String): LogoutResponse
 
     @GET("health")
     suspend fun health(): HealthResponse
@@ -70,7 +73,7 @@ class TokenStore(context: Context) {
 
 object ApiFactory {
     fun create(baseUrl: String, token: () -> String?): RealityCheckApi {
-        require(baseUrl.startsWith("https://")) { "Production API URL must use HTTPS" }
+        require(baseUrl.startsWith("https://")) { "API URL must use HTTPS" }
         require(baseUrl.endsWith("/")) { "API URL must end with /" }
         val auth = Interceptor { chain ->
             val request = chain.request().newBuilder().apply {
