@@ -779,6 +779,19 @@ def handle_action(action: str, payload: dict) -> dict:
         conn.close()
         return {"ok": cur.rowcount > 0}
 
+    if action == "admin_audit_logs":
+        limit = max(1, min(int(payload.get("limit", 500)), 500))
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT id, actor_id, actor_email, action, target, outcome, details_json, created_at "
+                "FROM audit_logs ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        ]
+        conn.close()
+        return rows
+
     if action == "admin_overview":
         init_dataset_pipeline_schema(conn)
         init_tool_center_schema(conn)
