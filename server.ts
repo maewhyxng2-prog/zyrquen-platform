@@ -2146,134 +2146,212 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
   };
 
   const handleWorkflowLogs = async (req: AuthedRequest, res: Response) => {
-    const activeOnly = String(req.query.active_only ?? 'true').toLowerCase() !== 'false';
-    const runIdFilter = String(req.query.run_id ?? '').trim() || null;
-    if (runIdFilter && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(runIdFilter)) {
-      res.status(400).json({ error: 'Invalid workflow run_id identifier.' });
-      return;
-    }
-    const rawLimit = Number(req.query.limit ?? 100);
-    const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(500, Math.round(rawLimit))) : 100;
-    const isAdmin = req.user!.role === 'admin';
-    const currentUid = req.user!.id;
-
-    let explicitRun: WorkflowLogRunRecord | null = null;
-    if (runIdFilter) {
-      const lookup = await runPythonScript<{
-        ok: boolean;
-        run?: WorkflowLogRunRecord | null;
-      }>('db_bridge.py', {
-        action: 'workflow_get_run',
-        payload: { run_id: runIdFilter },
-      });
-      explicitRun = lookup.run ?? null;
-      if (!explicitRun) {
-        res.status(404).json({ error: 'Workflow run not found' });
+    try {
+      const activeOnly = String(req.query.active_only ?? 'true').toLowerCase() !== 'false';
+      const runIdFilter = String(req.query.run_id ?? '').trim() || null;
+      if (runIdFilter && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(runIdFilter)) {
+        res.status(400).json({ error: 'Invalid workflow run_id identifier.' });
         return;
       }
-      if (!isAdmin && explicitRun.triggered_by !== currentUid) {
-        res.status(403).json({ error: 'Forbidden' });
+      const rawLevel = String(req.query.level ?? '').trim().toUpperCase();
+      if (rawLevel && !['ALL', 'INFO', 'WARN', 'ERROR'].includes(rawLevel)) {
+        res.status(400).json({ error: 'Invalid log level filter (expected ALL, INFO, WARN, or ERROR).' });
         return;
       }
-    }
+      const levelFilter = rawLevel && rawLevel !== 'ALL' ? rawLevel : null;
+      const searchFilter = String(req.query.search ?? req.query.q ?? '').trim().toLowerCase();
 
-    const data = await runPythonScript<{
-      ok: boolean;
-      runs?: WorkflowLogRunRecord[];
-    }>('db_bridge.py', {
-      action: 'workflows_list',
-      payload: {
-        user_id: currentUid,
-        is_admin: isAdmin,
-      },
-    });
+      const rawLimit = Number(req.query.limit ?? 100);
+      const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(500, Math.round(rawLimit))) : 100;
+      const isAdmin = req.user!.role === 'admin';
+      const currentUid = req.user!.id;
 
-    const activeStatuses = new Set([
-      'PENDING',
-      'PENDING_APPROVAL',
-      'RUNNING',
-      'VERIFYING',
-      'WAITING_APPROVAL',
-      'WAITING_RESOURCE',
-    ]);
-
-    const levelFor = (st?: string | null): 'INFO' | 'WARN' | 'ERROR' => {
-      const upper = String(st || '').toUpperCase();
-      if (upper.includes('FAIL') || upper.includes('ERROR') || upper.includes('REJECT')) return 'ERROR';
-      if (upper.includes('WAIT') || upper.includes('PENDING') || upper.includes('BLOCK') || upper.includes('CANCEL')) return 'WARN';
-      return 'INFO';
-    };
-
-    const runs = (Array.isArray(data.runs) ? data.runs : []).filter(
-      (r) => isAdmin || r.triggered_by === currentUid
-    );
-    const activeRuns = runs.filter((r) => activeStatuses.has(String(r.status || '').toUpperCase()));
-    const targetRuns = explicitRun
-      ? [explicitRun]
-      : activeOnly
-        ? activeRuns
-        : runs.slice(0, 25);
-
-    const items: Array<Record<string, unknown>> = [];
-    for (const r of targetRuns) {
-      const status = String(r.status || 'UNKNOWN');
-      const workflowKey = String(r.group_id || 'workflow');
-      const ts = r.updated_at || r.created_at || null;
-      items.push({
-        id: `run:${r.id}:${status}`,
-        run_id: r.id,
-        workflow_key: workflowKey,
-        step_key: null,
-        level: levelFor(status),
-        event_type: `workflow.${status.toLowerCase()}`,
-        status,
-        actor_id: r.triggered_by || 'orchestrator',
-        message: r.summary || `Workflow ${workflowKey} is ${status}`,
-        details: null,
-        timestamp: ts,
-      });
-
-      if (typeof r.stages_json === 'string' && r.stages_json.trim()) {
-        try {
-          const stages = JSON.parse(r.stages_json) as Array<Record<string, unknown>>;
-          if (Array.isArray(stages)) {
-            stages.forEach((stage, idx) => {
-              const stepKey = String(stage.name || stage.step_key || stage.stage || `stage_${idx + 1}`);
-              const stepStatus = String(stage.status || status);
-              items.push({
-                id: `step:${r.id}:${stepKey}:${stepStatus}:${idx}`,
-                run_id: r.id,
-                workflow_key: workflowKey,
-                step_key: stepKey,
-                level: levelFor(stepStatus),
-                event_type: `step.${stepStatus.toLowerCase()}`,
-                status: stepStatus,
-                actor_id: r.triggered_by || 'orchestrator',
-                message: String(stage.detail || stage.summary || `${stepKey}: ${stepStatus}`),
-                details: null,
-                timestamp: String(stage.updated_at || stage.finished_at || stage.started_at || ts || ''),
-              });
-            });
-          }
-        } catch {
-          // Ignore malformed stage JSON
+      let explicitRun: WorkflowLogRunRecord | null = null;
+      if (runIdFilter) {
+        const lookup = await runPythonScript<{
+          ok: boolean;
+          run?: WorkflowLogRunRecord | null;
+        }>('db_bridge.py', {
+          action: 'workflow_get_run',
+          payload: { run_id: runIdFilter },
+        });
+        explicitRun = lookup.run ?? null;
+        if (!explicitRun) {
+          res.status(404).json({ error: 'Workflow run not found' });
+          return;
+        }
+        if (!isAdmin && explicitRun.triggered_by !== currentUid) {
+          res.status(403).json({ error: 'Forbidden' });
+          return;
         }
       }
+
+      const data = await runPythonScript<{
+        ok: boolean;
+        runs?: WorkflowLogRunRecord[];
+      }>('db_bridge.py', {
+        action: 'workflows_list',
+        payload: {
+          user_id: currentUid,
+          is_admin: isAdmin,
+        },
+      });
+
+      const activeStatuses = new Set([
+        'PENDING',
+        'PENDING_APPROVAL',
+        'RUNNING',
+        'VERIFYING',
+        'WAITING_APPROVAL',
+        'WAITING_RESOURCE',
+      ]);
+
+      const levelFor = (st?: string | null): 'INFO' | 'WARN' | 'ERROR' => {
+        const upper = String(st || '').toUpperCase();
+        if (upper.includes('FAIL') || upper.includes('ERROR') || upper.includes('REJECT')) return 'ERROR';
+        if (upper.includes('WAIT') || upper.includes('PENDING') || upper.includes('BLOCK') || upper.includes('CANCEL')) return 'WARN';
+        return 'INFO';
+      };
+
+      const runs = (Array.isArray(data.runs) ? data.runs : []).filter(
+        (r) => isAdmin || r.triggered_by === currentUid
+      );
+      const activeRuns = runs.filter((r) => activeStatuses.has(String(r.status || '').toUpperCase()));
+      const targetRuns = explicitRun
+        ? [explicitRun]
+        : activeOnly
+          ? activeRuns
+          : runs.slice(0, 25);
+
+      const items: Array<Record<string, unknown>> = [];
+      for (const r of targetRuns) {
+        const status = String(r.status || 'UNKNOWN');
+        const workflowKey = String(r.group_id || 'workflow');
+        const ts = r.updated_at || r.created_at || null;
+        items.push({
+          id: `run:${r.id}:${status}`,
+          run_id: r.id,
+          workflow_key: workflowKey,
+          step_key: null,
+          level: levelFor(status),
+          event_type: `workflow.${status.toLowerCase()}`,
+          status,
+          actor_id: r.triggered_by || 'orchestrator',
+          message: r.summary || `Workflow ${workflowKey} is ${status}`,
+          details: null,
+          timestamp: ts,
+        });
+
+        if (typeof r.stages_json === 'string' && r.stages_json.trim()) {
+          try {
+            const stages = JSON.parse(r.stages_json) as Array<Record<string, unknown>>;
+            if (Array.isArray(stages)) {
+              stages.forEach((stage, idx) => {
+                const stepKey = String(stage.name || stage.step_key || stage.stage || `stage_${idx + 1}`);
+                const stepStatus = String(stage.status || status);
+                items.push({
+                  id: `step:${r.id}:${stepKey}:${stepStatus}:${idx}`,
+                  run_id: r.id,
+                  workflow_key: workflowKey,
+                  step_key: stepKey,
+                  level: levelFor(stepStatus),
+                  event_type: `step.${stepStatus.toLowerCase()}`,
+                  status: stepStatus,
+                  actor_id: r.triggered_by || 'orchestrator',
+                  message: String(stage.detail || stage.summary || `${stepKey}: ${stepStatus}`),
+                  details: null,
+                  timestamp: String(stage.updated_at || stage.finished_at || stage.started_at || ts || ''),
+                });
+              });
+            }
+          } catch {
+            // Ignore malformed stage JSON
+          }
+        }
+      }
+
+      if (targetRuns.length > 0) {
+        const auditData = await runPythonScript<{
+          ok: boolean;
+          logs?: Array<{
+            id: string;
+            actor_id?: string | null;
+            action?: string | null;
+            target?: string | null;
+            outcome?: string | null;
+            workflow_key?: string | null;
+            created_at?: string | null;
+          }>;
+        }>('db_bridge.py', {
+          action: 'workflow_audit_logs',
+          payload: {
+            user_id: currentUid,
+            is_admin: isAdmin,
+            run_ids: targetRuns.map((r) => r.id),
+            limit,
+          },
+        }).catch(() => ({ ok: false, logs: [] }));
+
+        for (const audit of Array.isArray(auditData.logs) ? auditData.logs : []) {
+          const outcome = String(audit.outcome || 'INFO');
+          const actionLabel = String(audit.action || 'AUDIT');
+          const workflowKey = String(audit.workflow_key || 'workflow');
+          items.push({
+            id: `audit:${audit.id}`,
+            run_id: String(audit.target || ''),
+            workflow_key: workflowKey,
+            step_key: null,
+            level: levelFor(outcome),
+            event_type: `audit.${actionLabel.toLowerCase()}`,
+            status: outcome,
+            actor_id: audit.actor_id || 'system',
+            message: `${actionLabel} (${workflowKey}) -> ${outcome}`,
+            details: null,
+            timestamp: audit.created_at ?? null,
+          });
+        }
+      }
+
+      const filteredItems = items.filter((entry) => {
+        if (levelFilter && String(entry.level || '').toUpperCase() !== levelFilter) {
+          return false;
+        }
+        if (searchFilter) {
+          const haystack = [
+            entry.message,
+            entry.workflow_key,
+            entry.step_key,
+            entry.event_type,
+            entry.status,
+            entry.run_id,
+          ]
+            .map((v) => String(v || '').toLowerCase())
+            .join(' ');
+          if (!haystack.includes(searchFilter)) {
+            return false;
+          }
+        }
+        return true;
+      });
+
+      filteredItems.sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
+
+      res.json({
+        items: filteredItems.slice(0, limit),
+        active_runs: activeRuns.map((r) => ({
+          id: r.id,
+          workflow_key: String(r.group_id || 'workflow'),
+          status: String(r.status || 'UNKNOWN'),
+          started_at: r.created_at ?? null,
+        })),
+        active_only: activeOnly,
+        polled_at: new Date().toISOString(),
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Unable to fetch workflow logs.',
+      });
     }
-
-    items.sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
-
-    res.json({
-      items: items.slice(0, limit),
-      active_runs: activeRuns.map((r) => ({
-        id: r.id,
-        workflow_key: String(r.group_id || 'workflow'),
-        status: String(r.status || 'UNKNOWN'),
-        started_at: r.created_at ?? null,
-      })),
-      active_only: activeOnly,
-      polled_at: new Date().toISOString(),
-    });
   };
 
   app.get('/api/workflows/logs', requireAuth, handleWorkflowLogs);
@@ -3318,36 +3396,240 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
   });
 
   app.post('/api/tool-center/execute', requireAuth, async (req: AuthedRequest, res: Response) => {
-    const capabilityId = String(req.body?.capabilityId || req.body?.capability_id || '').trim().slice(0, 120);
-    if (!capabilityId) {
-      res.status(400).json({ error: 'capabilityId is required.' });
-      return;
+    try {
+      const capabilityId = String(req.body?.capabilityId || req.body?.capability_id || '').trim().slice(0, 120);
+      if (!capabilityId) {
+        res.status(400).json({ error: 'capabilityId is required.' });
+        return;
+      }
+      const input = req.body?.input && typeof req.body.input === 'object' ? req.body.input : {};
+      const result = await runPythonScript<{
+        ok: boolean;
+        status?: string;
+        error?: string;
+      }>('db_bridge.py', {
+        action: 'tool_center_execute',
+        payload: {
+          capability_id: capabilityId,
+          input,
+          user_id: req.user!.id,
+          user_role: req.user!.role,
+          project_id: req.body?.projectId ? String(req.body.projectId).slice(0, 64) : null,
+          conversation_id: req.body?.conversationId ? String(req.body.conversationId).slice(0, 64) : null,
+        },
+      });
+      if (result.status === 'BLOCKED') {
+        res.status(403).json(result);
+        return;
+      }
+      if (!result.ok) {
+        res.status(400).json(result);
+        return;
+      }
+      res.status(result.status === 'PENDING_APPROVAL' ? 202 : 201).json(result);
+    } catch (err) {
+      res.status(500).json({
+        ok: false,
+        status: 'FAILED',
+        error: err instanceof Error ? err.message : 'Tool execution failed.',
+      });
     }
-    const input = req.body?.input && typeof req.body.input === 'object' ? req.body.input : {};
-    const result = await runPythonScript<{
-      ok: boolean;
-      status?: string;
-      error?: string;
-    }>('db_bridge.py', {
-      action: 'tool_center_execute',
-      payload: {
-        capability_id: capabilityId,
-        input,
-        user_id: req.user!.id,
-        user_role: req.user!.role,
-        project_id: req.body?.projectId ? String(req.body.projectId).slice(0, 64) : null,
-        conversation_id: req.body?.conversationId ? String(req.body.conversationId).slice(0, 64) : null,
-      },
-    });
-    if (result.status === 'BLOCKED') {
-      res.status(403).json(result);
-      return;
+  });
+
+  // --- Multi-file Persistent App Builder API (backed by Python Tool Center Sandbox) ---
+  app.get('/api/app-builder/workspaces', requireAuth, async (req: AuthedRequest, res: Response) => {
+    try {
+      const result = await runPythonScript<{
+        ok: boolean;
+        status?: string;
+        error?: string;
+        output?: Record<string, unknown>;
+      }>('db_bridge.py', {
+        action: 'tool_center_execute',
+        payload: {
+          capability_id: 'development.workspace_history',
+          input: { action: 'list_workspaces' },
+          user_id: req.user!.id,
+          user_role: req.user!.role,
+        },
+      });
+      if (result.status === 'BLOCKED') {
+        res.status(403).json(result);
+        return;
+      }
+      if (!result.ok) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({
+        ok: false,
+        status: 'FAILED',
+        error: err instanceof Error ? err.message : 'Unable to list app builder workspaces.',
+      });
     }
-    if (!result.ok) {
-      res.status(400).json(result);
-      return;
+  });
+
+  app.post('/api/app-builder/build', requireAuth, async (req: AuthedRequest, res: Response) => {
+    try {
+      const workspace = String(req.body?.workspace || '').trim().slice(0, 64);
+      if (!workspace) {
+        res.status(400).json({ ok: false, error: 'workspace is required.' });
+        return;
+      }
+      const rawBody = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
+      const inputPayload: Record<string, unknown> = {
+        workspace,
+        goal: String(rawBody.goal || '').trim().slice(0, 500),
+        app_name: String(rawBody.appName ?? rawBody.app_name ?? workspace).trim().slice(0, 64),
+        blueprint: String(rawBody.blueprint || 'auto').trim().slice(0, 48),
+        mode: String(rawBody.mode || 'upsert').trim().slice(0, 24),
+        auto_repair: rawBody.autoRepair ?? rawBody.auto_repair ?? true,
+        max_repair_rounds: Number(rawBody.maxRepairRounds ?? rawBody.max_repair_rounds ?? 2),
+        rollback_on_failure: rawBody.rollbackOnFailure ?? rawBody.rollback_on_failure ?? true,
+      };
+      if (rawBody.files && typeof rawBody.files === 'object' && !Array.isArray(rawBody.files)) {
+        inputPayload.files = rawBody.files;
+      }
+      if (rawBody.patches && typeof rawBody.patches === 'object' && !Array.isArray(rawBody.patches)) {
+        inputPayload.patches = rawBody.patches;
+      }
+      const deleteFiles = rawBody.deleteFiles ?? rawBody.delete_files;
+      if (Array.isArray(deleteFiles) && deleteFiles.length > 0) {
+        inputPayload.delete_files = deleteFiles.map((item) => String(item));
+      }
+
+      const result = await runPythonScript<{
+        ok: boolean;
+        status?: string;
+        error?: string;
+      }>('db_bridge.py', {
+        action: 'tool_center_execute',
+        payload: {
+          capability_id: 'development.app_builder',
+          input: inputPayload,
+          user_id: req.user!.id,
+          user_role: req.user!.role,
+          project_id: rawBody.projectId ? String(rawBody.projectId).slice(0, 64) : null,
+          conversation_id: rawBody.conversationId ? String(rawBody.conversationId).slice(0, 64) : null,
+        },
+      });
+      if (result.status === 'BLOCKED') {
+        res.status(403).json(result);
+        return;
+      }
+      if (!result.ok) {
+        res.status(400).json(result);
+        return;
+      }
+      res.status(201).json(result);
+    } catch (err) {
+      res.status(500).json({
+        ok: false,
+        status: 'FAILED',
+        error: err instanceof Error ? err.message : 'App builder execution failed.',
+      });
     }
-    res.status(result.status === 'PENDING_APPROVAL' ? 202 : 201).json(result);
+  });
+
+  app.post('/api/app-builder/verify', requireAuth, async (req: AuthedRequest, res: Response) => {
+    try {
+      const workspace = String(req.body?.workspace || '').trim().slice(0, 64);
+      if (!workspace) {
+        res.status(400).json({ ok: false, error: 'workspace is required.' });
+        return;
+      }
+      const rawBody = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
+      const result = await runPythonScript<{
+        ok: boolean;
+        status?: string;
+        error?: string;
+      }>('db_bridge.py', {
+        action: 'tool_center_execute',
+        payload: {
+          capability_id: 'development.real_build_runner',
+          input: {
+            workspace,
+            run_lint: rawBody.runLint ?? rawBody.run_lint ?? true,
+            run_tests: rawBody.runTests ?? rawBody.run_tests ?? true,
+            timeout_s: Number(rawBody.timeoutS ?? rawBody.timeout_s ?? 8),
+          },
+          user_id: req.user!.id,
+          user_role: req.user!.role,
+        },
+      });
+      if (result.status === 'BLOCKED') {
+        res.status(403).json(result);
+        return;
+      }
+      if (!result.ok) {
+        res.status(400).json(result);
+        return;
+      }
+      res.status(200).json(result);
+    } catch (err) {
+      res.status(500).json({
+        ok: false,
+        status: 'FAILED',
+        error: err instanceof Error ? err.message : 'App verification failed.',
+      });
+    }
+  });
+
+  app.post('/api/app-builder/history', requireAuth, async (req: AuthedRequest, res: Response) => {
+    try {
+      const rawBody = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
+      const action = String(rawBody.action || 'list').trim().toLowerCase();
+      const workspace = String(rawBody.workspace || '').trim().slice(0, 64);
+      if (action !== 'list_workspaces' && !workspace) {
+        res.status(400).json({ ok: false, error: 'workspace is required.' });
+        return;
+      }
+      const inputPayload: Record<string, unknown> = { action };
+      if (workspace) inputPayload.workspace = workspace;
+      if (rawBody.snapshotId ?? rawBody.snapshot_id) {
+        inputPayload.snapshot_id = String(rawBody.snapshotId ?? rawBody.snapshot_id);
+      }
+      if (rawBody.baseSnapshotId ?? rawBody.base_snapshot_id) {
+        inputPayload.base_snapshot_id = String(rawBody.baseSnapshotId ?? rawBody.base_snapshot_id);
+      }
+      if (rawBody.filePath ?? rawBody.file_path) {
+        inputPayload.file_path = String(rawBody.filePath ?? rawBody.file_path);
+      }
+      if (rawBody.label) {
+        inputPayload.label = String(rawBody.label).slice(0, 140);
+      }
+
+      const result = await runPythonScript<{
+        ok: boolean;
+        status?: string;
+        error?: string;
+      }>('db_bridge.py', {
+        action: 'tool_center_execute',
+        payload: {
+          capability_id: 'development.workspace_history',
+          input: inputPayload,
+          user_id: req.user!.id,
+          user_role: req.user!.role,
+        },
+      });
+      if (result.status === 'BLOCKED') {
+        res.status(403).json(result);
+        return;
+      }
+      if (!result.ok) {
+        res.status(400).json(result);
+        return;
+      }
+      res.status(200).json(result);
+    } catch (err) {
+      res.status(500).json({
+        ok: false,
+        status: 'FAILED',
+        error: err instanceof Error ? err.message : 'Workspace history operation failed.',
+      });
+    }
   });
 
   app.post('/api/tool-center/orchestrate', requireAuth, async (req: AuthedRequest, res: Response) => {

@@ -44,6 +44,7 @@ from .software_engineering import (  # noqa: E402
 )
 from .app_builder import (  # noqa: E402
     build_and_verify_app,
+    list_workspaces_in_root,
     manage_workspace_history,
     run_real_project_build,
 )
@@ -90,6 +91,7 @@ __all__ = [
     "init_task_memory_schema",
     "init_tool_center_schema",
     "inspect_sandbox_code_policy",
+    "list_workspaces_in_root",
     "manage_workspace_history",
     "record_task_memory",
     "retrieve_relevant_memories",

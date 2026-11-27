@@ -1484,6 +1484,53 @@ def handle_action(action: str, payload: dict) -> dict:
         conn.close()
         return {"ok": True, "run": row_to_dict(row) if row else None}
 
+    if action == "workflow_audit_logs":
+        uid = str(payload.get("user_id") or "").strip()
+        is_admin = bool(payload.get("is_admin", False))
+        raw_ids = payload.get("run_ids") or []
+        run_ids = list(dict.fromkeys(str(r).strip() for r in raw_ids if str(r).strip()))[:100]
+        if not run_ids:
+            conn.close()
+            return {"ok": True, "logs": []}
+        placeholders = ",".join("?" for _ in run_ids)
+        if is_admin:
+            owned_rows = conn.execute(
+                f"SELECT id, group_id FROM workflow_runs WHERE id IN ({placeholders})",
+                tuple(run_ids),
+            ).fetchall()
+        else:
+            owned_rows = conn.execute(
+                f"SELECT id, group_id FROM workflow_runs WHERE triggered_by=? AND id IN ({placeholders})",
+                (uid, *run_ids),
+            ).fetchall()
+        owned_ids = [str(r["id"]) for r in owned_rows]
+        if not owned_ids:
+            conn.close()
+            return {"ok": True, "logs": []}
+        group_map = {str(r["id"]): str(r["group_id"] or "workflow") for r in owned_rows}
+        audit_placeholders = ",".join("?" for _ in owned_ids)
+        try:
+            safe_limit = max(1, min(300, int(payload.get("limit") or 120)))
+        except (TypeError, ValueError):
+            safe_limit = 120
+        audit_rows = conn.execute(
+            f"""
+            SELECT id, actor_id, action, target, outcome, details_json, created_at
+            FROM audit_logs
+            WHERE target IN ({audit_placeholders})
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT ?
+            """,
+            (*owned_ids, safe_limit),
+        ).fetchall()
+        logs = []
+        for row in audit_rows:
+            d = dict(row)
+            d["workflow_key"] = group_map.get(str(d.get("target") or ""), "workflow")
+            logs.append(d)
+        conn.close()
+        return {"ok": True, "logs": logs}
+
     if action == "reasoning_traces_list":
         traces = _query_reasoning_traces(
             conn,

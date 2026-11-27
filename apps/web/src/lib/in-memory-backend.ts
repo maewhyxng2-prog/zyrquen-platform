@@ -2704,6 +2704,22 @@ export async function handleInMemoryBackendRequest(options: {
     if (runIdFilter && !isValidWorkflowRunId(runIdFilter)) {
       return { status: 400, body: { detail: "Invalid workflow run_id identifier." } };
     }
+    const rawLevel = options.searchParams?.get("level");
+    const normalizedLevel = rawLevel?.trim().toUpperCase() || null;
+    if (
+      normalizedLevel &&
+      !["ALL", "INFO", "WARN", "ERROR"].includes(normalizedLevel)
+    ) {
+      return { status: 400, body: { detail: "Invalid workflow log level." } };
+    }
+    const searchQuery = (
+      options.searchParams?.get("search") ??
+      options.searchParams?.get("q") ??
+      ""
+    )
+      .trim()
+      .toLowerCase()
+      .slice(0, 160);
     const activeOnlyParam = options.searchParams?.get("active_only");
     const activeOnly = activeOnlyParam !== "false";
     const rawLimit = Number(options.searchParams?.get("limit") ?? 100);
@@ -2744,19 +2760,19 @@ export async function handleInMemoryBackendRequest(options: {
         if (!audit.resource_id || !targetRunIds.has(audit.resource_id)) {
           continue;
         }
-      const runObj = runById.get(audit.resource_id);
-      entries.push({
-        id: `audit:${audit.id}`,
-        run_id: audit.resource_id,
-        workflow_key: runObj?.workflow_key ?? null,
-        step_key: null,
-        level: logLevelForStatus(runObj?.status ?? null, audit.action),
-        event_type: audit.action,
-        status: runObj?.status ?? "RECORDED",
-        actor_id: audit.actor_user_id,
-        message: `${audit.action} on run ${audit.resource_id}`,
-        details: null,
-        timestamp: audit.created_at,
+        const runObj = runById.get(audit.resource_id);
+        entries.push({
+          id: `audit:${audit.id}`,
+          run_id: audit.resource_id,
+          workflow_key: runObj?.workflow_key ?? null,
+          step_key: null,
+          level: logLevelForStatus(runObj?.status ?? null, audit.action),
+          event_type: audit.action,
+          status: runObj?.status ?? "RECORDED",
+          actor_id: audit.actor_user_id,
+          message: `${audit.action} on run ${audit.resource_id}`,
+          details: null,
+          timestamp: audit.created_at,
         });
       }
     }
@@ -2808,7 +2824,26 @@ export async function handleInMemoryBackendRequest(options: {
       }
     }
 
-    entries.sort((a, b) => (b.timestamp ?? "").localeCompare(a.timestamp ?? ""));
+    const filtered = entries.filter((item) => {
+      if (normalizedLevel && normalizedLevel !== "ALL" && item.level !== normalizedLevel) {
+        return false;
+      }
+      if (!searchQuery) return true;
+      const haystack = [
+        item.workflow_key ?? "",
+        item.run_id ?? "",
+        item.step_key ?? "",
+        item.event_type ?? "",
+        item.status ?? "",
+        item.message ?? "",
+        item.actor_id ?? "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(searchQuery);
+    });
+
+    filtered.sort((a, b) => (b.timestamp ?? "").localeCompare(a.timestamp ?? ""));
 
     const activeSummaries: WorkflowActiveJobSummary[] = activeRuns.map((r) => ({
       id: r.id,
@@ -2821,7 +2856,7 @@ export async function handleInMemoryBackendRequest(options: {
     return {
       status: 200,
       body: {
-        items: entries.slice(0, limit),
+        items: filtered.slice(0, limit),
         active_runs: activeSummaries,
         active_only: activeOnly,
         polled_at: new Date().toISOString(),

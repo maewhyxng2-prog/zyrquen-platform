@@ -13,6 +13,7 @@ import {
   buildWorkflowLogsQuery,
   deriveLogsFromRuns,
   isValidWorkflowRunId,
+  normalizeWorkflowLogLevel,
 } from "@/lib/workflow-logs";
 import type { WorkflowRunItem } from "@/lib/workflow-metrics";
 
@@ -20,9 +21,9 @@ function clearCookiesOnUnauthorized(
   request: NextRequest,
   response: NextResponse,
   status: number,
-  hadToken: boolean,
+  hadCookieToken: boolean,
 ): NextResponse {
-  if (status === 401 && hadToken) {
+  if (status === 401 && hadCookieToken) {
     const expired = buildSessionCookieOptions(request, 0);
     response.cookies.set(ACCESS_COOKIE, "", expired);
     response.cookies.set(EMAIL_COOKIE, "", expired);
@@ -50,13 +51,17 @@ export async function GET(request: NextRequest) {
   }
 
   const cookieStore = await cookies();
-  const accessToken = cookieStore.get(ACCESS_COOKIE)?.value;
+  const cookieToken = cookieStore.get(ACCESS_COOKIE)?.value;
+  const authHeaderRaw = request.headers.get("authorization")?.trim() ?? "";
+  const bearerToken = /^Bearer\s+(\S+)$/i.exec(authHeaderRaw)?.[1] ?? "";
+  const accessToken = cookieToken || bearerToken;
   if (!accessToken) {
     return NextResponse.json(
       { detail: "Not authenticated" },
       { status: 401, headers: { "cache-control": "no-store" } },
     );
   }
+  const hadCookieToken = Boolean(cookieToken);
   const authorizationHeader = `Bearer ${accessToken}`;
 
   const rawRunId = request.nextUrl.searchParams.get("run_id")?.trim() ?? "";
@@ -66,6 +71,21 @@ export async function GET(request: NextRequest) {
       { status: 400, headers: { "cache-control": "no-store" } },
     );
   }
+  const rawLevel = request.nextUrl.searchParams.get("level");
+  const normalizedLevel = normalizeWorkflowLogLevel(rawLevel);
+  if (rawLevel !== null && rawLevel.trim() !== "" && normalizedLevel === null) {
+    return NextResponse.json(
+      { detail: "Invalid workflow log level" },
+      { status: 400, headers: { "cache-control": "no-store" } },
+    );
+  }
+  const rawSearch = (
+    request.nextUrl.searchParams.get("search") ??
+    request.nextUrl.searchParams.get("q") ??
+    ""
+  )
+    .trim()
+    .slice(0, 160);
   const activeOnly = request.nextUrl.searchParams.get("active_only") !== "false";
   const parsedLimit = Number(request.nextUrl.searchParams.get("limit") ?? 100);
   const clampedLimit = Number.isFinite(parsedLimit)
@@ -75,6 +95,8 @@ export async function GET(request: NextRequest) {
     activeOnly,
     runId: rawRunId || undefined,
     limit: clampedLimit,
+    level: normalizedLevel ?? undefined,
+    search: rawSearch || undefined,
   });
 
   let useInMemory = await shouldUseInMemoryBackend(
@@ -120,6 +142,8 @@ export async function GET(request: NextRequest) {
               activeOnly: false,
               runId: rawRunId,
               limit: clampedLimit,
+              level: normalizedLevel ?? undefined,
+              search: rawSearch || undefined,
             });
             return NextResponse.json(derived, {
               status: 200,
@@ -139,7 +163,7 @@ export async function GET(request: NextRequest) {
             request,
             singleResp,
             singleRunRes.status,
-            true,
+            hadCookieToken,
           );
         }
 
@@ -158,6 +182,8 @@ export async function GET(request: NextRequest) {
             activeOnly,
             runId: null,
             limit: clampedLimit,
+            level: normalizedLevel ?? undefined,
+            search: rawSearch || undefined,
           });
           return NextResponse.json(derived, {
             status: 200,
@@ -172,7 +198,7 @@ export async function GET(request: NextRequest) {
             "cache-control": "no-store",
           },
         });
-        return clearCookiesOnUnauthorized(request, fallbackResp, runsRes.status, true);
+        return clearCookiesOnUnauthorized(request, fallbackResp, runsRes.status, hadCookieToken);
       }
 
       const upstreamBody = await upstream.text();
@@ -183,7 +209,7 @@ export async function GET(request: NextRequest) {
           "cache-control": "no-store",
         },
       });
-      return clearCookiesOnUnauthorized(request, response, upstream.status, true);
+      return clearCookiesOnUnauthorized(request, response, upstream.status, hadCookieToken);
     } catch {
       if (!isProduction && !hasExplicitUrl) {
         useInMemory = true;
@@ -212,5 +238,5 @@ export async function GET(request: NextRequest) {
     status: inMemory.status,
     headers: { "cache-control": "no-store" },
   });
-  return clearCookiesOnUnauthorized(request, response, inMemory.status, true);
+  return clearCookiesOnUnauthorized(request, response, inMemory.status, hadCookieToken);
 }

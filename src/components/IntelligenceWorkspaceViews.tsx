@@ -50,8 +50,10 @@ import type {
   WorkspaceFileItem,
 } from '../types';
 import { CopyButton } from './CopyButton';
+import { MultiFileAppBuilder } from './MultiFileAppBuilder';
 import { ProjectDashboard } from './ProjectDashboard';
 import { SafeMessageText, toPlainAssistantCopyText } from './SafeMessageText';
+import { WorkflowLogsConsole } from './WorkflowLogsConsole';
 
 function formatDateThai(iso: string): string {
   const d = new Date(iso);
@@ -944,6 +946,10 @@ export function MyTasksView({
               )}
             </div>
           </div>
+
+          <div className="lg:col-span-12">
+            <WorkflowLogsConsole token={token} />
+          </div>
         </div>
       )}
     </div>
@@ -954,7 +960,7 @@ export function MyTasksView({
  * 3. CreateArtifactView (สร้างงาน)
  * ========================================================================== */
 
-export type CreatePresetKind = 'software' | 'document' | 'data' | 'direct_file';
+export type CreatePresetKind = 'software' | 'app_builder' | 'document' | 'data' | 'direct_file';
 
 interface CreateArtifactViewProps {
   token: string;
@@ -1064,6 +1070,7 @@ export function CreateArtifactView({
     icon: React.ComponentType<{ className?: string }>;
   }> = [
     { id: 'software', label: 'ซอร์สโค้ดและระบบ', desc: 'ออกแบบโครงสร้าง วางแผน และสร้างโค้ด', icon: Code2 },
+    { id: 'app_builder', label: 'สร้างแอปหลายไฟล์ (Sandbox)', desc: 'แก้หลายไฟล์ คอมไพล์ เทสต์ Diff และ Rollback จริง', icon: Layers },
     { id: 'document', label: 'เอกสารและรายงาน', desc: 'ร่างสเปก สรุปรายงาน และคู่มือทำงาน', icon: FileText },
     { id: 'data', label: 'ข้อมูลและตาราง', desc: 'จัดโครงสร้าง JSON/CSV และชุดข้อมูล', icon: FileSpreadsheet },
     { id: 'direct_file', label: 'เขียนไฟล์ลงคลังตรง', desc: 'สร้างและบันทึกไฟล์จริงเข้า workspace', icon: FileCode2 },
@@ -1089,7 +1096,7 @@ export function CreateArtifactView({
       </div>
 
       {/* Creation Type Selector */}
-      <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         {KIND_OPTIONS.map((opt) => {
           const Icon = opt.icon;
           const active = kind === opt.id;
@@ -1143,10 +1150,13 @@ export function CreateArtifactView({
         </div>
       )}
 
-      <form
-        onSubmit={handleExecuteCreate}
-        className="space-y-4 rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-5 sm:p-7"
-      >
+      {kind === 'app_builder' ? (
+        <MultiFileAppBuilder token={token} />
+      ) : (
+        <form
+          onSubmit={handleExecuteCreate}
+          className="space-y-4 rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-5 sm:p-7"
+        >
         {kind === 'direct_file' ? (
           <>
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1288,7 +1298,8 @@ export function CreateArtifactView({
             </div>
           </>
         )}
-      </form>
+        </form>
+      )}
     </div>
   );
 }

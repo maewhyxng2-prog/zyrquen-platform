@@ -1472,24 +1472,40 @@ describe('Isolated 6-Step Non-Skippable Native Training Pipeline Gate E2E', () =
     });
     expect(userLogsRes.status).toBe(200);
     const userLogsJson = (await userLogsRes.json()) as {
-      items: Array<{ run_id: string }>;
+      items: Array<{ run_id: string; level: string }>;
     };
     expect(userLogsJson.items.some((item) => item.run_id === userWfJson.run.id)).toBe(true);
     expect(userLogsJson.items.some((item) => item.run_id === adminWfJson.run.id)).toBe(false);
 
+    // Invalid log level filter returns 400; valid level+search returns scoped entries
+    const invalidLevelRes = await fetch(
+      `${gateBaseUrl}/api/v1/workflows/logs?active_only=false&level=BADLEVEL`,
+      { headers: userHeaders }
+    );
+    expect(invalidLevelRes.status).toBe(400);
+
+    const filteredLogsRes = await fetch(
+      `${gateBaseUrl}/api/v1/workflows/logs?active_only=false&level=INFO&search=system_ops`,
+      { headers: userHeaders }
+    );
+    expect(filteredLogsRes.status).toBe(200);
+    const filteredLogsJson = (await filteredLogsRes.json()) as {
+      items: Array<{ run_id: string; level: string; workflow_key: string }>;
+    };
+    expect(filteredLogsJson.items.length).toBeGreaterThan(0);
+    expect(filteredLogsJson.items.every((item) => item.level === 'INFO')).toBe(true);
+    expect(filteredLogsJson.items.every((item) => item.run_id === userWfJson.run.id)).toBe(true);
+
     // 2. Multi-file Persistent App Builder + Real Build Runner + Workspace History over HTTP
     const wsName = 'e2e_http_app';
-    const buildAppRes = await fetch(`${gateBaseUrl}/api/tool-center/execute`, {
+    const buildAppRes = await fetch(`${gateBaseUrl}/api/app-builder/build`, {
       method: 'POST',
       headers: userHeaders,
       body: JSON.stringify({
-        capabilityId: 'development.app_builder',
-        input: {
-          workspace: wsName,
-          goal: 'Build multi-file task tracker CLI',
-          app_name: 'tracker_cli',
-          blueprint: 'python_cli_app',
-        },
+        workspace: wsName,
+        goal: 'Build multi-file task tracker CLI',
+        appName: 'tracker_cli',
+        blueprint: 'python_cli_app',
       }),
     });
     expect(buildAppRes.status).toBe(201);
@@ -1515,18 +1531,27 @@ describe('Isolated 6-Step Non-Skippable Native Training Pipeline Gate E2E', () =
     expect(buildAppJson.output.tests_run).toBeGreaterThanOrEqual(3);
     expect(buildAppJson.output.files).toContain('tracker_cli/engine.py');
 
+    // Dedicated GET /api/app-builder/workspaces lists persisted workspace
+    const listWsRes = await fetch(`${gateBaseUrl}/api/app-builder/workspaces`, {
+      headers: userHeaders,
+    });
+    expect(listWsRes.status).toBe(200);
+    const listWsJson = (await listWsRes.json()) as {
+      ok: boolean;
+      output: { workspaces: Array<{ workspace: string; file_count: number }> };
+    };
+    expect(listWsJson.ok).toBe(true);
+    expect(listWsJson.output.workspaces.some((w) => w.workspace === wsName)).toBe(true);
+
     // Incremental partial multi-file patch + real verification
-    const patchAppRes = await fetch(`${gateBaseUrl}/api/tool-center/execute`, {
+    const patchAppRes = await fetch(`${gateBaseUrl}/api/app-builder/build`, {
       method: 'POST',
       headers: userHeaders,
       body: JSON.stringify({
-        capabilityId: 'development.app_builder',
-        input: {
-          workspace: wsName,
-          goal: 'Update README and add version note in manifest',
-          patches: {
-            'README.md': [{ old: 'Entrypoint', new: 'Main Entrypoint' }],
-          },
+        workspace: wsName,
+        goal: 'Update README and add version note in manifest',
+        patches: {
+          'README.md': [{ old: 'Entrypoint', new: 'Main Entrypoint' }],
         },
       }),
     });
@@ -1540,16 +1565,17 @@ describe('Isolated 6-Step Non-Skippable Native Training Pipeline Gate E2E', () =
     expect(patchAppJson.output.snapshot_id).not.toBe(buildAppJson.output.snapshot_id);
     expect(patchAppJson.output.diffs['README.md']).toContain('+');
 
-    // Workspace history read_file + traversal/internal blocking
-    const readFileRes = await fetch(`${gateBaseUrl}/api/tool-center/execute`, {
+    // Workspace history read_file + traversal/internal blocking via /api/app-builder/history
+    const readFileRes = await fetch(`${gateBaseUrl}/api/app-builder/history`, {
       method: 'POST',
       headers: userHeaders,
       body: JSON.stringify({
-        capabilityId: 'development.workspace_history',
-        input: { workspace: wsName, action: 'read_file', file_path: 'README.md' },
+        workspace: wsName,
+        action: 'read_file',
+        file_path: 'README.md',
       }),
     });
-    expect(readFileRes.status).toBe(201);
+    expect(readFileRes.status).toBe(200);
     const readFileJson = (await readFileRes.json()) as {
       ok: boolean;
       output: { content: string };
@@ -1557,26 +1583,24 @@ describe('Isolated 6-Step Non-Skippable Native Training Pipeline Gate E2E', () =
     expect(readFileJson.ok).toBe(true);
     expect(readFileJson.output.content).toContain('Main Entrypoint');
 
-    const blockedReadRes = await fetch(`${gateBaseUrl}/api/tool-center/execute`, {
+    const blockedReadRes = await fetch(`${gateBaseUrl}/api/app-builder/history`, {
       method: 'POST',
       headers: userHeaders,
       body: JSON.stringify({
-        capabilityId: 'development.workspace_history',
-        input: { workspace: wsName, action: 'read_file', file_path: '.zyrquen_history/history.json' },
+        workspace: wsName,
+        action: 'read_file',
+        file_path: '.zyrquen_history/history.json',
       }),
     });
     expect(blockedReadRes.status).toBe(403);
 
-    // Independent Real Build Runner confirms workspace passes compileall + lint + unittest
-    const runnerRes = await fetch(`${gateBaseUrl}/api/tool-center/execute`, {
+    // Dedicated POST /api/app-builder/verify confirms workspace passes compileall + lint + unittest
+    const runnerRes = await fetch(`${gateBaseUrl}/api/app-builder/verify`, {
       method: 'POST',
       headers: userHeaders,
-      body: JSON.stringify({
-        capabilityId: 'development.real_build_runner',
-        input: { workspace: wsName, run_lint: true, run_tests: true },
-      }),
+      body: JSON.stringify({ workspace: wsName, runLint: true, runTests: true }),
     });
-    expect(runnerRes.status).toBe(201);
+    expect(runnerRes.status).toBe(200);
     const runnerJson = (await runnerRes.json()) as {
       ok: boolean;
       output: { verified: boolean; build_passed: boolean; lint_passed: boolean; tests_passed: boolean };
@@ -1585,33 +1609,27 @@ describe('Isolated 6-Step Non-Skippable Native Training Pipeline Gate E2E', () =
     expect(runnerJson.output.verified).toBe(true);
 
     // Rollback to initial snapshot reverts README change cleanly
-    const rollbackRes = await fetch(`${gateBaseUrl}/api/tool-center/execute`, {
+    const rollbackRes = await fetch(`${gateBaseUrl}/api/app-builder/history`, {
       method: 'POST',
       headers: userHeaders,
       body: JSON.stringify({
-        capabilityId: 'development.workspace_history',
-        input: {
-          workspace: wsName,
-          action: 'rollback',
-          snapshot_id: buildAppJson.output.snapshot_id,
-        },
+        workspace: wsName,
+        action: 'rollback',
+        snapshot_id: buildAppJson.output.snapshot_id,
       }),
     });
-    expect(rollbackRes.status).toBe(201);
+    expect(rollbackRes.status).toBe(200);
 
     // External LLM import is strictly blocked and rolled back
-    const badLlmRes = await fetch(`${gateBaseUrl}/api/tool-center/execute`, {
+    const badLlmRes = await fetch(`${gateBaseUrl}/api/app-builder/build`, {
       method: 'POST',
       headers: userHeaders,
       body: JSON.stringify({
-        capabilityId: 'development.app_builder',
-        input: {
-          workspace: 'e2e_blocked_llm',
-          goal: 'Attempt forbidden external import',
-          files: {
-            'bad.py': 'from openai import OpenAI\n',
-            'test_bad.py': 'import unittest\nclass T(unittest.TestCase):\n    def test_ok(self):\n        self.assertTrue(True)\n',
-          },
+        workspace: 'e2e_blocked_llm',
+        goal: 'Attempt forbidden external import',
+        files: {
+          'bad.py': 'from openai import OpenAI\n',
+          'test_bad.py': 'import unittest\nclass T(unittest.TestCase):\n    def test_ok(self):\n        self.assertTrue(True)\n',
         },
       }),
     });

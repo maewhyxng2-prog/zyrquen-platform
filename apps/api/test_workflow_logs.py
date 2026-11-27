@@ -133,3 +133,15 @@ def test_workflow_logs_auth_empty_and_isolation(workflow_logs_client):
     alice_items = alice_logs.json()["items"]
     assert len(alice_items) > 0
     assert all(item["run_id"] == alice_run_id for item in alice_items)
+
+    # 7. Invalid level -> 400; valid level + search filters work accurately
+    bad_level = client.get("/v1/workflows/logs?level=TRACE", headers=alice_headers)
+    assert bad_level.status_code == 400
+
+    filtered_logs = client.get(
+        "/v1/workflows/logs?active_only=false&level=INFO&search=training",
+        headers=alice_headers,
+    )
+    assert filtered_logs.status_code == 200
+    filtered_items = filtered_logs.json()["items"]
+    assert all(item["level"] == "INFO" and item["run_id"] == alice_run_id for item in filtered_items)

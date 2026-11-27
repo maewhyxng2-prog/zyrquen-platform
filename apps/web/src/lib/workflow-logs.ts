@@ -44,10 +44,24 @@ export function logLevelForStatus(
   return "INFO";
 }
 
+export function normalizeWorkflowLogLevel(
+  level: string | null | undefined,
+): "ALL" | WorkflowExecutionLogLevel | null {
+  if (level == null) return null;
+  const upper = level.trim().toUpperCase();
+  if (!upper) return null;
+  if (upper === "ALL" || upper === "INFO" || upper === "WARN" || upper === "ERROR") {
+    return upper;
+  }
+  return null;
+}
+
 export function buildWorkflowLogsQuery(options: {
   activeOnly?: boolean;
   runId?: string;
   limit?: number;
+  level?: "ALL" | WorkflowExecutionLogLevel;
+  search?: string;
 }): string {
   const params = new URLSearchParams();
   params.set("active_only", options.activeOnly === false ? "false" : "true");
@@ -57,6 +71,12 @@ export function buildWorkflowLogsQuery(options: {
   if (typeof options.limit === "number" && Number.isFinite(options.limit)) {
     const clamped = Math.max(1, Math.min(500, Math.round(options.limit)));
     params.set("limit", String(clamped));
+  }
+  if (options.level && options.level !== "ALL") {
+    params.set("level", options.level);
+  }
+  if (options.search && options.search.trim()) {
+    params.set("search", options.search.trim().slice(0, 160));
   }
   return params.toString();
 }
@@ -125,6 +145,8 @@ export function deriveLogsFromRuns(
     activeOnly?: boolean;
     runId?: string | null;
     limit?: number;
+    level?: "ALL" | WorkflowExecutionLogLevel;
+    search?: string;
   } = {},
 ): WorkflowLogsResponse {
   const activeOnly = options.activeOnly !== false;
@@ -192,6 +214,11 @@ export function deriveLogsFromRuns(
 
   items.sort((a, b) => (b.timestamp ?? "").localeCompare(a.timestamp ?? ""));
 
+  const filtered = filterWorkflowLogs(items, {
+    level: options.level,
+    search: options.search,
+  });
+
   const activeSummaries: WorkflowActiveJobSummary[] = activeRuns.map((run) => ({
     id: run.id,
     workflow_key: run.workflow_key,
@@ -201,7 +228,7 @@ export function deriveLogsFromRuns(
   }));
 
   return {
-    items: items.slice(0, limit),
+    items: filtered.slice(0, limit),
     active_runs: activeSummaries,
     active_only: activeOnly,
     polled_at: new Date().toISOString(),

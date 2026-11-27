@@ -405,6 +405,19 @@ export function WorkflowLogsPanel() {
                 แสดง All Recent Runs
               </button>
             </div>
+          ) : levelFilter !== "ALL" || searchQuery.trim() !== "" ? (
+            <div className="unavailable-actions">
+              <button
+                className="button button-secondary button-compact"
+                onClick={() => {
+                  setLevelFilter("ALL");
+                  setSearchQuery("");
+                }}
+                type="button"
+              >
+                ล้างตัวกรอง
+              </button>
+            </div>
           ) : null}
         </div>
       ) : (

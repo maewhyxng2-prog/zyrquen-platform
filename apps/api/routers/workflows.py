@@ -312,6 +312,8 @@ def list_workflow_execution_logs(
     run_id: str | None = Query(default=None),
     active_only: bool = Query(default=True),
     limit: int = Query(default=100, ge=1, le=500),
+    level: str | None = Query(default=None),
+    search: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
 ):
     """Return structured execution logs for active (or filtered) workflow orchestration jobs."""
@@ -323,6 +325,14 @@ def list_workflow_execution_logs(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid workflow run_id identifier.",
         )
+
+    normalized_level = level.strip().upper() if isinstance(level, str) and level.strip() else None
+    if normalized_level and normalized_level not in {"ALL", "INFO", "WARN", "ERROR"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid workflow log level.",
+        )
+    normalized_search = search.strip().lower()[:160] if isinstance(search, str) and search.strip() else None
 
     engine = get_workflow_engine()
     is_admin = current_user.role == "admin"
@@ -429,6 +439,19 @@ def list_workflow_execution_logs(
                     "timestamp": step_ts,
                 }
             )
+
+    if normalized_level and normalized_level != "ALL":
+        entries = [item for item in entries if item.get("level") == normalized_level]
+    if normalized_search:
+        entries = [
+            item
+            for item in entries
+            if normalized_search
+            in " ".join(
+                str(item.get(field) or "")
+                for field in ("workflow_key", "run_id", "step_key", "event_type", "status", "message", "actor_id")
+            ).lower()
+        ]
 
     entries.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
     return redact_dict(

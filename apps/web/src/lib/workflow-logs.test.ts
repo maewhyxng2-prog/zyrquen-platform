@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { handleInMemoryBackendRequest } from "./in-memory-backend";
 import {
   buildWorkflowLogsQuery,
@@ -9,9 +9,56 @@ import {
   isActiveOrchestrationStatus,
   isValidWorkflowRunId,
   logLevelForStatus,
+  normalizeWorkflowLogLevel,
 } from "./workflow-logs";
 import type { WorkflowExecutionLogItem } from "./types";
 import type { WorkflowRunItem } from "./workflow-metrics";
+
+const { MockNextRequest } = vi.hoisted(() => {
+  class NextRequestShim {
+    url: string;
+    nextUrl: URL;
+    headers: Headers;
+    signal: AbortSignal;
+
+    constructor(url: string, init?: { headers?: Record<string, string> }) {
+      this.url = url;
+      this.nextUrl = new URL(url);
+      this.headers = new Headers(init?.headers ?? {});
+      this.signal = new AbortController().signal;
+    }
+  }
+  return { MockNextRequest: NextRequestShim };
+});
+
+vi.mock("next/server", () => {
+  class NextResponseShim extends Response {
+    cookies = {
+      set: vi.fn(),
+    };
+    static json(body: unknown, init?: ResponseInit) {
+      return new NextResponseShim(JSON.stringify(body), {
+        ...init,
+        headers: {
+          "content-type": "application/json",
+          ...(init?.headers ?? {}),
+        },
+      });
+    }
+  }
+  return {
+    NextRequest: MockNextRequest,
+    NextResponse: NextResponseShim,
+  };
+});
+
+vi.mock("next/headers", () => ({
+  cookies: async () => ({
+    get: () => undefined,
+  }),
+}));
+
+import { GET as getWorkflowLogsRoute } from "@/app/api/v1/workflows/logs/route";
 
 describe("workflow-logs helpers", () => {
   it("detects active orchestration statuses accurately", () => {
@@ -33,13 +80,22 @@ describe("workflow-logs helpers", () => {
     expect(logLevelForStatus("COMPLETED", "DENY")).toBe("ERROR");
   });
 
-  it("builds bounded query strings", () => {
+  it("builds bounded query strings and normalizes log levels", () => {
+    expect(normalizeWorkflowLogLevel("warn")).toBe("WARN");
+    expect(normalizeWorkflowLogLevel("ALL")).toBe("ALL");
+    expect(normalizeWorkflowLogLevel("TRACE")).toBeNull();
     expect(buildWorkflowLogsQuery({ activeOnly: true, limit: 120 })).toBe(
       "active_only=true&limit=120",
     );
     expect(
-      buildWorkflowLogsQuery({ activeOnly: false, runId: "run-42", limit: 999 }),
-    ).toBe("active_only=false&run_id=run-42&limit=500");
+      buildWorkflowLogsQuery({
+        activeOnly: false,
+        runId: "run-42",
+        limit: 999,
+        level: "ERROR",
+        search: "tier-2",
+      }),
+    ).toBe("active_only=false&run_id=run-42&limit=500&level=ERROR&search=tier-2");
   });
 
   it("validates safe workflow run identifiers", () => {
@@ -311,5 +367,72 @@ describe("workflow-logs helpers", () => {
     };
     expect(adminScopedBody.items.length).toBeGreaterThan(0);
     expect(adminScopedBody.items.every((item) => item.run_id === aliceRunId)).toBe(true);
+
+    // 8. In-memory backend validates level and applies level/search filtering
+    const invalidLevel = await handleInMemoryBackendRequest({
+      method: "GET",
+      path: "v1/workflows/logs",
+      authorizationHeader: aliceHeaders,
+      searchParams: new URLSearchParams({ active_only: "false", level: "DEBUG" }),
+    });
+    expect(invalidLevel.status).toBe(400);
+
+    const warnFiltered = await handleInMemoryBackendRequest({
+      method: "GET",
+      path: "v1/workflows/logs",
+      authorizationHeader: aliceHeaders,
+      searchParams: new URLSearchParams({
+        active_only: "false",
+        level: "WARN",
+        search: "execute_training",
+      }),
+    });
+    expect(warnFiltered.status).toBe(200);
+    const warnBody = warnFiltered.body as {
+      items: Array<{ level: string; step_key: string | null }>;
+    };
+    expect(warnBody.items.length).toBeGreaterThan(0);
+    expect(warnBody.items.every((item) => item.level === "WARN")).toBe(true);
+  });
+
+  it("handles Bearer auth, invalid level 400, and unauthenticated 401 in Next.js GET /api/v1/workflows/logs", async () => {
+    const makeRequest = (url: string, headers?: Record<string, string>) =>
+      new MockNextRequest(url, { headers }) as unknown as Parameters<typeof getWorkflowLogsRoute>[0];
+
+    const unauthRes = await getWorkflowLogsRoute(
+      makeRequest("http://localhost:3000/api/v1/workflows/logs"),
+    );
+    expect(unauthRes.status).toBe(401);
+
+    const login = await handleInMemoryBackendRequest({
+      method: "POST",
+      path: "auth/login",
+      authorizationHeader: null,
+      rawBody: JSON.stringify({
+        email: "demo@zyrquen.local",
+        password: "zyrquen-demo-pass",
+      }),
+    });
+    const token = (login.body as { access_token: string }).access_token;
+
+    const badLevelRes = await getWorkflowLogsRoute(
+      makeRequest("http://localhost:3000/api/v1/workflows/logs?level=INVALID", {
+        Authorization: `Bearer ${token}`,
+      }),
+    );
+    expect(badLevelRes.status).toBe(400);
+
+    const bearerRes = await getWorkflowLogsRoute(
+      makeRequest("http://localhost:3000/api/v1/workflows/logs?active_only=false&level=INFO", {
+        Authorization: `Bearer ${token}`,
+      }),
+    );
+    expect(bearerRes.status).toBe(200);
+    const json = (await bearerRes.json()) as {
+      items: Array<{ level: string }>;
+      active_runs: unknown[];
+    };
+    expect(Array.isArray(json.items)).toBe(true);
+    expect(json.items.every((item) => item.level === "INFO")).toBe(true);
   });
 });

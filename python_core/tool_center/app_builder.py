@@ -193,6 +193,52 @@ def _load_snapshot_files(ws_root: Path, snapshot_id: str) -> dict[str, str] | No
     return out
 
 
+def list_workspaces_in_root(base_workspaces_dir: Path) -> dict[str, Any]:
+    """List persisted sandbox workspaces with real file and snapshot metadata."""
+    base = Path(base_workspaces_dir).resolve()
+    base.mkdir(parents=True, exist_ok=True)
+    workspaces: list[dict[str, Any]] = []
+    for entry in sorted(base.iterdir(), key=lambda p: p.name.lower()):
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", entry.name) or ".." in entry.name:
+            continue
+        resolved = entry.resolve()
+        if resolved == base or not resolved.is_relative_to(base):
+            continue
+        files = _list_project_files(resolved)
+        ledger = _load_history_ledger(resolved)
+        snapshots = list(ledger.get("snapshots") or [])
+        verified_snaps = [s for s in snapshots if s.get("verified")]
+        latest_snap = snapshots[-1] if snapshots else None
+        try:
+            mtime = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(resolved.stat().st_mtime))
+        except OSError:
+            mtime = None
+        workspaces.append({
+            "workspace": entry.name,
+            "file_count": len(files),
+            "files": files[:40],
+            "snapshot_count": len(snapshots),
+            "last_snapshot_id": latest_snap.get("snapshot_id") if latest_snap else None,
+            "last_verified_snapshot_id": verified_snaps[-1]["snapshot_id"] if verified_snaps else None,
+            "updated_at": (latest_snap.get("created_at") if latest_snap else None) or mtime,
+        })
+    workspaces.sort(key=lambda w: str(w.get("updated_at") or ""), reverse=True)
+    return {
+        "ok": True,
+        "status": "COMPLETED",
+        "output": {
+            "action": "list_workspaces",
+            "workspace": base.name,
+            "workspace_count": len(workspaces),
+            "workspaces": workspaces,
+        },
+        "summary": f"พบ persistent workspace ทั้งหมด {len(workspaces)} รายการ",
+        "external_models_used": False,
+    }
+
+
 def manage_workspace_history(
     workspace_root: Path,
     *,

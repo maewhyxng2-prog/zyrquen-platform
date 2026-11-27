@@ -20,6 +20,7 @@ import tools_engine as te
 
 from ..app_builder import (
     build_and_verify_app,
+    list_workspaces_in_root,
     manage_workspace_history,
     run_real_project_build,
 )
@@ -1398,12 +1399,16 @@ def _handle_app_builder(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[st
 
 def _handle_workspace_history(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     """Manage persistent workspace snapshots, unified diffs, file inspection, and rollback across sessions."""
+    action = str(payload.get("action") or "list").strip().lower()
+    if action == "list_workspaces":
+        base = (ctx["data_dir"] / "sandbox_workspaces").resolve()
+        return list_workspaces_in_root(base)
     ws, ws_err = _resolve_sandbox_workspace(ctx, payload.get("workspace"))
     if ws_err or ws is None:
         return {"ok": False, "status": "BLOCKED", "error": ws_err or "Invalid workspace.", "output": {}}
     return manage_workspace_history(
         ws,
-        action=str(payload.get("action") or "list"),
+        action=action,
         snapshot_id=str(payload.get("snapshot_id")) if payload.get("snapshot_id") else None,
         base_snapshot_id=str(payload.get("base_snapshot_id")) if payload.get("base_snapshot_id") else None,
         file_path=str(payload.get("file_path")) if payload.get("file_path") else None,
@@ -1990,10 +1995,10 @@ def register_development_toolkit(registry: Any) -> None:
                 description="จัดการ Snapshot ของโปรเจกต์ เปรียบเทียบ Unified Diff และย้อนกลับไปยังสถานะที่ผ่านการตรวจสอบ",
                 input_schema={
                     "type": "object",
-                    "required": ["workspace", "action"],
+                    "required": ["action"],
                     "properties": {
                         "workspace": {"type": "string"},
-                        "action": {"type": "string", "enum": ["snapshot", "list", "diff", "rollback", "read_file"]},
+                        "action": {"type": "string", "enum": ["list_workspaces", "snapshot", "list", "diff", "rollback", "read_file"]},
                         "snapshot_id": {"type": "string"},
                         "base_snapshot_id": {"type": "string"},
                         "file_path": {"type": "string"},

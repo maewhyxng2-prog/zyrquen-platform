@@ -31,6 +31,7 @@ from tool_center import (  # noqa: E402
     build_and_verify_app,
     get_tool_center_registry,
     init_tool_center_schema,
+    list_workspaces_in_root,
     manage_workspace_history,
     run_real_project_build,
     verify_capability_delivery,
@@ -530,6 +531,47 @@ class AppBuilderAndBuildRunnerE2ETests(unittest.TestCase):
             self.assertFalse(res_dangerous["ok"])
             self.assertFalse(res_dangerous["output"]["lint_passed"])
             self.assertFalse(res_dangerous["output"]["verified"])
+
+    def test_10_list_workspaces_and_metadata(self) -> None:
+        ws_root = (self.data_dir / "sandbox_workspaces").resolve()
+        ws_root.mkdir(parents=True, exist_ok=True)
+        outside = (self.data_dir / "outside_dir").resolve()
+        outside.mkdir(parents=True, exist_ok=True)
+        (ws_root / "symlink_escape").symlink_to(outside)
+
+        res = self.registry.execute(
+            "development.app_builder",
+            {
+                "workspace": "listed_ws",
+                "goal": "Create CLI app for workspace listing verification",
+                "app_name": "listed_app",
+                "blueprint": "python_cli_app",
+            },
+            user_role="user",
+            conn=self.conn,
+            data_dir=self.data_dir,
+        )
+        self.assertTrue(res["ok"], res)
+
+        direct_list = list_workspaces_in_root(ws_root)
+        self.assertTrue(direct_list["ok"])
+        names = [w["workspace"] for w in direct_list["output"]["workspaces"]]
+        self.assertIn("listed_ws", names)
+        self.assertNotIn("symlink_escape", names)
+
+        tool_list = self.registry.execute(
+            "development.workspace_history",
+            {"action": "list_workspaces"},
+            user_role="user",
+            conn=self.conn,
+            data_dir=self.data_dir,
+        )
+        self.assertTrue(tool_list["ok"], tool_list)
+        listed = [w for w in tool_list["output"]["workspaces"] if w["workspace"] == "listed_ws"]
+        self.assertEqual(len(listed), 1)
+        self.assertGreaterEqual(listed[0]["file_count"], 6)
+        self.assertEqual(listed[0]["snapshot_count"], 1)
+        self.assertTrue(listed[0]["last_verified_snapshot_id"])
 
 
 if __name__ == "__main__":

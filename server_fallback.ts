@@ -1288,6 +1288,35 @@ export function runFallbackDbBridge(action: string, payload: AnyRecord = {}): An
     return { ok: true, run };
   }
 
+  if (action === 'workflow_audit_logs') {
+    const uid = String(payload.user_id || '').trim();
+    const isAdmin = Boolean(payload.is_admin);
+    const rawIds = Array.isArray(payload.run_ids) ? payload.run_ids : [];
+    const runIdSet = new Set(rawIds.map((r) => String(r || '').trim()).filter(Boolean));
+    if (runIdSet.size === 0) {
+      return { ok: true, logs: [] };
+    }
+    const ownedRuns = store.workflowRuns.filter(
+      (r) => runIdSet.has(r.id) && (isAdmin || (Boolean(uid) && r.triggered_by === uid))
+    );
+    const groupMap = new Map(ownedRuns.map((r) => [r.id, String(r.group_id || 'workflow')]));
+    const limit = Math.max(1, Math.min(300, Number(payload.limit || 120)));
+    const logs = store.auditLogs
+      .filter((a) => groupMap.has(String(a.target || '')))
+      .slice(0, limit)
+      .map((a) => ({
+        id: a.id,
+        actor_id: a.actor_id,
+        action: a.action,
+        target: a.target,
+        outcome: a.outcome,
+        details_json: a.details_json,
+        created_at: a.created_at,
+        workflow_key: groupMap.get(String(a.target || '')) || 'workflow',
+      }));
+    return { ok: true, logs };
+  }
+
   if (action === 'reasoning_traces_list') {
     const uid = payload.user_id ? String(payload.user_id) : null;
     const isAdmin = Boolean(payload.is_admin);

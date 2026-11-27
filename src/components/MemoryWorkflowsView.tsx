@@ -40,6 +40,7 @@ import type {
   WorkflowStageResult,
 } from '../types';
 import { CopyButton } from './CopyButton';
+import { WorkflowLogsConsole } from './WorkflowLogsConsole';
 
 interface MemoryWorkflowsViewProps {
   token: string;
@@ -1092,6 +1093,9 @@ export function MemoryWorkflowsView({ token, user }: MemoryWorkflowsViewProps) {
               </div>
             ))}
           </section>
+
+          {/* Real-time Orchestration Logs Console (/api/v1/workflows/logs) */}
+          <WorkflowLogsConsole token={token} />
 
           {/* Recent Workflow Executions */}
           <section>
