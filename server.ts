@@ -18,8 +18,15 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PORT) || 3000;
+const configuredSessionSecret = (process.env.ZYRQUEN_SESSION_SECRET || '').trim();
+if (
+  process.env.NODE_ENV === 'production' &&
+  Buffer.byteLength(configuredSessionSecret, 'utf8') < 32
+) {
+  throw new Error('ZYRQUEN_SESSION_SECRET must be configured with at least 32 bytes in production.');
+}
 const SESSION_SECRET =
-  process.env.ZYRQUEN_SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+  configuredSessionSecret || crypto.randomBytes(32).toString('hex');
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const revokedTokenIds = new Set<string>();
 let pythonUnavailable = process.env.ZYRQUEN_NODE_FALLBACK === '1';
