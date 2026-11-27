@@ -508,6 +508,86 @@ class WorkflowStore:
             row = conn.execute("SELECT * FROM workflow_approvals WHERE id = ?", (approval_id,)).fetchone()
             return dict(row) if row is not None else None
 
+    def find_approval_for_step(self, *, run_id: str, step_key: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM workflow_approvals WHERE run_id = ? AND step_key = ? ORDER BY created_at DESC LIMIT 1",
+                (str(run_id), str(step_key)),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+    def create_approval(
+        self,
+        *,
+        approval_id: str,
+        run_id: str,
+        step_key: str,
+        action_type: str,
+        scope: str,
+        requested_by_user_id: str | None,
+        status: str,
+        expires_at: str,
+        created_at: str,
+    ) -> dict[str, Any]:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO workflow_approvals (
+                    id, run_id, step_key, action_type, scope, requested_by_user_id,
+                    status, expires_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    approval_id,
+                    run_id,
+                    step_key,
+                    action_type,
+                    scope,
+                    requested_by_user_id,
+                    status,
+                    expires_at,
+                    created_at,
+                ),
+            )
+            row = conn.execute("SELECT * FROM workflow_approvals WHERE id = ?", (approval_id,)).fetchone()
+            return dict(row) if row is not None else {}
+
+    def update_approval(
+        self,
+        approval_id: str,
+        *,
+        status: str,
+        approved_by_user_id: str | None,
+        signature_hmac: str | None,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE workflow_approvals
+                SET status = ?, approved_by_user_id = ?, signature_hmac = ?, reason = ?
+                WHERE id = ?
+                """,
+                (status, approved_by_user_id, signature_hmac, reason, str(approval_id)),
+            )
+            row = conn.execute("SELECT * FROM workflow_approvals WHERE id = ?", (approval_id,)).fetchone()
+            return dict(row) if row is not None else {}
+
+    def consume_approval(self, approval_id: str, *, consumed_at: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            cur = conn.execute(
+                """
+                UPDATE workflow_approvals
+                SET status = 'consumed', consumed_at = ?
+                WHERE id = ? AND status = 'approved' AND consumed_at IS NULL
+                """,
+                (consumed_at, str(approval_id)),
+            )
+            if cur.rowcount != 1:
+                return None
+            row = conn.execute("SELECT * FROM workflow_approvals WHERE id = ?", (approval_id,)).fetchone()
+            return dict(row) if row is not None else None
+
     def mark_approval_consumed(self, approval_id: str) -> bool:
         now = utc_now_iso()
         with self._conn() as conn:

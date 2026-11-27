@@ -10,15 +10,15 @@ from typing import Any
 
 from apps.core.workflow.audit import WorkflowAuditLogger, redact_text
 from apps.core.workflow.dag import resolve_ready_steps
-from apps.core.workflow.governance import WorkflowGovernance
+from apps.core.workflow.governance import ApprovalViolationError, WorkflowGovernance
 from apps.core.workflow.handlers import register_builtin_workflows
 from apps.core.workflow.models import (
-    ApprovalViolationError,
     StepExecutionResult,
     WorkflowDefinition,
     WorkflowStepSpec,
     utc_now_iso,
 )
+from apps.core.workflow.param_budget import resolve_estimated_params
 from apps.core.workflow.queue import DualLaneTaskQueue
 from apps.core.workflow.recovery import RecoveryManager
 from apps.core.workflow.registry import WorkflowRegistry
@@ -379,7 +379,10 @@ class CentralWorkflowOrchestrator:
                 step_key=step.step_key,
             )
         res_check = self.resource_guard.check_step(
-            step, payload, has_paid_gpu_approval=has_paid_gpu_approval
+            step,
+            payload,
+            has_paid_gpu_approval=has_paid_gpu_approval,
+            estimated_params=resolve_estimated_params(step, previous_outputs),
         )
         self.store.update_run(run_id, resource_snapshot=res_check.snapshot)
 
@@ -448,7 +451,6 @@ class CentralWorkflowOrchestrator:
                     step=step,
                     requested_by_user_id=requested_by_user_id,
                     scope=f"{defn.workflow_key}:{step.step_key}",
-                    reason=step.description,
                 )
                 self.store.update_step(run_id, step.step_key, status="WAITING_APPROVAL")
                 self.store.update_run(

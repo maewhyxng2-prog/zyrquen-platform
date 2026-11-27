@@ -23,6 +23,20 @@ MAX_EXPERIMENT_TIMEOUT_SECONDS = 3600
 MAX_LOOP_TIMEOUT_SECONDS = 14400
 
 
+def _coerce_params_count(value: Any) -> int | None:
+    """Strictly coerce an estimated parameter count; None means not a non-negative integer."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return int(value) if value.is_integer() and value >= 0 else None
+    if isinstance(value, str):
+        text = value.strip()
+        return int(text) if text.isdigit() else None
+    return None
+
+
 def enforce_cpu_thread_cap(max_threads: int = MAX_CPU_THREADS, torch_mod: Any | None = None) -> int:
     """Cap BLAS/OpenMP and PyTorch thread counts to prevent CPU oversubscription."""
     cap = max(1, int(max_threads))
@@ -246,13 +260,22 @@ class WorkflowResourceGuard:
             if estimated_params is not None
             else payload.get("estimated_params")
         )
-        if params_count is not None and int(params_count) > MAX_CPU_MODEL_PARAMETERS:
-            return GuardOutcome(
-                allowed=False,
-                blocked=True,
-                reason="parameter_budget_exceeded",
-                detail={"estimated_params": int(params_count), "max_params": MAX_CPU_MODEL_PARAMETERS},
-            )
+        if params_count is not None:
+            params_count = _coerce_params_count(params_count)
+            if params_count is None:
+                return GuardOutcome(
+                    allowed=False,
+                    blocked=True,
+                    reason="invalid_estimated_params",
+                    detail={"max_params": MAX_CPU_MODEL_PARAMETERS},
+                )
+            if params_count > MAX_CPU_MODEL_PARAMETERS:
+                return GuardOutcome(
+                    allowed=False,
+                    blocked=True,
+                    reason="parameter_budget_exceeded",
+                    detail={"estimated_params": params_count, "max_params": MAX_CPU_MODEL_PARAMETERS},
+                )
 
         return GuardOutcome(
             allowed=True,

@@ -14,6 +14,8 @@ from typing import Any
 class ApprovalViolationError(PermissionError):
     """Raised when a Tier-2 Approval Gate ticket is missing, unapproved, expired, forged, or already consumed."""
 
+    error_code = "approval_violation"
+
 
 @dataclass(frozen=True)
 class WorkflowStepSpec:
@@ -25,6 +27,7 @@ class WorkflowStepSpec:
     depends_on: tuple[str, ...] = field(default_factory=tuple)
     lane: str = "control_ops"
     max_attempts: int = 2
+    estimated_params: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -36,6 +39,7 @@ class WorkflowStepSpec:
             "depends_on": list(self.depends_on),
             "lane": self.lane,
             "max_attempts": self.max_attempts,
+            "estimated_params": self.estimated_params,
         }
 
 
@@ -306,7 +310,7 @@ class WorkflowGovernance:
         step: Any,
         *,
         expected_scope: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
         step_key = str(getattr(step, "step_key", "") or "")
         action_type = getattr(step, "action_type", None)
         candidates: list[dict[str, Any]] = []
@@ -321,9 +325,9 @@ class WorkflowGovernance:
                 candidates.append(row)
 
         if not candidates:
-            raise ApprovalViolationError(
-                f"No approved Tier-2 ticket found for run_id={run_id!r}, step_key={step_key!r}."
-            )
+            # No ticket requested yet: the orchestrator creates the pending approval and pauses.
+            # Tampered, expired, out-of-scope and consumed tickets still raise below.
+            return None
 
         last_exc: Exception | None = None
         for row in candidates:

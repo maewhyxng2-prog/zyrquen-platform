@@ -95,6 +95,15 @@ class TransientWorkflowError(WorkflowError):
     """Raised when a step hits a transient I/O or lock error eligible for bounded retry."""
 
 
+def _optional_estimated_params(value: Any) -> int | None:
+    """Validate a declared step parameter budget; reject anything not a non-negative int."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise WorkflowValidationError(f"estimated_params must be a non-negative integer, got {value!r}")
+    return value
+
+
 @dataclass(frozen=True)
 class WorkflowStepSpec:
     step_key: str
@@ -107,6 +116,7 @@ class WorkflowStepSpec:
     max_attempts: int = 2
     retry_backoff_sec: float = 0.25
     requires_paid_gpu: bool = False
+    estimated_params: int | None = None
     estimated_ram_mb: float = 64.0
     min_disk_gb: float = 0.2
     condition_step: str | None = None
@@ -124,6 +134,7 @@ class WorkflowStepSpec:
             "max_attempts": self.max_attempts,
             "retry_backoff_sec": self.retry_backoff_sec,
             "requires_paid_gpu": self.requires_paid_gpu,
+            "estimated_params": self.estimated_params,
             "estimated_ram_mb": self.estimated_ram_mb,
             "min_disk_gb": self.min_disk_gb,
             "condition_step": self.condition_step,
@@ -143,6 +154,7 @@ class WorkflowStepSpec:
             max_attempts=int(raw.get("max_attempts", 2)),
             retry_backoff_sec=float(raw.get("retry_backoff_sec", 0.25)),
             requires_paid_gpu=bool(raw.get("requires_paid_gpu", False)),
+            estimated_params=_optional_estimated_params(raw.get("estimated_params")),
             estimated_ram_mb=float(raw.get("estimated_ram_mb", 64.0)),
             min_disk_gb=float(raw.get("min_disk_gb", 0.2)),
             condition_step=raw.get("condition_step"),
