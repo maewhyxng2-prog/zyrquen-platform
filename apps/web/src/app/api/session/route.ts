@@ -106,7 +106,7 @@ function buildSessionResponse(
       ? user.emailVerified
       : typeof user.email_verified === "boolean"
         ? user.email_verified
-        : true;
+        : false;
 
   if (!resolvedId || !resolvedEmail || !isActive) {
     const response = NextResponse.json(
