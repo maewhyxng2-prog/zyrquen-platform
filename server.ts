@@ -889,6 +889,10 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
       },
     });
     if (!created.ok || !created.user) {
+      if (created.error_code === 'ADMIN_ALREADY_CLAIMED') {
+        res.status(409).json({ error: 'Administrator already claimed. Sign in instead.' });
+        return;
+      }
       const isDup = created.error?.includes('UNIQUE');
       res.status(isDup ? 409 : 400).json({
         error: isDup ? 'อีเมลนี้ถูกใช้งานแล้ว กรุณาใช้อีเมลอื่น' : created.error || 'Failed to claim admin account',
