@@ -366,6 +366,10 @@ export function SettingsView({
 
   async function handleSaveAccountPassword(e: React.FormEvent) {
     e.preventDefault();
+    if (newPasswordInput.length < 12 || newPasswordInput.length > 128) {
+      setError('รหัสผ่านใหม่ต้องมีความยาว 12–128 ตัวอักษร');
+      return;
+    }
     setSavingPassword(true);
     setError(null);
     setAccountNotice(null);
@@ -1218,12 +1222,12 @@ export function SettingsView({
               <input
                 type="password"
                 required
-                minLength={8}
-                maxLength={256}
+                minLength={12}
+                maxLength={128}
                 aria-label="รหัสผ่านใหม่"
                 value={newPasswordInput}
                 onChange={(e) => setNewPasswordInput(e.target.value)}
-                placeholder="รหัสผ่านใหม่ (อย่างน้อย 8 ตัวอักษร)"
+                placeholder="รหัสผ่านใหม่ (12–128 ตัวอักษร)"
                 className="h-11 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-focus)] focus:outline-none"
               />
               <button
