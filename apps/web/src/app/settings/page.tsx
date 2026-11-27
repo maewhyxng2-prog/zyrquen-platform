@@ -152,13 +152,13 @@ export default function SettingsPage() {
     const err = params.get("oauth_error")?.trim();
     if (!linked && !err) return;
     if (linked) {
-      setOauthNotice(
+      queueMicrotask(() => setOauthNotice(
         `เชื่อมต่อบัญชี ${linked === "github" ? "GitHub" : "Google"} เรียบร้อยแล้ว`,
-      );
+      ));
       params.delete("oauth_linked");
     }
     if (err) {
-      setOauthError(err);
+      queueMicrotask(() => setOauthError(err));
       params.delete("oauth_error");
     }
     const nextSearch = params.toString();

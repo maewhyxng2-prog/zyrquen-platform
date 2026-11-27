@@ -132,7 +132,7 @@ export default function LoginPage() {
     const oauthError = params.get("oauth_error")?.trim();
 
     if (oauthError) {
-      setError(oauthError);
+      queueMicrotask(() => setError(oauthError));
       params.delete("oauth_error");
       const nextSearch = params.toString();
       window.history.replaceState(
