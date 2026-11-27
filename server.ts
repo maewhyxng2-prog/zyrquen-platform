@@ -840,8 +840,8 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
     const password = String(req.body?.password || '');
     const passcode = String(req.body?.passcode || '');
 
-    if (!isValidEmail(email) || displayName.length < 2 || displayName.length > 80 || password.length < 8 || password.length > 256) {
-      res.status(400).json({ error: 'Provide a valid email, display name (2+ chars), and password (8-256 chars).' });
+    if (!isValidEmail(email) || displayName.length < 2 || displayName.length > 80 || password.length < 12 || password.length > 128) {
+      res.status(400).json({ error: 'Provide a valid email, display name (2+ chars), and password (12-128 chars).' });
       return;
     }
 
@@ -855,13 +855,21 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
     }
 
     const configuredPasscode = (process.env.ZYRQUEN_ADMIN_PASSCODE || '').trim();
-    if (configuredPasscode) {
-      const a = Buffer.from(passcode);
-      const b = Buffer.from(configuredPasscode);
-      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-        res.status(403).json({ error: 'Invalid administrator setup passcode.' });
-        return;
-      }
+    if (!configuredPasscode) {
+      res.status(503).json({
+        error: 'Administrator setup is unavailable until ZYRQUEN_ADMIN_PASSCODE is configured.',
+        code: 'ADMIN_PASSCODE_NOT_CONFIGURED',
+      });
+      return;
+    }
+    const suppliedPasscode = Buffer.from(passcode);
+    const expectedPasscode = Buffer.from(configuredPasscode);
+    if (
+      suppliedPasscode.length !== expectedPasscode.length ||
+      !crypto.timingSafeEqual(suppliedPasscode, expectedPasscode)
+    ) {
+      res.status(403).json({ error: 'Invalid administrator setup passcode.' });
+      return;
     }
 
     const created = await runPythonScript<{ ok: boolean; user?: AuthUser; error?: string }>('db_bridge.py', {
@@ -911,11 +919,11 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
       res.status(400).json({ error: 'ชื่อที่แสดงต้องมีความยาว 2–80 ตัวอักษร' });
       return;
     }
-    if (password.length < 8 || password.length > 256) {
-      res.status(400).json({ error: 'รหัสผ่านต้องมีความยาว 8–256 ตัวอักษร' });
+    if (password.length < 12 || password.length > 128) {
+      res.status(400).json({ error: 'รหัสผ่านต้องมีความยาว 12–128 ตัวอักษร' });
       return;
     }
-    if (confirmPassword !== undefined && password !== confirmPassword) {
+    if (typeof req.body?.confirmPassword !== 'string' || password !== confirmPassword) {
       res.status(400).json({ error: 'รหัสผ่านและยืนยันรหัสผ่านไม่ตรงกัน' });
       return;
     }
@@ -1649,8 +1657,8 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
       res.status(400).json({ error: 'โทเคนรีเซ็ตรหัสผ่านไม่ถูกต้อง' });
       return;
     }
-    if (newPassword.length < 8 || newPassword.length > 256) {
-      res.status(400).json({ error: 'รหัสผ่านใหม่ต้องมีความยาว 8–256 ตัวอักษร' });
+    if (newPassword.length < 12 || newPassword.length > 128) {
+      res.status(400).json({ error: 'รหัสผ่านใหม่ต้องมีความยาว 12–128 ตัวอักษร' });
       return;
     }
     const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
@@ -1733,8 +1741,8 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
   app.post('/api/auth/password', requireAuth, async (req: AuthedRequest, res: Response) => {
     const currentPassword = String(req.body?.currentPassword || '');
     const newPassword = String(req.body?.newPassword || '');
-    if (newPassword.length < 8 || newPassword.length > 256) {
-      res.status(400).json({ error: 'รหัสผ่านใหม่ต้องมีความยาว 8–256 ตัวอักษร' });
+    if (newPassword.length < 12 || newPassword.length > 128) {
+      res.status(400).json({ error: 'รหัสผ่านใหม่ต้องมีความยาว 12–128 ตัวอักษร' });
       return;
     }
     const found = await runPythonScript<{
