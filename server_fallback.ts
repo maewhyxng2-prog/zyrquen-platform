@@ -733,6 +733,13 @@ export function runFallbackDbBridge(action: string, payload: AnyRecord = {}): An
     const displayName = String(payload.display_name || '').trim();
     const role = payload.role === 'admin' ? 'admin' : payload.role === 'user' ? 'user' : null;
     if (!role) return { ok: false, error: 'Invalid role' };
+    if (role === 'admin' && store.users.some((u) => u.role === 'admin')) {
+      return {
+        ok: false,
+        error_code: 'ADMIN_ALREADY_CLAIMED',
+        error: 'Administrator already claimed. Sign in instead.',
+      };
+    }
     if (store.users.some((u) => u.email === email)) {
       return { ok: false, error: 'UNIQUE constraint failed: users.email' };
     }
