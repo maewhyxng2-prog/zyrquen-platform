@@ -43,7 +43,7 @@ describe('ZYRQUEN ประสบการณ์แอปพลิเคชั�
     mockFetch({
       'GET /api/auth/status': () =>
         new Response(
-          JSON.stringify({ initialized: false, userCount: 0, envPasscodeConfigured: false }),
+          JSON.stringify({ initialized: false, userCount: 0, envPasscodeConfigured: true }),
           { status: 200 }
         ),
       'GET /api/health': () =>
@@ -97,6 +97,9 @@ describe('ZYRQUEN ประสบการณ์แอปพลิเคชั�
     });
     fireEvent.change(screen.getByLabelText('รหัสผ่าน'), {
       target: { value: 'supersecure99' },
+    });
+    fireEvent.change(screen.getByLabelText('รหัสยืนยันการตั้งค่าเซิร์ฟเวอร์'), {
+      target: { value: 'e2e-admin-passcode-only' },
     });
     fireEvent.click(screen.getByRole('button', { name: /ตั้งค่าผู้ดูแลและเข้าใช้งาน/i }));
 
