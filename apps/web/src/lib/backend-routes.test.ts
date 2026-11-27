@@ -78,6 +78,7 @@ describe("backend proxy route allowlist", () => {
     expect(isAllowedBackendRoute("GET", "v1/workflows/definitions")).toBe(true);
     expect(isAllowedBackendRoute("GET", "v1/workflows/services/status")).toBe(true);
     expect(isAllowedBackendRoute("GET", "v1/workflows/runs")).toBe(true);
+    expect(isAllowedBackendRoute("GET", "v1/workflows/logs")).toBe(true);
     expect(isAllowedBackendRoute("POST", "v1/workflows/runs")).toBe(true);
     expect(
       isAllowedBackendRoute(

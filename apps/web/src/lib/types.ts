@@ -367,3 +367,34 @@ export type TrainingTelemetryPayload = {
   epochs_completed: number | null;
   epochs_note?: string;
 };
+
+export type WorkflowExecutionLogLevel = "INFO" | "WARN" | "ERROR";
+
+export type WorkflowExecutionLogItem = {
+  id: string;
+  run_id: string | null;
+  workflow_key: string | null;
+  step_key: string | null;
+  level: WorkflowExecutionLogLevel;
+  event_type: string;
+  status: string;
+  actor_id?: string | null;
+  message: string;
+  details?: Record<string, unknown> | null;
+  timestamp: string | null;
+};
+
+export type WorkflowActiveJobSummary = {
+  id: string;
+  workflow_key: string;
+  workflow_version?: string;
+  status: string;
+  started_at?: string | null;
+};
+
+export type WorkflowLogsResponse = {
+  items: WorkflowExecutionLogItem[];
+  active_runs: WorkflowActiveJobSummary[];
+  active_only: boolean;
+  polled_at: string;
+};

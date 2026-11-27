@@ -2,7 +2,13 @@ import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from
 import type {
   NativeHealth,
   V10ClosureAudit,
+  WorkflowActiveJobSummary,
+  WorkflowExecutionLogItem,
 } from "./types";
+import {
+  isActiveOrchestrationStatus,
+  logLevelForStatus,
+} from "./workflow-logs";
 
 type StoredUser = {
   id: string;
@@ -1759,6 +1765,116 @@ export async function handleInMemoryBackendRequest(options: {
 
   if (method === "GET" && path === "v1/workflows/audit-logs") {
     return { status: 200, body: { items: store.auditLogs } };
+  }
+
+  if (method === "GET" && path === "v1/workflows/logs") {
+    const runIdFilter = options.searchParams?.get("run_id")?.trim() || null;
+    const activeOnlyParam = options.searchParams?.get("active_only");
+    const activeOnly = activeOnlyParam !== "false";
+    const rawLimit = Number(options.searchParams?.get("limit") ?? 100);
+    const limit = Number.isFinite(rawLimit)
+      ? Math.max(1, Math.min(500, Math.round(rawLimit)))
+      : 100;
+
+    const activeRuns = store.workflowRuns.filter((r) =>
+      isActiveOrchestrationStatus(r.status),
+    );
+    const targetRuns = runIdFilter
+      ? store.workflowRuns.filter((r) => r.id === runIdFilter)
+      : activeOnly
+        ? activeRuns
+        : store.workflowRuns.slice(0, 25);
+
+    const runById = new Map(store.workflowRuns.map((r) => [r.id, r]));
+    const targetRunIds = new Set(targetRuns.map((r) => r.id));
+    const entries: WorkflowExecutionLogItem[] = [];
+
+    for (const audit of store.auditLogs) {
+      if (!audit.resource_id || !targetRunIds.has(audit.resource_id)) {
+        continue;
+      }
+      const runObj = runById.get(audit.resource_id);
+      entries.push({
+        id: `audit:${audit.id}`,
+        run_id: audit.resource_id,
+        workflow_key: runObj?.workflow_key ?? null,
+        step_key: null,
+        level: logLevelForStatus(runObj?.status ?? null, audit.action),
+        event_type: audit.action,
+        status: runObj?.status ?? "RECORDED",
+        actor_id: audit.actor_user_id,
+        message: `${audit.action} on run ${audit.resource_id}`,
+        details: null,
+        timestamp: audit.created_at,
+      });
+    }
+
+    for (const runObj of targetRuns) {
+      const runTimestamp = runObj.finished_at || runObj.started_at;
+      entries.push({
+        id: `run:${runObj.id}:${runObj.status}`,
+        run_id: runObj.id,
+        workflow_key: runObj.workflow_key,
+        step_key: null,
+        level: logLevelForStatus(runObj.status),
+        event_type: `workflow.${runObj.status.toLowerCase()}`,
+        status: runObj.status,
+        actor_id: runObj.requested_by_user_id ?? "orchestrator",
+        message:
+          runObj.error_message ||
+          `Workflow ${runObj.workflow_key} (${runObj.trigger_type}) is ${runObj.status}`,
+        details: {
+          workflow_version: runObj.workflow_version,
+          trigger_type: runObj.trigger_type,
+        },
+        timestamp: runTimestamp,
+      });
+
+      for (const step of runObj.steps) {
+        const stepTimestamp = step.finished_at || step.started_at || runObj.started_at;
+        const verdict = step.evidence?.verdict ?? null;
+        const summary =
+          step.evidence?.summary?.trim() ||
+          `Step ${step.step_key} is ${step.status} (attempt ${step.attempt})`;
+        entries.push({
+          id: `step:${runObj.id}:${step.step_key}:${step.status}:${step.attempt}`,
+          run_id: runObj.id,
+          workflow_key: runObj.workflow_key,
+          step_key: step.step_key,
+          level: logLevelForStatus(step.status, verdict),
+          event_type: `step.${step.status.toLowerCase()}`,
+          status: step.status,
+          actor_id: runObj.requested_by_user_id ?? "orchestrator",
+          message: summary,
+          details: {
+            attempt: step.attempt,
+            verdict,
+            output: step.output,
+          },
+          timestamp: stepTimestamp,
+        });
+      }
+    }
+
+    entries.sort((a, b) => (b.timestamp ?? "").localeCompare(a.timestamp ?? ""));
+
+    const activeSummaries: WorkflowActiveJobSummary[] = activeRuns.map((r) => ({
+      id: r.id,
+      workflow_key: r.workflow_key,
+      workflow_version: r.workflow_version,
+      status: r.status,
+      started_at: r.started_at,
+    }));
+
+    return {
+      status: 200,
+      body: {
+        items: entries.slice(0, limit),
+        active_runs: activeSummaries,
+        active_only: activeOnly,
+        polled_at: new Date().toISOString(),
+      },
+    };
   }
 
   if (method === "GET" && path === "v1/models/registry") {

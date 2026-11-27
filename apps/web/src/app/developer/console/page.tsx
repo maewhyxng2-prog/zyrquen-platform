@@ -5,6 +5,7 @@ import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
 import { TrainingPipelinePanel } from "@/components/TrainingPipelinePanel";
 import { WorkflowConsole } from "@/components/WorkflowConsole";
+import { WorkflowLogsPanel } from "@/components/WorkflowLogsPanel";
 
 function CapabilityPanel({
   phase,
@@ -59,6 +60,8 @@ export default function DeveloperConsolePage() {
       </Panel>
 
       <WorkflowConsole />
+
+      <WorkflowLogsPanel />
 
       <section className="capability-grid" aria-label="ความสามารถที่พัฒนาไว้ในโค้ดหลัก">
         <CapabilityPanel

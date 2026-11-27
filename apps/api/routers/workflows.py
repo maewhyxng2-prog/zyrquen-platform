@@ -283,6 +283,140 @@ def list_workflow_audit_logs(
     return {"items": redact_dict(engine.store.list_audit_logs(run_id=run_id, limit=limit))}
 
 
+_ACTIVE_ORCHESTRATION_STATUSES = {
+    "PENDING",
+    "RUNNING",
+    "VERIFYING",
+    "WAITING_APPROVAL",
+    "WAITING_RESOURCE",
+}
+
+
+def _log_level_for_status(status_value: str | None, decision_value: str | None = None) -> str:
+    combined = f"{status_value or ''} {decision_value or ''}".upper()
+    if any(tok in combined for tok in ("FAILED", "ERROR", "DENY", "REJECTED", "VIOLATION")):
+        return "ERROR"
+    if any(tok in combined for tok in ("BLOCKED", "WAITING", "WARN", "RETRY", "CANCEL")):
+        return "WARN"
+    return "INFO"
+
+
+@router.get("/v1/workflows/logs")
+def list_workflow_execution_logs(
+    run_id: str | None = Query(default=None),
+    active_only: bool = Query(default=True),
+    limit: int = Query(default=100, ge=1, le=500),
+    _: User = Depends(get_current_user),
+):
+    """Return structured execution logs for active (or filtered) workflow orchestration jobs."""
+    from apps.core.workflow.models import utc_now_iso
+
+    engine = get_workflow_engine()
+    all_runs = engine.store.list_runs(limit=100)
+    active_runs = [r for r in all_runs if r.get("status") in _ACTIVE_ORCHESTRATION_STATUSES]
+
+    if run_id:
+        target_runs = [r for r in all_runs if r.get("id") == run_id]
+    elif active_only:
+        target_runs = active_runs
+    else:
+        target_runs = all_runs[:25]
+
+    run_by_id = {str(r.get("id")): r for r in all_runs if r.get("id")}
+    target_run_ids = {str(r.get("id")) for r in target_runs if r.get("id")}
+
+    entries: list[dict[str, object]] = []
+
+    if run_id:
+        raw_audits = engine.store.list_audit_logs(run_id=run_id, limit=limit)
+    else:
+        raw_audits = engine.store.list_audit_logs(limit=min(500, limit * 3))
+
+    for audit in raw_audits:
+        audit_run_id = audit.get("run_id")
+        if target_run_ids:
+            if str(audit_run_id or "") not in target_run_ids:
+                continue
+        elif active_only:
+            continue
+
+        run_obj = run_by_id.get(str(audit_run_id or ""), {})
+        details = audit.get("details") if isinstance(audit.get("details"), dict) else {}
+        decision = str(audit.get("decision") or "")
+        event_type = str(audit.get("event_type") or "workflow.event")
+        step_key = audit.get("step_key")
+        message = (
+            str(details.get("message") or details.get("summary") or details.get("reason") or "").strip()
+            or f"{event_type} ({decision})"
+        )
+        entries.append(
+            {
+                "id": f"audit:{audit.get('id')}",
+                "run_id": audit_run_id,
+                "workflow_key": run_obj.get("workflow_key") or audit.get("resource"),
+                "step_key": step_key,
+                "level": _log_level_for_status(run_obj.get("status"), decision),
+                "event_type": event_type,
+                "status": run_obj.get("status") or decision,
+                "actor_id": audit.get("actor_id"),
+                "message": message,
+                "details": details,
+                "timestamp": audit.get("created_at"),
+            }
+        )
+
+    for run_obj in target_runs:
+        rid = str(run_obj.get("id") or "")
+        wf_key = run_obj.get("workflow_key")
+        for step in run_obj.get("steps") or []:
+            step_ts = step.get("finished_at") or step.get("started_at") or run_obj.get("started_at") or run_obj.get("created_at")
+            evidence = step.get("evidence") if isinstance(step.get("evidence"), dict) else {}
+            output = step.get("output") if isinstance(step.get("output"), dict) else {}
+            step_status = str(step.get("status") or "PENDING")
+            summary_msg = str(evidence.get("summary") or "").strip()
+            if not summary_msg:
+                summary_msg = f"Step {step.get('step_key')} is {step_status} (attempt {step.get('attempt', 0)})"
+            entries.append(
+                {
+                    "id": f"step:{rid}:{step.get('step_key')}:{step_status}:{step.get('attempt', 0)}",
+                    "run_id": rid,
+                    "workflow_key": wf_key,
+                    "step_key": step.get("step_key"),
+                    "level": _log_level_for_status(step_status, evidence.get("verdict")),
+                    "event_type": f"step.{step_status.lower()}",
+                    "status": step_status,
+                    "actor_id": run_obj.get("requested_by_user_id") or "orchestrator",
+                    "message": summary_msg,
+                    "details": {
+                        "lane": step.get("lane"),
+                        "attempt": step.get("attempt"),
+                        "verdict": evidence.get("verdict"),
+                        "output": output,
+                    },
+                    "timestamp": step_ts,
+                }
+            )
+
+    entries.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
+    return redact_dict(
+        {
+            "items": entries[:limit],
+            "active_runs": [
+                {
+                    "id": r.get("id"),
+                    "workflow_key": r.get("workflow_key"),
+                    "workflow_version": r.get("workflow_version"),
+                    "status": r.get("status"),
+                    "started_at": r.get("started_at") or r.get("created_at"),
+                }
+                for r in active_runs
+            ],
+            "active_only": active_only,
+            "polled_at": utc_now_iso(),
+        }
+    )
+
+
 _BASELINE_POLICY = {
     "v7": {"status": "Baseline", "note": "Preserved legacy baseline"},
     "v8": {"status": "CLOSED / FROZEN", "note": "Immutable frozen reference"},

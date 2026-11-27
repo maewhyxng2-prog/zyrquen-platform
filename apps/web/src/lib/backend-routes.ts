@@ -13,6 +13,7 @@ const routes: Record<string, ReadonlySet<string>> = {
     "v1/workflows/runs",
     "v1/workflows/approvals",
     "v1/workflows/audit-logs",
+    "v1/workflows/logs",
     "v1/models/registry",
     "v1/models/registry/compare",
     "v1/v10/closure-audit",

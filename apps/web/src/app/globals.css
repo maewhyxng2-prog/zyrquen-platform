@@ -2186,6 +2186,222 @@ code {
   white-space: nowrap;
 }
 
+.workflow-logs-toolbar {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.workflow-logs-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.workflow-logs-segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.workflow-logs-select {
+  min-width: 220px;
+  flex: 1 1 240px;
+  max-width: 360px;
+}
+
+.workflow-logs-levels {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-inset);
+  padding: 3px;
+}
+
+.workflow-logs-level-btn {
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 10px;
+  transition: background 140ms var(--ease-out), color 140ms var(--ease-out);
+}
+
+.workflow-logs-level-btn:hover {
+  color: var(--text);
+}
+
+.workflow-logs-level-btn.is-active {
+  background: var(--blue-soft);
+  color: var(--cyan);
+}
+
+.workflow-logs-search-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.workflow-logs-search {
+  display: flex;
+  flex: 1 1 260px;
+  min-height: 36px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-inset);
+  color: var(--text-muted);
+  padding: 0 10px;
+}
+
+.workflow-logs-search:focus-within {
+  border-color: var(--blue);
+  color: var(--cyan);
+}
+
+.workflow-logs-search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.workflow-logs-search input::placeholder {
+  color: var(--text-muted);
+}
+
+.workflow-logs-search-clear {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+}
+
+.workflow-logs-search-clear:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.workflow-logs-autoscroll {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  user-select: none;
+}
+
+.workflow-logs-meta-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.workflow-logs-feed {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  max-height: 440px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-inset);
+  padding: 12px;
+  overscroll-behavior: contain;
+}
+
+.workflow-log-row {
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(30, 41, 67, 0.85);
+  border-radius: var(--radius-xs);
+  background: var(--bg-graphite);
+  padding: 10px 12px;
+}
+
+.workflow-log-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.workflow-log-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.workflow-log-time {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.workflow-log-key {
+  color: var(--cyan);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.workflow-log-step {
+  color: var(--violet-bright);
+  font-size: 11px;
+}
+
+.workflow-log-runid,
+.workflow-log-status {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.workflow-log-message {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.workflow-log-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
 /* ── Full-Screen AI Workspace & Composer ──────────────────────────────────── */
 
 .workspace-loading-shell {

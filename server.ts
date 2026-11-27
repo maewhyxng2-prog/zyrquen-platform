@@ -1079,6 +1079,117 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
     res.json(data);
   });
 
+  app.get('/api/workflows/logs', requireAuth, async (req: AuthedRequest, res: Response) => {
+    const activeOnly = String(req.query.active_only ?? 'true').toLowerCase() !== 'false';
+    const runIdFilter = String(req.query.run_id ?? '').trim() || null;
+    const rawLimit = Number(req.query.limit ?? 100);
+    const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(500, Math.round(rawLimit))) : 100;
+
+    const data = await runPythonScript<{
+      ok: boolean;
+      runs?: Array<{
+        id: string;
+        group_id?: string;
+        status?: string;
+        summary?: string | null;
+        stages_json?: string | null;
+        created_at?: string | null;
+        updated_at?: string | null;
+      }>;
+    }>('db_bridge.py', {
+      action: 'workflows_list',
+      payload: {
+        user_id: req.user!.id,
+        is_admin: req.user!.role === 'admin',
+      },
+    });
+
+    const activeStatuses = new Set([
+      'PENDING',
+      'PENDING_APPROVAL',
+      'RUNNING',
+      'VERIFYING',
+      'WAITING_APPROVAL',
+      'WAITING_RESOURCE',
+    ]);
+
+    const levelFor = (st?: string | null): 'INFO' | 'WARN' | 'ERROR' => {
+      const upper = String(st || '').toUpperCase();
+      if (upper.includes('FAIL') || upper.includes('ERROR') || upper.includes('REJECT')) return 'ERROR';
+      if (upper.includes('WAIT') || upper.includes('PENDING') || upper.includes('BLOCK') || upper.includes('CANCEL')) return 'WARN';
+      return 'INFO';
+    };
+
+    const runs = Array.isArray(data.runs) ? data.runs : [];
+    const activeRuns = runs.filter((r) => activeStatuses.has(String(r.status || '').toUpperCase()));
+    const targetRuns = runIdFilter
+      ? runs.filter((r) => r.id === runIdFilter)
+      : activeOnly
+        ? activeRuns
+        : runs.slice(0, 25);
+
+    const items: Array<Record<string, unknown>> = [];
+    for (const r of targetRuns) {
+      const status = String(r.status || 'UNKNOWN');
+      const workflowKey = String(r.group_id || 'workflow');
+      const ts = r.updated_at || r.created_at || null;
+      items.push({
+        id: `run:${r.id}:${status}`,
+        run_id: r.id,
+        workflow_key: workflowKey,
+        step_key: null,
+        level: levelFor(status),
+        event_type: `workflow.${status.toLowerCase()}`,
+        status,
+        actor_id: 'orchestrator',
+        message: r.summary || `Workflow ${workflowKey} is ${status}`,
+        details: null,
+        timestamp: ts,
+      });
+
+      if (typeof r.stages_json === 'string' && r.stages_json.trim()) {
+        try {
+          const stages = JSON.parse(r.stages_json) as Array<Record<string, unknown>>;
+          if (Array.isArray(stages)) {
+            stages.forEach((stage, idx) => {
+              const stepKey = String(stage.name || stage.step_key || `stage_${idx + 1}`);
+              const stepStatus = String(stage.status || status);
+              items.push({
+                id: `step:${r.id}:${stepKey}:${stepStatus}:${idx}`,
+                run_id: r.id,
+                workflow_key: workflowKey,
+                step_key: stepKey,
+                level: levelFor(stepStatus),
+                event_type: `step.${stepStatus.toLowerCase()}`,
+                status: stepStatus,
+                actor_id: 'orchestrator',
+                message: String(stage.detail || stage.summary || `${stepKey}: ${stepStatus}`),
+                details: null,
+                timestamp: String(stage.updated_at || stage.finished_at || stage.started_at || ts || ''),
+              });
+            });
+          }
+        } catch {
+          // Ignore malformed stage JSON
+        }
+      }
+    }
+
+    items.sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
+
+    res.json({
+      items: items.slice(0, limit),
+      active_runs: activeRuns.map((r) => ({
+        id: r.id,
+        workflow_key: String(r.group_id || 'workflow'),
+        status: String(r.status || 'UNKNOWN'),
+        started_at: r.created_at ?? null,
+      })),
+      active_only: activeOnly,
+      polled_at: new Date().toISOString(),
+    });
+  });
+
   app.post('/api/workflows/:groupId/run', requireAuth, async (req: AuthedRequest, res: Response) => {
     const datasetId = req.body?.datasetId ? String(req.body.datasetId) : null;
     const result = await runPythonScript<{ ok: boolean; run?: Record<string, unknown>; error?: string }>(
