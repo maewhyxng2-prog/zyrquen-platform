@@ -106,7 +106,7 @@ jobs:
 
       - name: Upload Codex review transcript
         if: always() && steps.codex-config.outputs.review_status == 'ready'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: codex-pr-review-${{ github.event.pull_request.number }}
           path: codex-review-output.md

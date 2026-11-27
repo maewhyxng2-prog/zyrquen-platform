@@ -68,7 +68,7 @@ jobs:
 
       - name: Upload Maintainer Audit Report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: maintainer-audit-report
           path: maintainer-audit-report.json
