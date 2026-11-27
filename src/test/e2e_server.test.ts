@@ -689,6 +689,7 @@ describe('Isolated 6-Step Non-Skippable Native Training Pipeline Gate E2E', () =
         email: 'dev-kg@zyrquen.local',
         displayName: 'Dev Contributor',
         password: 'DevPassword123!',
+        confirmPassword: 'DevPassword123!',
       }),
     });
     expect(devRegRes.status).toBe(201);
@@ -1254,6 +1255,7 @@ describe('Isolated 6-Step Non-Skippable Native Training Pipeline Gate E2E', () =
         email: 'regular-user@zyrquen.local',
         displayName: 'Regular User',
         password: 'RegularPassword123!',
+        confirmPassword: 'RegularPassword123!',
       }),
     });
     expect(userRegRes.status).toBe(201);
