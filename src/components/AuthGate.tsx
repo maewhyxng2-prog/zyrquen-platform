@@ -228,9 +228,21 @@ export function AuthGate({
       return;
     }
 
+    if (mode === 'claim' || mode === 'register' || mode === 'reset') {
+      if (password.length < 12 || password.length > 128) {
+        setError('รหัสผ่านต้องมีความยาว 12–128 ตัวอักษร');
+        return;
+      }
+    }
+
+    if (mode === 'claim' && !authStatus.envPasscodeConfigured) {
+      setError('เซิร์ฟเวอร์ยังไม่ได้ตั้งค่า ZYRQUEN_ADMIN_PASSCODE จึงไม่สามารถตั้งค่าผู้ดูแลได้');
+      return;
+    }
+
     if (mode === 'reset') {
-      if (password.length < 8) {
-        setError('รหัสผ่านใหม่ต้องมีความยาวอย่างน้อย 8 ตัวอักษร');
+      if (password.length < 12 || password.length > 128) {
+        setError('รหัสผ่านใหม่ต้องมีความยาว 12–128 ตัวอักษร');
         return;
       }
       if (password !== confirmPassword) {
@@ -259,10 +271,6 @@ export function AuthGate({
     if (mode === 'register') {
       if (displayName.trim().length < 2) {
         setError('ชื่อที่แสดงต้องมีอย่างน้อย 2 ตัวอักษร');
-        return;
-      }
-      if (password.length < 8) {
-        setError('รหัสผ่านต้องมีความยาวอย่างน้อย 8 ตัวอักษร');
         return;
       }
       if (password !== confirmPassword) {
@@ -599,12 +607,12 @@ export function AuthGate({
                     id="zyrq-password"
                     type={showPassword ? 'text' : 'password'}
                     required
-                    minLength={8}
-                    maxLength={256}
+                    minLength={mode === 'login' ? 1 : 12}
+                    maxLength={mode === 'login' ? 256 : 128}
                     autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    placeholder="อย่างน้อย 8 ตัวอักษร"
+                    placeholder={mode === 'login' ? 'กรอกรหัสผ่าน' : '12–128 ตัวอักษร'}
                     className="h-12 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] pl-3.5 pr-11 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-focus)] focus:outline-none"
                   />
                   <button
@@ -631,8 +639,8 @@ export function AuthGate({
                   id="zyrq-confirm-password"
                   type={showPassword ? 'text' : 'password'}
                   required
-                  minLength={8}
-                  maxLength={256}
+                  minLength={12}
+                  maxLength={128}
                   autoComplete="new-password"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
