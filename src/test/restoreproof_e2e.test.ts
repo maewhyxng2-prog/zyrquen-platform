@@ -12,13 +12,16 @@ describe('RestoreProof Real HTTP + Python CLI E2E (Isolated Data Dir)', () => {
   let tmpDataDir = '';
   let prevDataDir: string | undefined;
   let prevNoAutostart: string | undefined;
+  let prevAdminPasscode: string | undefined;
 
   beforeAll(async () => {
     tmpDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zyrquen-rp-e2e-'));
     prevDataDir = process.env.ZYRQUEN_DATA_DIR;
     prevNoAutostart = process.env.ZYRQUEN_NO_AUTOSTART;
+    prevAdminPasscode = process.env.ZYRQUEN_ADMIN_PASSCODE;
     process.env.ZYRQUEN_DATA_DIR = tmpDataDir;
     process.env.ZYRQUEN_NO_AUTOSTART = '1';
+    process.env.ZYRQUEN_ADMIN_PASSCODE = 'e2e-admin-passcode-only';
 
     const { createApp } = await import('../../server');
     const app = await createApp({ attachVite: false });
@@ -46,6 +49,11 @@ describe('RestoreProof Real HTTP + Python CLI E2E (Isolated Data Dir)', () => {
       delete process.env.ZYRQUEN_NO_AUTOSTART;
     } else {
       process.env.ZYRQUEN_NO_AUTOSTART = prevNoAutostart;
+    }
+    if (prevAdminPasscode === undefined) {
+      delete process.env.ZYRQUEN_ADMIN_PASSCODE;
+    } else {
+      process.env.ZYRQUEN_ADMIN_PASSCODE = prevAdminPasscode;
     }
     fs.rmSync(tmpDataDir, { recursive: true, force: true });
   });
