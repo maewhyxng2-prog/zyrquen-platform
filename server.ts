@@ -879,7 +879,7 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
       return;
     }
 
-    const created = await runPythonScript<{ ok: boolean; user?: AuthUser; error?: string }>('db_bridge.py', {
+    const created = await runPythonScript<{ ok: boolean; user?: AuthUser; error?: string; error_code?: string }>('db_bridge.py', {
       action: 'auth_create_user',
       payload: {
         email,
