@@ -3,6 +3,8 @@ import {
   computeRunDurationMs,
   computeRunProgress,
   extractRunMetrics,
+  filterWorkflowDefinitions,
+  filterWorkflowRuns,
   formatDuration,
   formatLoss,
   isWorkflowRunActive,
@@ -161,5 +163,65 @@ describe("extractRunMetrics & selectLatestCompletedKpi", () => {
     expect(summary?.latestMetrics.epochs).toBe(3);
     expect(extractRunMetrics(sysCheck).hasTrainingMetrics).toBe(false);
     expect(computeRunDurationMs(makeRun({ finished_at: null }))).toBeNull();
+  });
+});
+
+describe("WorkflowConsole Tier-2 approval filtering", () => {
+  it("switches cleanly between All Workflows and Only Pending Tier-2 Approvals", () => {
+    const waitingRun = makeRun({
+      id: "run-wait",
+      workflow_key: "training.native_controlled_run",
+      status: "WAITING_APPROVAL",
+      steps: [{ step_key: "approve", status: "WAITING_APPROVAL", lane: "governance" }],
+    });
+    const completedRun = makeRun({
+      id: "run-done",
+      workflow_key: "system_ops.health_check",
+      status: "COMPLETED",
+    });
+    const approvalLinkedRun = makeRun({
+      id: "run-linked",
+      workflow_key: "project_dev.maintainer_pr",
+      status: "PENDING",
+    });
+
+    const pendingRunIds = new Set(["run-wait", "run-linked"]);
+    const allRuns = [waitingRun, completedRun, approvalLinkedRun];
+
+    expect(filterWorkflowRuns(allRuns, "all", pendingRunIds).map((r) => r.id)).toEqual([
+      "run-wait",
+      "run-done",
+      "run-linked",
+    ]);
+    expect(
+      filterWorkflowRuns(allRuns, "pending_tier2", pendingRunIds).map((r) => r.id),
+    ).toEqual(["run-wait", "run-linked"]);
+
+    const definitions = [
+      { workflow_key: "training.native_controlled_run" },
+      { workflow_key: "system_ops.health_check" },
+      { workflow_key: "project_dev.maintainer_pr" },
+    ];
+    const pendingWorkflowKeys = new Set([
+      "training.native_controlled_run",
+      "project_dev.maintainer_pr",
+    ]);
+
+    expect(
+      filterWorkflowDefinitions(definitions, "all", pendingWorkflowKeys).map(
+        (d) => d.workflow_key,
+      ),
+    ).toEqual([
+      "training.native_controlled_run",
+      "system_ops.health_check",
+      "project_dev.maintainer_pr",
+    ]);
+    expect(
+      filterWorkflowDefinitions(
+        definitions,
+        "pending_tier2",
+        pendingWorkflowKeys,
+      ).map((d) => d.workflow_key),
+    ).toEqual(["training.native_controlled_run", "project_dev.maintainer_pr"]);
   });
 });

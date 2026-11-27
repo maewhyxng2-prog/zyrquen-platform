@@ -385,3 +385,36 @@ export function selectLatestCompletedKpi(runs: WorkflowRunItem[]): CompletedKpiS
     totalSteps,
   };
 }
+
+export type WorkflowConsoleFilter = "all" | "pending_tier2";
+
+export function isRunPendingTier2Approval(
+  run: WorkflowRunItem,
+  pendingApprovalRunIds: ReadonlySet<string>,
+): boolean {
+  return (
+    run.status === "WAITING_APPROVAL" ||
+    pendingApprovalRunIds.has(run.id) ||
+    run.steps.some((step) => step.status === "WAITING_APPROVAL")
+  );
+}
+
+export function filterWorkflowRuns(
+  runs: readonly WorkflowRunItem[],
+  filter: WorkflowConsoleFilter,
+  pendingApprovalRunIds: ReadonlySet<string>,
+): WorkflowRunItem[] {
+  if (filter === "all") return [...runs];
+  return runs.filter((run) =>
+    isRunPendingTier2Approval(run, pendingApprovalRunIds),
+  );
+}
+
+export function filterWorkflowDefinitions<T extends { workflow_key: string }>(
+  definitions: readonly T[],
+  filter: WorkflowConsoleFilter,
+  pendingWorkflowKeys: ReadonlySet<string>,
+): T[] {
+  if (filter === "all") return [...definitions];
+  return definitions.filter((def) => pendingWorkflowKeys.has(def.workflow_key));
+}

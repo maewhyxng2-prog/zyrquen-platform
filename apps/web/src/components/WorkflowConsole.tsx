@@ -6,10 +6,14 @@ import { apiRequest, downloadBackendFile, readSession } from "@/lib/api";
 import type { WorkflowServicesStatus } from "@/lib/types";
 import {
   computeRunProgress,
+  filterWorkflowDefinitions,
+  filterWorkflowRuns,
   formatDuration,
   formatLoss,
+  isRunPendingTier2Approval,
   isWorkflowRunActive,
   selectLatestCompletedKpi,
+  type WorkflowConsoleFilter,
   type WorkflowRunItem,
 } from "@/lib/workflow-metrics";
 import { Icon } from "./Icon";
@@ -155,6 +159,7 @@ export function WorkflowConsole() {
   const [comparison, setComparison] = useState<VersionComparisonPayload | null>(null);
   const [selectedLineage, setSelectedLineage] = useState<LineagePayload | null>(null);
   const [approvalTokenInput, setApprovalTokenInput] = useState("");
+  const [workflowFilter, setWorkflowFilter] = useState<WorkflowConsoleFilter>("all");
 
   const fetchAndApply = useCallback(async (isCancelled?: () => boolean) => {
     setError("");
@@ -412,8 +417,35 @@ export function WorkflowConsole() {
   }
 
   const pendingApprovals = approvals.filter((a) => a.status === "pending");
+  const pendingApprovalRunIds = new Set(pendingApprovals.map((a) => a.run_id));
+  const pendingTier2Runs = runs.filter((run) =>
+    isRunPendingTier2Approval(run, pendingApprovalRunIds),
+  );
+  const pendingTier2WorkflowKeys = new Set(
+    pendingTier2Runs.map((run) => run.workflow_key),
+  );
+  const pendingTier2Count =
+    pendingApprovals.length > 0
+      ? pendingApprovals.length
+      : pendingTier2Runs.length;
+
   const versions = registry?.versions ?? [];
   const activeRuns = runs.filter((r) => isWorkflowRunActive(r.status));
+  const displayedActiveRuns = filterWorkflowRuns(
+    activeRuns,
+    workflowFilter,
+    pendingApprovalRunIds,
+  );
+  const displayedDefinitions = filterWorkflowDefinitions(
+    definitions,
+    workflowFilter,
+    pendingTier2WorkflowKeys,
+  );
+  const displayedRuns = filterWorkflowRuns(
+    runs,
+    workflowFilter,
+    pendingApprovalRunIds,
+  );
   const latestKpi = selectLatestCompletedKpi(runs);
 
   return (
@@ -604,20 +636,53 @@ export function WorkflowConsole() {
           </p>
         ) : null}
 
+        <div
+          aria-label="กรองรายการ Workflow"
+          className="workflow-filter-bar"
+          role="group"
+        >
+          <button
+            aria-pressed={workflowFilter === "all"}
+            className={`workflow-filter-btn${
+              workflowFilter === "all" ? " workflow-filter-btn-active" : ""
+            }`}
+            onClick={() => setWorkflowFilter("all")}
+            type="button"
+          >
+            All Workflows ({definitions.length})
+          </button>
+          <button
+            aria-pressed={workflowFilter === "pending_tier2"}
+            className={`workflow-filter-btn${
+              workflowFilter === "pending_tier2"
+                ? " workflow-filter-btn-active"
+                : ""
+            }`}
+            onClick={() => setWorkflowFilter("pending_tier2")}
+            type="button"
+          >
+            Only Pending Tier-2 Approvals ({pendingTier2Count})
+          </button>
+        </div>
+
         <div className="workflow-progress-section" aria-label="แถบความคืบหน้างานที่กำลังประมวลผล">
           <div className="workflow-progress-section-head">
             <span className="metric-label">ความคืบหน้าของงานที่กำลังประมวลผล (ACTIVE PROGRESS)</span>
             <span className="workflow-progress-count tabular-nums">
-              {activeRuns.length > 0
-                ? `${activeRuns.length} งานกำลังดำเนินการ`
+              {displayedActiveRuns.length > 0
+                ? `${displayedActiveRuns.length} งานกำลังดำเนินการ`
                 : "0 งานที่กำลังประมวลผล"}
             </span>
           </div>
 
-          {activeRuns.length === 0 ? (
+          {displayedActiveRuns.length === 0 ? (
             <div className="workflow-progress-card">
               <div className="workflow-progress-row-head">
-                <span className="workflow-progress-title">ไม่มีงานที่กำลังประมวลผลในขณะนี้</span>
+                <span className="workflow-progress-title">
+                  {workflowFilter === "pending_tier2"
+                    ? "ไม่มีงานที่กำลังรอการอนุมัติ Tier-2 ในขณะนี้"
+                    : "ไม่มีงานที่กำลังประมวลผลในขณะนี้"}
+                </span>
                 <span className="workflow-progress-pct tabular-nums">0%</span>
               </div>
               <div
@@ -636,7 +701,7 @@ export function WorkflowConsole() {
             </div>
           ) : (
             <div className="workflow-progress-list">
-              {activeRuns.map((run) => {
+              {displayedActiveRuns.map((run) => {
                 const progress = computeRunProgress(run);
                 const fillClass =
                   progress.tone === "warn"
@@ -688,9 +753,23 @@ export function WorkflowConsole() {
             <strong>ยังไม่ได้เชื่อมต่อ Backend API สำหรับ Workflow</strong>
             <p>ตรวจสอบการรัน FastAPI Backend และตัวแปร <code>ZYRQUEN_API_BASE_URL</code></p>
           </div>
+        ) : displayedDefinitions.length === 0 ? (
+          <div className="unavailable-block">
+            <strong>ไม่มี Workflow ที่มีคำขอ Tier-2 Approval รออนุมัติในขณะนี้</strong>
+            <p>สลับกลับเป็น &quot;All Workflows&quot; เพื่อดูและสั่งรันเวิร์กโฟลว์ทั้งหมดในระบบ</p>
+            <div className="unavailable-actions">
+              <button
+                className="button button-secondary"
+                onClick={() => setWorkflowFilter("all")}
+                type="button"
+              >
+                แสดง All Workflows
+              </button>
+            </div>
+          </div>
         ) : (
           <div className="workflow-def-grid">
-            {definitions.map((def) => (
+            {displayedDefinitions.map((def) => (
               <div className="workflow-def-card" key={`${def.workflow_key}@${def.version}`}>
                 <div className="workflow-def-head">
                   <span className="phase-label">{def.group_name}</span>
@@ -1016,16 +1095,24 @@ export function WorkflowConsole() {
               </div>
               <h2>ประวัติการทำงาน Workflow ล่าสุด</h2>
             </div>
-            <StatusBadge tone="neutral">{runs.length} รายการ</StatusBadge>
+            <StatusBadge tone="neutral">{displayedRuns.length} รายการ</StatusBadge>
           </div>
-          {runs.length === 0 ? (
+          {displayedRuns.length === 0 ? (
             <div className="unavailable-block">
-              <strong>ยังไม่มีประวัติการรัน Workflow</strong>
-              <p>กดปุ่ม &quot;สั่งตรวจสอบ&quot; เพื่อสร้าง Run จริงพร้อม Audit Trail และ Verification Evidence</p>
+              <strong>
+                {workflowFilter === "pending_tier2"
+                  ? "ไม่มีประวัติการรันที่รอการอนุมัติ Tier-2 ในขณะนี้"
+                  : "ยังไม่มีประวัติการรัน Workflow"}
+              </strong>
+              <p>
+                {workflowFilter === "pending_tier2"
+                  ? 'กด "All Workflows" เพื่อดูประวัติการทำงานทั้งหมด'
+                  : 'กดปุ่ม "สั่งตรวจสอบ" เพื่อสร้าง Run จริงพร้อม Audit Trail และ Verification Evidence'}
+              </p>
             </div>
           ) : (
             <div className="workflow-run-list">
-              {runs.slice(0, 8).map((run) => {
+              {displayedRuns.slice(0, 8).map((run) => {
                 const active = isWorkflowRunActive(run.status);
                 const progress = active ? computeRunProgress(run) : null;
                 return (

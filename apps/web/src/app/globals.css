@@ -5755,3 +5755,44 @@ code {
   border-color: var(--amber-soft);
   color: var(--bg-midnight);
 }
+
+.workflow-filter-bar {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-self: flex-start;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-graphite);
+  padding: 4px;
+}
+
+.workflow-filter-btn {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0 12px;
+  transition:
+    background 160ms var(--ease-out),
+    border-color 160ms var(--ease-out),
+    color 160ms var(--ease-out);
+}
+
+.workflow-filter-btn:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.workflow-filter-btn-active {
+  border-color: rgba(59, 130, 246, 0.42);
+  background: var(--blue-soft);
+  color: var(--text);
+}
