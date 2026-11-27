@@ -15,6 +15,7 @@ describe('Full-Stack Real E2E: Express + SQLite + Python Native Core (Zero Fetch
   let prevDataDir: string | undefined;
   let prevNoAutostart: string | undefined;
   let prevAdminPasscode: string | undefined;
+  let claimedAdminEmail = '';
 
   beforeAll(async () => {
     tmpDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zyrquen-e2e-http-'));
@@ -86,7 +87,9 @@ describe('Full-Stack Real E2E: Express + SQLite + Python Native Core (Zero Fetch
     ]);
     expect(claimResults.map((result) => result.status).sort()).toEqual([201, 409]);
     const setupRes = claimResults.find((result) => result.status === 201)!;
-    const setupJson = (await setupRes.json()) as { token: string; user: { role: string } };
+    const setupJson = (await setupRes.json()) as { token: string; user: { role: string; email: string } };
+    claimedAdminEmail = setupJson.user.email;
+    expect(claimedAdminEmail).toMatch(/@zyrquen\.local$/);
     expect(setupJson.token).toBeTruthy();
     expect(setupJson.user.role).toBe('admin');
 
@@ -388,7 +391,7 @@ describe('Full-Stack Real E2E: Express + SQLite + Python Native Core (Zero Fetch
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        email: 'e2e-admin@zyrquen.local',
+        email: claimedAdminEmail,
         password: 'StrongPassword123!',
       }),
     });
@@ -457,13 +460,16 @@ describe('Isolated 6-Step Non-Skippable Native Training Pipeline Gate E2E', () =
   let gateTmpDir = '';
   let prevDataDir: string | undefined;
   let prevNoAutostart: string | undefined;
+  let prevAdminPasscode: string | undefined;
 
   beforeAll(async () => {
     gateTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zyrquen-e2e-6step-'));
     prevDataDir = process.env.ZYRQUEN_DATA_DIR;
     prevNoAutostart = process.env.ZYRQUEN_NO_AUTOSTART;
+    prevAdminPasscode = process.env.ZYRQUEN_ADMIN_PASSCODE;
     process.env.ZYRQUEN_DATA_DIR = gateTmpDir;
     process.env.ZYRQUEN_NO_AUTOSTART = '1';
+    process.env.ZYRQUEN_ADMIN_PASSCODE = 'e2e-admin-passcode-only';
 
     const { createApp } = await import('../../server');
     const app = await createApp({ attachVite: false });
@@ -492,6 +498,11 @@ describe('Isolated 6-Step Non-Skippable Native Training Pipeline Gate E2E', () =
     } else {
       process.env.ZYRQUEN_NO_AUTOSTART = prevNoAutostart;
     }
+    if (prevAdminPasscode === undefined) {
+      delete process.env.ZYRQUEN_ADMIN_PASSCODE;
+    } else {
+      process.env.ZYRQUEN_ADMIN_PASSCODE = prevAdminPasscode;
+    }
     fs.rmSync(gateTmpDir, { recursive: true, force: true });
   });
 
@@ -503,6 +514,7 @@ describe('Isolated 6-Step Non-Skippable Native Training Pipeline Gate E2E', () =
         email: 'gate-admin@zyrquen.local',
         displayName: 'Gate Admin',
         password: 'StrongPassword123!',
+        passcode: 'e2e-admin-passcode-only',
       }),
     });
     expect(setupRes.status).toBe(201);
@@ -773,6 +785,7 @@ describe('Isolated 6-Step Non-Skippable Native Training Pipeline Gate E2E', () =
           email: 'gate-admin@zyrquen.local',
           displayName: 'Gate Admin',
           password: 'StrongPassword123!',
+          passcode: 'e2e-admin-passcode-only',
         }),
       });
       token = ((await claimRes.json()) as { token: string }).token;
