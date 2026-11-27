@@ -11,6 +11,7 @@ import type {
 } from "@/lib/types";
 import {
   buildWorkflowLogsQuery,
+  collectSelectableWorkflowRuns,
   filterWorkflowLogs,
   formatWorkflowLogTime,
 } from "@/lib/workflow-logs";
@@ -51,6 +52,7 @@ export function WorkflowLogsPanel() {
 
   const [logs, setLogs] = useState<WorkflowExecutionLogItem[]>([]);
   const [activeRuns, setActiveRuns] = useState<WorkflowActiveJobSummary[]>([]);
+  const [knownRuns, setKnownRuns] = useState<WorkflowActiveJobSummary[]>([]);
   const [polledAt, setPolledAt] = useState<string | null>(null);
 
   const [activeOnly, setActiveOnly] = useState(true);
@@ -77,6 +79,7 @@ export function WorkflowLogsPanel() {
           setAuthenticated(false);
           setLogs([]);
           setActiveRuns([]);
+          setKnownRuns([]);
           setError("");
           return;
         }
@@ -100,6 +103,7 @@ export function WorkflowLogsPanel() {
           setAuthenticated(false);
           setLogs([]);
           setActiveRuns([]);
+          setKnownRuns([]);
           setError("");
           return;
         }
@@ -122,8 +126,11 @@ export function WorkflowLogsPanel() {
           );
         }
 
-        setLogs(Array.isArray(payload.items) ? payload.items : []);
-        setActiveRuns(Array.isArray(payload.active_runs) ? payload.active_runs : []);
+        const nextItems = Array.isArray(payload.items) ? payload.items : [];
+        const nextActiveRuns = Array.isArray(payload.active_runs) ? payload.active_runs : [];
+        setLogs(nextItems);
+        setActiveRuns(nextActiveRuns);
+        setKnownRuns((prev) => collectSelectableWorkflowRuns(nextActiveRuns, nextItems, prev));
         setPolledAt(payload.polled_at ?? new Date().toISOString());
         setError("");
       } catch (err) {
@@ -289,16 +296,19 @@ export function WorkflowLogsPanel() {
             value={selectedRunId}
           >
             <option value="">
-              {activeRuns.length > 0
-                ? `ทุก Active Jobs (${activeRuns.length})`
-                : "ทุก Job ในขอบเขตที่เลือก"}
+              {activeOnly
+                ? activeRuns.length > 0
+                  ? `ทุก Active Jobs (${activeRuns.length})`
+                  : "ทุก Active Jobs (ไม่มีงานค้าง)"
+                : `ทุก Job ล่าสุด (${knownRuns.length})`}
             </option>
-            {selectedRunId && !activeRuns.some((r) => r.id === selectedRunId) ? (
+            {selectedRunId &&
+            !(activeOnly ? activeRuns : knownRuns).some((r) => r.id === selectedRunId) ? (
               <option value={selectedRunId}>
                 Selected run ({selectedRunId.slice(0, 8)}) · finished/inactive
               </option>
             ) : null}
-            {activeRuns.map((run) => (
+            {(activeOnly ? activeRuns : knownRuns).map((run) => (
               <option key={run.id} value={run.id}>
                 {run.workflow_key} · {run.status} ({run.id.slice(0, 8)})
               </option>

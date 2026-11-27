@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { handleInMemoryBackendRequest } from "./in-memory-backend";
 import {
   buildWorkflowLogsQuery,
+  collectSelectableWorkflowRuns,
   deriveLogsFromRuns,
   filterWorkflowLogs,
   filterWorkflowRunsByOwnership,
@@ -156,6 +157,11 @@ describe("workflow-logs helpers", () => {
     const emptyActive = deriveLogsFromRuns([runs[1]], { activeOnly: true });
     expect(emptyActive.active_runs).toHaveLength(0);
     expect(emptyActive.items).toHaveLength(0);
+
+    const allLogs = deriveLogsFromRuns(runs, { activeOnly: false });
+    const selectable = collectSelectableWorkflowRuns(allLogs.active_runs, allLogs.items);
+    expect(selectable.map((r) => r.id)).toContain("run-active-1");
+    expect(selectable.map((r) => r.id)).toContain("run-done-2");
   });
 
   it("enforces authentication, ownership isolation, and run_id scoping on /v1/workflows/logs", async () => {

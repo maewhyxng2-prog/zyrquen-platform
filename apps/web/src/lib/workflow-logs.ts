@@ -207,3 +207,37 @@ export function deriveLogsFromRuns(
     polled_at: new Date().toISOString(),
   };
 }
+
+export function collectSelectableWorkflowRuns(
+  activeRuns: WorkflowActiveJobSummary[],
+  logs: WorkflowExecutionLogItem[],
+  previousKnown: WorkflowActiveJobSummary[] = [],
+): WorkflowActiveJobSummary[] {
+  const byId = new Map<string, WorkflowActiveJobSummary>();
+
+  for (const run of activeRuns) {
+    if (run.id) {
+      byId.set(run.id, run);
+    }
+  }
+
+  for (const prev of previousKnown) {
+    if (prev.id && !byId.has(prev.id)) {
+      byId.set(prev.id, prev);
+    }
+  }
+
+  for (const entry of logs) {
+    const rid = entry.run_id?.trim();
+    if (!rid || byId.has(rid)) continue;
+    byId.set(rid, {
+      id: rid,
+      workflow_key: entry.workflow_key || entry.event_type || "workflow",
+      status: entry.status || "RECORDED",
+      started_at: entry.timestamp ?? null,
+    });
+  }
+
+  return Array.from(byId.values());
+}
+
