@@ -56,6 +56,7 @@ export type Session = {
   userId?: string | null;
   role?: string | null;
   verified?: boolean;
+  emailVerified?: boolean;
   expired?: boolean;
   error?: string | null;
 };

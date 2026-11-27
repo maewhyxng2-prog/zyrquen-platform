@@ -105,6 +105,8 @@ function AppShellInner({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   const [accountError, setAccountError] = useState("");
+  const [resendingVerification, setResendingVerification] = useState(false);
+  const [verificationNotice, setVerificationNotice] = useState("");
   const [isCognitiveProcessing, setIsCognitiveProcessing] = useState(false);
   const accountMenuRef = useRef<HTMLDivElement>(null);
 
@@ -220,6 +222,42 @@ function AppShellInner({ children }: { children: ReactNode }) {
       );
     } finally {
       setSigningOut(false);
+    }
+  }
+
+  async function resendEmailVerification() {
+    if (resendingVerification) return;
+    setResendingVerification(true);
+    setVerificationNotice("");
+    try {
+      const response = await fetch("/api/backend/auth/verification/resend", {
+        method: "POST",
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        emailSent?: boolean;
+        detail?: string;
+      } | null;
+      if (!response.ok) {
+        setVerificationNotice(
+          typeof payload?.detail === "string"
+            ? payload.detail
+            : "ไม่สามารถส่งลิงก์ยืนยันอีเมลได้ในขณะนี้",
+        );
+        return;
+      }
+      if (payload?.emailSent) {
+        setVerificationNotice("ส่งลิงก์ยืนยันอีเมลแล้ว กรุณาตรวจสอบกล่องจดหมายของคุณ");
+      } else {
+        setVerificationNotice(
+          typeof payload?.detail === "string"
+            ? payload.detail
+            : "ระบบอีเมลยังไม่ได้ตั้งค่าผู้ให้บริการส่งอีเมล",
+        );
+      }
+    } catch {
+      setVerificationNotice("ไม่สามารถติดต่อบริการส่งลิงก์ยืนยันอีเมลได้");
+    } finally {
+      setResendingVerification(false);
     }
   }
 
@@ -479,6 +517,34 @@ function AppShellInner({ children }: { children: ReactNode }) {
       {accountError && (
         <div className="topbar-error" role="alert">
           {accountError}
+        </div>
+      )}
+
+      {!authPage && session?.authenticated && session.emailVerified === false && (
+        <div
+          aria-label="Verify Email status notice"
+          className="topbar-error"
+          role="status"
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "12px",
+          }}
+        >
+          <span>
+            <strong>Verify Email:</strong> อีเมลของคุณ ({session.email}) ยังไม่ได้รับการยืนยัน
+            {verificationNotice ? ` · ${verificationNotice}` : ""}
+          </span>
+          <button
+            className="button button-secondary"
+            disabled={resendingVerification}
+            onClick={() => void resendEmailVerification()}
+            type="button"
+          >
+            {resendingVerification ? "กำลังส่ง..." : "ส่งลิงก์ยืนยันอีเมล"}
+          </button>
         </div>
       )}
 

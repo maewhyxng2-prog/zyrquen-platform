@@ -263,6 +263,13 @@ def init_db() -> None:
                 FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS revoked_tokens (
+                jti TEXT PRIMARY KEY,
+                user_id TEXT,
+                expires_at TEXT NOT NULL,
+                revoked_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS conversations (
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
@@ -571,6 +578,8 @@ def init_db() -> None:
                 ON auth_tokens(token_hash);
             CREATE INDEX IF NOT EXISTS idx_auth_tokens_user_type
                 ON auth_tokens(user_id, token_type);
+            CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires
+                ON revoked_tokens(expires_at);
             """
         )
     conn.close()

@@ -18,6 +18,7 @@ type StoredUser = {
   passwordHash: string;
   role: "admin" | "user";
   isActive: boolean;
+  emailVerified: boolean;
   createdAt: string;
 };
 
@@ -292,6 +293,7 @@ function createInitialStore(): InMemoryStore {
     passwordHash: hashPassword("zyrquen-demo-pass"),
     role: "admin",
     isActive: true,
+    emailVerified: true,
     createdAt: earlier,
   };
 
@@ -882,6 +884,7 @@ export async function handleInMemoryBackendRequest(options: {
       passwordHash: hashPassword(password),
       role: "user",
       isActive: true,
+      emailVerified: false,
       createdAt,
     };
     store.usersById.set(id, user);
@@ -900,7 +903,36 @@ export async function handleInMemoryBackendRequest(options: {
         email: user.email,
         role: user.role,
         is_active: user.isActive,
+        email_verified: user.emailVerified,
         created_at: user.createdAt,
+        verification: {
+          emailSent: false,
+          deliveryReason: "EMAIL_PROVIDER_NOT_CONFIGURED",
+        },
+      },
+    };
+  }
+
+  if (method === "GET" && path === "auth/providers") {
+    return {
+      status: 200,
+      body: {
+        providers: {
+          google: { configured: false },
+          github: { configured: false },
+        },
+      },
+    };
+  }
+
+  const oauthUrlMatch = path.match(/^auth\/oauth\/(google|github)\/url$/i);
+  if (method === "GET" && oauthUrlMatch) {
+    const provider = oauthUrlMatch[1].toLowerCase();
+    return {
+      status: 503,
+      body: {
+        code: "OAUTH_NOT_CONFIGURED",
+        detail: `ยังไม่ได้ตั้งค่าการเข้าสู่ระบบผ่าน ${provider === "github" ? "GitHub" : "Google"} OAuth 2.0 ใน Backend นี้`,
       },
     };
   }
@@ -951,7 +983,23 @@ export async function handleInMemoryBackendRequest(options: {
         email: currentUser.email,
         role: currentUser.role,
         is_active: currentUser.isActive,
+        email_verified: currentUser.emailVerified,
         created_at: currentUser.createdAt,
+      },
+    };
+  }
+
+  if (method === "POST" && path === "auth/verification/resend") {
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        email_verified: currentUser.emailVerified,
+        emailSent: false,
+        deliveryReason: "EMAIL_PROVIDER_NOT_CONFIGURED",
+        detail: currentUser.emailVerified
+          ? "อีเมลนี้ได้รับการยืนยันแล้ว"
+          : "ไม่สามารถส่งอีเมลยืนยันอัตโนมัติได้ในโหมด Sandbox (ยังไม่ได้ตั้งค่า RESEND_API_KEY)",
       },
     };
   }
@@ -1102,6 +1150,43 @@ export async function handleInMemoryBackendRequest(options: {
         },
       };
     }
+  }
+
+  if (method === "POST" && path === "users/me/api-keys/bulk-revoke") {
+    const body = parseJsonBody(options.rawBody);
+    const rawIds = Array.isArray(body.ids) ? body.ids : [];
+    const ids = [...new Set(rawIds.filter((v): v is string => typeof v === "string" && v.trim().length > 0))];
+    if (ids.length === 0 || ids.length > 100) {
+      return {
+        status: 422,
+        body: { detail: "กรุณาระบุรายการ API Key ที่ต้องการเพิกถอน (1–100 รายการ)" },
+      };
+    }
+    const nowIso = new Date().toISOString();
+    const revokedIds: string[] = [];
+    for (const keyId of ids) {
+      const key = store.apiKeys.get(keyId);
+      if (key && key.userId === currentUser.id && key.revokedAt === null) {
+        key.revokedAt = nowIso;
+        key.autoRotateEnabled = false;
+        key.nextRotationAt = null;
+        revokedIds.push(key.id);
+        store.auditLogs.unshift({
+          id: randomUUID(),
+          actor_user_id: currentUser.id,
+          action: "api_key.bulk_revoked",
+          resource_id: key.id,
+          created_at: nowIso,
+        });
+      }
+    }
+    return {
+      status: 200,
+      body: {
+        revoked_ids: revokedIds,
+        revoked_count: revokedIds.length,
+      },
+    };
   }
 
   const apiKeyAutoRotateMatch = path.match(

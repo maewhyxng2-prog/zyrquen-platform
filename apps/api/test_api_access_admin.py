@@ -397,3 +397,60 @@ def test_api_key_fingerprint_preserves_session_retry_semantics():
     keyed_request = request_fingerprint(**request_data, api_key_id=uuid.uuid4())
     assert original == session_retry
     assert keyed_request != original
+
+
+def test_api_key_bulk_revoke_and_owner_isolation(api_access_client):
+    client, session_factory = api_access_client
+    _, owner_token = register(client, "bulk-owner@example.com")
+    _, other_token = register(client, "bulk-other@example.com")
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+
+    k1 = client.post(
+        "/users/me/api-keys",
+        headers=auth(owner_token),
+        json={
+            "name": "bulk-k1",
+            "expires_at": expires_at,
+            "auto_rotate_enabled": True,
+            "auto_rotate_interval_days": 15,
+        },
+    )
+    k2 = client.post(
+        "/users/me/api-keys",
+        headers=auth(owner_token),
+        json={"name": "bulk-k2", "expires_at": expires_at},
+    )
+    other_k = client.post(
+        "/users/me/api-keys",
+        headers=auth(other_token),
+        json={"name": "other-k", "expires_at": expires_at},
+    )
+    assert k1.status_code == 201 and k2.status_code == 201 and other_k.status_code == 201
+
+    k1_id = k1.json()["id"]
+    k2_id = k2.json()["id"]
+    other_id = other_k.json()["id"]
+
+    res = client.post(
+        "/users/me/api-keys/bulk-revoke",
+        headers=auth(owner_token),
+        json={"ids": [k1_id, k2_id, other_id, k1_id]},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["revoked_count"] == 2
+    assert set(body["revoked_ids"]) == {k1_id, k2_id}
+
+    owner_keys = client.get("/users/me/api-keys", headers=auth(owner_token)).json()
+    for item in owner_keys:
+        assert item["revoked_at"] is not None
+        assert item["auto_rotate_enabled"] is False
+        assert item["next_rotation_at"] is None
+
+    other_keys = client.get("/users/me/api-keys", headers=auth(other_token)).json()
+    assert len(other_keys) == 1
+    assert other_keys[0]["revoked_at"] is None
+
+    with session_factory() as db:
+        assert db.query(AuditLog).filter_by(action="api_key.bulk_revoked").count() == 2
+

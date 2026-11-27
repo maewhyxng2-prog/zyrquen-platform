@@ -9,6 +9,7 @@ import App, {
   type ThreadLoadEntry,
 } from '../App';
 import { AuthGate } from '../components/AuthGate';
+import { HomeView } from '../components/HomeView';
 import { MemoryWorkflowsView } from '../components/MemoryWorkflowsView';
 import { SettingsView } from '../components/SettingsView';
 import { SpacetimeFabric } from '../components/SpacetimeFabric';
@@ -166,8 +167,8 @@ describe('ZYRQUEN ประสบการณ์แอปพลิเคชั�
       target: { value: 'wrongconfirm123' },
     });
 
-    const submitButtons = screen.getAllByRole('button', { name: 'สมัครสมาชิก' });
-    fireEvent.click(submitButtons[submitButtons.length - 1]);
+    const submitBtn = screen.getByRole('button', { name: 'สมัครสมาชิกด้วยอีเมล' });
+    fireEvent.click(submitBtn);
 
     expect(await screen.findByRole('alert')).toHaveTextContent('รหัสผ่านและยืนยันรหัสผ่านไม่ตรงกัน');
     expect(registerPayloads).toHaveLength(0);
@@ -175,7 +176,7 @@ describe('ZYRQUEN ประสบการณ์แอปพลิเคชั�
     fireEvent.change(screen.getByLabelText('ยืนยันรหัสผ่าน'), {
       target: { value: 'memberpass123' },
     });
-    fireEvent.click(submitButtons[submitButtons.length - 1]);
+    fireEvent.click(submitBtn);
 
     expect(await screen.findByText('คุณต้องการสร้างอะไรวันนี้?')).toBeInTheDocument();
     expect(screen.getByText(/ผู้ใช้งาน: สมาชิกใหม่/i)).toBeInTheDocument();
@@ -4070,6 +4071,179 @@ describe('ZYRQUEN ประสบการณ์แอปพลิเคชั�
     expect(revokeObjectUrlSpy).toHaveBeenCalledTimes(2);
 
     sv.unmount();
+  });
+
+  it('แสดงปุ่ม Login with Google / Login with GitHub, ลิงก์ Verify Email notice บนหน้าหลัก, Account Linking และ Bulk Revoke API Keys พร้อมหน้าต่างยืนยัน', async () => {
+    // 1. AuthGate renders Google & GitHub OAuth buttons, handles honest 503 unconfigured response, and switches to forgot-password
+    mockFetch({
+      'GET /api/auth/providers': () =>
+        new Response(
+          JSON.stringify({
+            providers: {
+              google: { id: 'google', name: 'Google', configured: false, scopes: ['openid', 'email', 'profile'], callbackPath: '/api/auth/oauth/google/callback', callbackUrl: 'http://localhost/api/auth/oauth/google/callback' },
+              github: { id: 'github', name: 'GitHub', configured: false, scopes: ['read:user', 'user:email'], callbackPath: '/api/auth/oauth/github/callback', callbackUrl: 'http://localhost/api/auth/oauth/github/callback' },
+            },
+            emailVerification: { emailProviderConfigured: false, provider: null },
+          }),
+          { status: 200 }
+        ),
+      'GET /api/auth/oauth/github/url': () =>
+        new Response(
+          JSON.stringify({ error: 'ยังไม่ได้ตั้งค่า GitHub OAuth 2.0 บนเซิร์ฟเวอร์', code: 'OAUTH_NOT_CONFIGURED' }),
+          { status: 503 }
+        ),
+    });
+
+    const ag = render(
+      <AuthGate
+        authStatus={{ initialized: true, userCount: 1, envPasscodeConfigured: false }}
+        onAuthenticated={vi.fn()}
+      />
+    );
+    const googleBtn = await screen.findByRole('button', { name: 'Login with Google' });
+    const githubBtn = screen.getByRole('button', { name: 'Login with GitHub' });
+    expect(googleBtn).toBeInTheDocument();
+    expect(githubBtn).toBeInTheDocument();
+    fireEvent.click(githubBtn);
+    expect(await screen.findByRole('alert')).toHaveTextContent('ยังไม่ได้ตั้งค่า GitHub OAuth 2.0 บนเซิร์ฟเวอร์');
+    fireEvent.click(screen.getByRole('button', { name: 'ลืมรหัสผ่าน?' }));
+    expect(await screen.findByRole('button', { name: 'ส่งคำขอรีเซ็ตรหัสผ่าน' })).toBeInTheDocument();
+    ag.unmount();
+
+    // 2. HomeView displays Verify Email notice only when email_verified === false
+    let resendCalls = 0;
+    mockFetch({
+      'POST /api/auth/verification/resend': () => {
+        resendCalls += 1;
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            alreadyVerified: false,
+            verification: { required: true, emailSent: false, deliveryReason: 'EMAIL_PROVIDER_NOT_CONFIGURED' },
+          }),
+          { status: 200 }
+        );
+      },
+    });
+    const hvUnverified = render(
+      <HomeView
+        token="t-unv"
+        user={{
+          id: 'u-unv',
+          email: 'unverified@zyrquen.local',
+          display_name: 'Unverified User',
+          role: 'user',
+          created_at: '2026-11-26T00:00:00Z',
+          email_verified: false,
+        }}
+        homeSummary={null}
+        nativeReady={true}
+        loading={false}
+        error={null}
+        onStartPrompt={vi.fn()}
+        onOpenConversation={vi.fn()}
+        onOpenAccountSettings={vi.fn()}
+        onNavigate={vi.fn()}
+        onRetry={vi.fn()}
+      />
+    );
+    expect(screen.getByRole('status', { name: 'Verify Email status notice' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'ส่งลิงก์ยืนยันอีเมล' }));
+    await waitFor(() => expect(resendCalls).toBe(1));
+    hvUnverified.unmount();
+
+    const hvVerified = render(
+      <HomeView
+        token="t-ver"
+        user={{
+          id: 'u-ver',
+          email: 'verified@zyrquen.local',
+          display_name: 'Verified User',
+          role: 'user',
+          created_at: '2026-11-26T00:00:00Z',
+          email_verified: true,
+        }}
+        homeSummary={null}
+        nativeReady={true}
+        loading={false}
+        error={null}
+        onStartPrompt={vi.fn()}
+        onOpenConversation={vi.fn()}
+        onNavigate={vi.fn()}
+        onRetry={vi.fn()}
+      />
+    );
+    expect(screen.queryByRole('status', { name: 'Verify Email status notice' })).not.toBeInTheDocument();
+    hvVerified.unmount();
+
+    // 3. SettingsView Developer tab: checkboxes + conditional Bulk Revoke + confirmation dialog
+    let bulkRevokePayload: unknown = null;
+    let keysState = [
+      { id: 'k-1', name: 'cli-1', key_prefix: 'zq_111', scope: 'read,write', quota_daily: 1000, created_at: '2026-11-26T00:00:00Z', revoked: false },
+      { id: 'k-2', name: 'cli-2', key_prefix: 'zq_222', scope: 'read,write', quota_daily: 1000, created_at: '2026-11-26T00:00:00Z', revoked: false },
+      { id: 'k-rev', name: 'old-key', key_prefix: 'zq_333', scope: 'read,write', quota_daily: 1000, created_at: '2026-11-26T00:00:00Z', revoked: true },
+    ];
+    mockFetch({
+      'GET /api/developer/overview': () =>
+        new Response(
+          JSON.stringify({
+            keys: keysState,
+            training_runs: [],
+            evaluations: [],
+            experiments: [],
+            usage: { total_requests: 0, avg_latency_ms: 0, daily_quota: 1000, recent: [] },
+          }),
+          { status: 200 }
+        ),
+      'GET /api/developer/tools': () =>
+        new Response(JSON.stringify({ tools: [], invocations: [], workspace_files: [] }), { status: 200 }),
+      'POST /api/developer/keys/bulk-revoke': (init) => {
+        bulkRevokePayload = JSON.parse(String(init?.body || '{}'));
+        keysState = keysState.map((k) => (k.id === 'k-1' || k.id === 'k-2' ? { ...k, revoked: true } : k));
+        return new Response(
+          JSON.stringify({ ok: true, revokedIds: ['k-1', 'k-2'], revokedCount: 2 }),
+          { status: 200 }
+        );
+      },
+    });
+
+    const svDev = render(
+      <SettingsView
+        token="t-bulk"
+        user={{
+          id: 'u-bulk',
+          email: 'bulk@zyrquen.local',
+          display_name: 'Bulk User',
+          role: 'user',
+          created_at: '2026-11-26T00:00:00Z',
+        }}
+        activeTab="developer"
+        autoExpandTrace={false}
+        defaultMode="auto"
+        onChangeTab={vi.fn()}
+        onUpdatePreferences={vi.fn()}
+        onLogout={vi.fn()}
+      />
+    );
+
+    const cb1 = await screen.findByRole('checkbox', { name: 'เลือก API Key cli-1' });
+    const cb2 = screen.getByRole('checkbox', { name: 'เลือก API Key cli-2' });
+    const cbRev = screen.getByRole('checkbox', { name: 'เลือก API Key old-key' });
+    expect(cbRev).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /Bulk Revoke/ })).not.toBeInTheDocument();
+
+    fireEvent.click(cb1);
+    fireEvent.click(cb2);
+    const bulkBtn = screen.getByRole('button', { name: /Bulk Revoke \(2\)/ });
+    fireEvent.click(bulkBtn);
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('ยืนยัน Bulk Revoke API Keys');
+    fireEvent.click(screen.getByRole('button', { name: 'ยืนยัน Bulk Revoke' }));
+
+    await waitFor(() => expect(bulkRevokePayload).toEqual({ ids: ['k-1', 'k-2'] }));
+    expect(await screen.findByText(/เพิกถอน API Key ที่เลือกจำนวน 2 รายการเรียบร้อยแล้ว/)).toBeInTheDocument();
+    svDev.unmount();
   });
 });
 

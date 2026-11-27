@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -1624,6 +1625,362 @@ describe('Isolated 6-Step Non-Skippable Native Training Pipeline Gate E2E', () =
     expect(badLlmJson.output.lint_passed).toBe(false);
     expect(badLlmJson.output.rolled_back).toBe(true);
   }, 60_000);
+
+  it('Executes API Keys bulk-revoke, email verification, password reset, persistent JWT logout revocation, and OAuth 2.0 login/link/unlink lockout prevention over HTTP', async () => {
+    // 1. Register user: email_verified=false, honest EMAIL_PROVIDER_NOT_CONFIGURED
+    const regEmail = `auth-e2e-${Date.now()}@zyrquen.local`;
+    const regRes = await fetch(`${gateBaseUrl}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: regEmail,
+        displayName: 'Auth E2E User',
+        password: 'InitialPassword123!',
+        confirmPassword: 'InitialPassword123!',
+      }),
+    });
+    expect(regRes.status).toBe(201);
+    const regJson = (await regRes.json()) as {
+      token: string;
+      user: { id: string; email_verified: boolean; has_password?: boolean };
+      verification: { emailSent: boolean; deliveryReason: string | null };
+    };
+    expect(regJson.user.email_verified).toBe(false);
+    expect(regJson.verification.emailSent).toBe(false);
+    expect(regJson.verification.deliveryReason).toBe('EMAIL_PROVIDER_NOT_CONFIGURED');
+
+    const userHeaders = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${regJson.token}`,
+    };
+
+    // Resend returns honest EMAIL_PROVIDER_NOT_CONFIGURED
+    const resendRes = await fetch(`${gateBaseUrl}/api/auth/verification/resend`, {
+      method: 'POST',
+      headers: userHeaders,
+    });
+    expect(resendRes.status).toBe(200);
+    const resendJson = (await resendRes.json()) as {
+      ok: boolean;
+      verification: { emailSent: boolean; deliveryReason: string | null };
+    };
+    expect(resendJson.ok).toBe(true);
+    expect(resendJson.verification.deliveryReason).toBe('EMAIL_PROVIDER_NOT_CONFIGURED');
+
+    // Verify email via SHA-256 token stored in SQLite
+    const rawVerifyToken = crypto.randomBytes(24).toString('base64url');
+    const verifyTokenHash = crypto.createHash('sha256').update(rawVerifyToken).digest('hex');
+    const createVerifyOut = JSON.parse(
+      execFileSync('python3', ['python_core/db_bridge.py'], {
+        cwd: process.cwd(),
+        env: { ...process.env, ZYRQUEN_DATA_DIR: gateTmpDir, PYTHONPATH: path.resolve(process.cwd(), 'python_core') },
+        input: JSON.stringify({
+          action: 'auth_create_token',
+          payload: {
+            user_id: regJson.user.id,
+            token_type: 'email_verify',
+            token_hash: verifyTokenHash,
+            target_email: regEmail,
+            expires_in_sec: 3600,
+          },
+        }),
+      }).toString('utf-8')
+    ) as { ok: boolean };
+    expect(createVerifyOut.ok).toBe(true);
+
+    const verifyRes = await fetch(`${gateBaseUrl}/api/auth/verify-email`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: rawVerifyToken }),
+    });
+    expect(verifyRes.status).toBe(200);
+    const verifyJson = (await verifyRes.json()) as { ok: boolean; user: { email_verified: boolean } };
+    expect(verifyJson.ok).toBe(true);
+    expect(verifyJson.user.email_verified).toBe(true);
+
+    // 2. Bulk revoke developer API keys
+    const k1Res = await fetch(`${gateBaseUrl}/api/developer/keys`, {
+      method: 'POST',
+      headers: userHeaders,
+      body: JSON.stringify({ name: 'e2e-bulk-1', quota_daily: 500 }),
+    });
+    const k2Res = await fetch(`${gateBaseUrl}/api/developer/keys`, {
+      method: 'POST',
+      headers: userHeaders,
+      body: JSON.stringify({ name: 'e2e-bulk-2', quota_daily: 500 }),
+    });
+    const k3Res = await fetch(`${gateBaseUrl}/api/developer/keys`, {
+      method: 'POST',
+      headers: userHeaders,
+      body: JSON.stringify({ name: 'e2e-keep-3', quota_daily: 500 }),
+    });
+    expect(k1Res.status).toBe(201);
+    expect(k2Res.status).toBe(201);
+    expect(k3Res.status).toBe(201);
+    const k1Id = ((await k1Res.json()) as { key: { id: string } }).key.id;
+    const k2Id = ((await k2Res.json()) as { key: { id: string } }).key.id;
+    const k3Id = ((await k3Res.json()) as { key: { id: string } }).key.id;
+
+    const bulkEmptyRes = await fetch(`${gateBaseUrl}/api/developer/keys/bulk-revoke`, {
+      method: 'POST',
+      headers: userHeaders,
+      body: JSON.stringify({ ids: [] }),
+    });
+    expect(bulkEmptyRes.status).toBe(400);
+
+    const bulkRevokeRes = await fetch(`${gateBaseUrl}/api/developer/keys/bulk-revoke`, {
+      method: 'POST',
+      headers: userHeaders,
+      body: JSON.stringify({ ids: [k1Id, k2Id] }),
+    });
+    expect(bulkRevokeRes.status).toBe(200);
+    const bulkRevokeJson = (await bulkRevokeRes.json()) as {
+      ok: boolean;
+      revokedCount: number;
+      revokedIds: string[];
+    };
+    expect(bulkRevokeJson.ok).toBe(true);
+    expect(bulkRevokeJson.revokedCount).toBe(2);
+    expect(bulkRevokeJson.revokedIds).toEqual(expect.arrayContaining([k1Id, k2Id]));
+
+    const overviewRes = await fetch(`${gateBaseUrl}/api/developer/overview`, { headers: userHeaders });
+    const overviewJson = (await overviewRes.json()) as {
+      keys: Array<{ id: string; revoked: boolean | number }>;
+    };
+    expect(Boolean(overviewJson.keys.find((k) => k.id === k1Id)?.revoked)).toBe(true);
+    expect(Boolean(overviewJson.keys.find((k) => k.id === k2Id)?.revoked)).toBe(true);
+    expect(Boolean(overviewJson.keys.find((k) => k.id === k3Id)?.revoked)).toBe(false);
+
+    // 3. Forgot password + reset password + login with new password
+    const forgotRes = await fetch(`${gateBaseUrl}/api/auth/forgot-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: regEmail }),
+    });
+    expect(forgotRes.status).toBe(200);
+
+    const rawResetToken = crypto.randomBytes(24).toString('base64url');
+    const resetTokenHash = crypto.createHash('sha256').update(rawResetToken).digest('hex');
+    execFileSync('python3', ['python_core/db_bridge.py'], {
+      cwd: process.cwd(),
+      env: { ...process.env, ZYRQUEN_DATA_DIR: gateTmpDir, PYTHONPATH: path.resolve(process.cwd(), 'python_core') },
+      input: JSON.stringify({
+        action: 'auth_create_token',
+        payload: {
+          user_id: regJson.user.id,
+          token_type: 'password_reset',
+          token_hash: resetTokenHash,
+          target_email: regEmail,
+          expires_in_sec: 1800,
+        },
+      }),
+    });
+
+    const resetRes = await fetch(`${gateBaseUrl}/api/auth/reset-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: rawResetToken, password: 'UpdatedPassword456!' }),
+    });
+    expect(resetRes.status).toBe(200);
+
+    const loginNewRes = await fetch(`${gateBaseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: regEmail, password: 'UpdatedPassword456!' }),
+    });
+    expect(loginNewRes.status).toBe(200);
+    const loginNewJson = (await loginNewRes.json()) as {
+      token: string;
+      user: { email_verified: boolean; has_password: boolean };
+    };
+    expect(loginNewJson.user.email_verified).toBe(true);
+    expect(loginNewJson.user.has_password).toBe(true);
+
+    // 4. Logout persists JWT revocation in SQLite
+    const logoutRes = await fetch(`${gateBaseUrl}/api/auth/logout`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${loginNewJson.token}` },
+    });
+    expect(logoutRes.status).toBe(200);
+    const meAfterLogout = await fetch(`${gateBaseUrl}/api/auth/me`, {
+      headers: { Authorization: `Bearer ${loginNewJson.token}` },
+    });
+    expect(meAfterLogout.status).toBe(401);
+
+    // 5. OAuth 2.0 unconfigured -> 503, then mock local OAuth provider test
+    const unconfGh = await fetch(`${gateBaseUrl}/api/auth/oauth/github/url`);
+    expect(unconfGh.status).toBe(503);
+
+    const mockOAuthServer = http.createServer((req, res) => {
+      const reqUrl = new URL(req.url || '/', 'http://127.0.0.1');
+      if (reqUrl.pathname === '/github/token') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ access_token: 'mock-gh-access-token' }));
+        return;
+      }
+      if (reqUrl.pathname === '/github/user') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            id: 900123,
+            login: 'octo-zyrquen',
+            name: 'Octo Zyrquen',
+            avatar_url: 'https://avatars.example.test/octo.png',
+          })
+        );
+        return;
+      }
+      if (reqUrl.pathname === '/github/emails') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify([
+            { email: 'oauth-user@zyrquen.local', primary: true, verified: true },
+          ])
+        );
+        return;
+      }
+      if (reqUrl.pathname === '/google/token') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ access_token: 'mock-google-access-token' }));
+        return;
+      }
+      if (reqUrl.pathname === '/google/userinfo') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            sub: 'google-sub-777',
+            email: 'oauth-user@zyrquen.local',
+            email_verified: true,
+            name: 'Google Zyrquen',
+            picture: 'https://lh3.example.test/g.png',
+          })
+        );
+        return;
+      }
+      res.writeHead(404).end();
+    });
+
+    await new Promise<void>((resolve) => mockOAuthServer.listen(0, '127.0.0.1', () => resolve()));
+    const mockAddr = mockOAuthServer.address();
+    if (!mockAddr || typeof mockAddr === 'string') {
+      throw new Error('Failed to start mock OAuth server');
+    }
+    const mockBase = `http://127.0.0.1:${mockAddr.port}`;
+    const envKeys = [
+      'ZYRQUEN_OAUTH_ALLOW_TEST_ENDPOINTS',
+      'GITHUB_OAUTH_CLIENT_ID',
+      'GITHUB_OAUTH_CLIENT_SECRET',
+      'ZYRQUEN_GITHUB_AUTH_URL',
+      'ZYRQUEN_GITHUB_TOKEN_URL',
+      'ZYRQUEN_GITHUB_USER_URL',
+      'ZYRQUEN_GITHUB_EMAILS_URL',
+      'GOOGLE_OAUTH_CLIENT_ID',
+      'GOOGLE_OAUTH_CLIENT_SECRET',
+      'ZYRQUEN_GOOGLE_AUTH_URL',
+      'ZYRQUEN_GOOGLE_TOKEN_URL',
+      'ZYRQUEN_GOOGLE_USERINFO_URL',
+    ] as const;
+    const prevEnv: Record<string, string | undefined> = {};
+    for (const k of envKeys) prevEnv[k] = process.env[k];
+
+    try {
+      process.env.ZYRQUEN_OAUTH_ALLOW_TEST_ENDPOINTS = '1';
+      process.env.GITHUB_OAUTH_CLIENT_ID = 'gh-client-test';
+      process.env.GITHUB_OAUTH_CLIENT_SECRET = 'gh-secret-test';
+      process.env.ZYRQUEN_GITHUB_AUTH_URL = `${mockBase}/github/authorize`;
+      process.env.ZYRQUEN_GITHUB_TOKEN_URL = `${mockBase}/github/token`;
+      process.env.ZYRQUEN_GITHUB_USER_URL = `${mockBase}/github/user`;
+      process.env.ZYRQUEN_GITHUB_EMAILS_URL = `${mockBase}/github/emails`;
+      process.env.GOOGLE_OAUTH_CLIENT_ID = 'google-client-test';
+      process.env.GOOGLE_OAUTH_CLIENT_SECRET = 'google-secret-test';
+      process.env.ZYRQUEN_GOOGLE_AUTH_URL = `${mockBase}/google/authorize`;
+      process.env.ZYRQUEN_GOOGLE_TOKEN_URL = `${mockBase}/google/token`;
+      process.env.ZYRQUEN_GOOGLE_USERINFO_URL = `${mockBase}/google/userinfo`;
+
+      const providersRes = await fetch(`${gateBaseUrl}/api/auth/providers`);
+      const providersJson = (await providersRes.json()) as {
+        providers: { github: { configured: boolean }; google: { configured: boolean } };
+      };
+      expect(providersJson.providers.github.configured).toBe(true);
+      expect(providersJson.providers.google.configured).toBe(true);
+
+      const ghUrlRes = await fetch(`${gateBaseUrl}/api/auth/oauth/github/url`);
+      expect(ghUrlRes.status).toBe(200);
+      const ghAuthUrl = new URL(((await ghUrlRes.json()) as { url: string }).url);
+      const ghState = ghAuthUrl.searchParams.get('state') || '';
+      expect(ghState).toBeTruthy();
+
+      const ghCbRes = await fetch(
+        `${gateBaseUrl}/api/auth/oauth/github/callback?code=gh-code-1&state=${encodeURIComponent(ghState)}`
+      );
+      expect(ghCbRes.status).toBe(200);
+      const ghHtml = await ghCbRes.text();
+      expect(ghHtml).toContain('OAUTH_AUTH_SUCCESS');
+      const tokenMatch = ghHtml.match(/"token":"([^"]+)"/);
+      expect(tokenMatch?.[1]).toBeTruthy();
+      const oauthToken = tokenMatch![1];
+      const oauthHeaders = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${oauthToken}`,
+      };
+
+      // Link Google identity to OAuth user
+      const gLinkUrlRes = await fetch(`${gateBaseUrl}/api/auth/oauth/google/url?intent=link`, {
+        headers: oauthHeaders,
+      });
+      expect(gLinkUrlRes.status).toBe(200);
+      const gState = new URL(((await gLinkUrlRes.json()) as { url: string }).url).searchParams.get('state') || '';
+      const gLinkCbRes = await fetch(
+        `${gateBaseUrl}/api/auth/oauth/google/callback?code=g-code-1&state=${encodeURIComponent(gState)}`
+      );
+      expect(gLinkCbRes.status).toBe(200);
+      expect(await gLinkCbRes.text()).toContain('OAUTH_LINK_SUCCESS');
+
+      const identitiesRes = await fetch(`${gateBaseUrl}/api/auth/identities`, { headers: oauthHeaders });
+      expect(identitiesRes.status).toBe(200);
+      const identitiesJson = (await identitiesRes.json()) as {
+        has_password: boolean;
+        identities: Array<{ provider: string }>;
+      };
+      expect(identitiesJson.has_password).toBe(false);
+      expect(identitiesJson.identities.map((i) => i.provider)).toEqual(
+        expect.arrayContaining(['github', 'google'])
+      );
+
+      // Unlink Google succeeds; unlinking last GitHub without password is blocked (409)
+      const unlinkGoogle = await fetch(`${gateBaseUrl}/api/auth/identities/google`, {
+        method: 'DELETE',
+        headers: oauthHeaders,
+      });
+      expect(unlinkGoogle.status).toBe(200);
+
+      const unlinkLastGh = await fetch(`${gateBaseUrl}/api/auth/identities/github`, {
+        method: 'DELETE',
+        headers: oauthHeaders,
+      });
+      expect(unlinkLastGh.status).toBe(409);
+
+      // Set initial password, then unlinking GitHub succeeds
+      const setPwdRes = await fetch(`${gateBaseUrl}/api/auth/password`, {
+        method: 'POST',
+        headers: oauthHeaders,
+        body: JSON.stringify({ newPassword: 'OAuthSetPassword789!' }),
+      });
+      expect(setPwdRes.status).toBe(200);
+
+      const unlinkGhAfterPwd = await fetch(`${gateBaseUrl}/api/auth/identities/github`, {
+        method: 'DELETE',
+        headers: oauthHeaders,
+      });
+      expect(unlinkGhAfterPwd.status).toBe(200);
+    } finally {
+      for (const k of envKeys) {
+        if (prevEnv[k] === undefined) delete process.env[k];
+        else process.env[k] = prevEnv[k];
+      }
+      await new Promise<void>((resolve) => mockOAuthServer.close(() => resolve()));
+    }
+  }, 45_000);
 });
 
 

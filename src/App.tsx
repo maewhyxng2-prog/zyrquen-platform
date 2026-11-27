@@ -55,11 +55,15 @@ function readRouteFromUrl(): {
   screen: AppScreen;
   conversationId: string | null;
   settingsTab: SettingsTab;
+  verifyToken: string | null;
+  resetToken: string | null;
 } {
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view');
   const cid = params.get('cid');
   const tab = params.get('tab');
+  const verifyToken = params.get('verify_token');
+  const resetToken = params.get('reset_token');
 
   const screen: AppScreen =
     view === 'projects' ||
@@ -75,7 +79,13 @@ function readRouteFromUrl(): {
   const settingsTab: SettingsTab =
     tab === 'developer' || tab === 'admin' ? tab : 'account';
 
-  return { screen, conversationId: cid || null, settingsTab };
+  return {
+    screen,
+    conversationId: cid || null,
+    settingsTab,
+    verifyToken: verifyToken || null,
+    resetToken: resetToken || null,
+  };
 }
 
 function buildUrl(
@@ -94,7 +104,8 @@ function buildUrl(
     params.set('tab', settingsTab);
   }
   const qs = params.toString();
-  return qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
+  const basePath = window.location.pathname === '/login' ? '/' : window.location.pathname;
+  return qs ? `${basePath}?${qs}` : basePath;
 }
 
 export interface ThreadLoadEntry {
@@ -327,6 +338,8 @@ export default function App() {
 
   const [screen, setScreen] = useState<AppScreen>(initialRoute.screen);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>(initialRoute.settingsTab);
+  const [verifyToken, setVerifyToken] = useState<string | null>(initialRoute.verifyToken);
+  const [resetToken, setResetToken] = useState<string | null>(initialRoute.resetToken);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(
     initialRoute.conversationId
   );
@@ -504,6 +517,47 @@ export default function App() {
       active = false;
     };
   }, [loadHomeAndConversations, token, user]);
+
+  useEffect(() => {
+    if (!token || !user || !verifyToken) return;
+    let active = true;
+    apiRequest<{ ok: boolean; user?: User }>('/api/auth/verify-email', {
+      method: 'POST',
+      token,
+      body: { token: verifyToken },
+    })
+      .then((res) => {
+        if (!active) return;
+        if (res.ok && res.user) {
+          setUser(res.user);
+        }
+        setVerifyToken(null);
+        const cleanUrl = buildUrl(screen, activeConversationId, settingsTab);
+        window.history.replaceState(
+          { screen, conversationId: activeConversationId, settingsTab },
+          '',
+          cleanUrl
+        );
+      })
+      .catch(() => {
+        if (active) setVerifyToken(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [activeConversationId, screen, settingsTab, token, user, verifyToken]);
+
+  useEffect(() => {
+    if (!token || !user) return;
+    if (window.location.pathname === '/login') {
+      const targetUrl = buildUrl(screen, activeConversationId, settingsTab);
+      window.history.replaceState(
+        { screen, conversationId: activeConversationId, settingsTab },
+        '',
+        targetUrl
+      );
+    }
+  }, [activeConversationId, screen, settingsTab, token, user]);
 
   const loadConversationThread = useCallback(
     async (
@@ -1008,10 +1062,30 @@ export default function App() {
     return (
       <AuthGate
         authStatus={authStatus}
+        initialVerifyToken={verifyToken}
+        initialResetToken={resetToken}
+        onClearActionTokens={() => {
+          setVerifyToken(null);
+          setResetToken(null);
+          const cleanUrl = buildUrl(screen, activeConversationId, settingsTab);
+          window.history.replaceState(
+            { screen, conversationId: activeConversationId, settingsTab },
+            '',
+            cleanUrl
+          );
+        }}
         onAuthenticated={(newToken, authedUser) => {
           setToken(newToken);
           setUser(authedUser);
           setAuthStatus((prev) => (prev ? { ...prev, initialized: true } : prev));
+          if (window.location.pathname === '/login') {
+            const targetUrl = buildUrl(screen, activeConversationId, settingsTab);
+            window.history.replaceState(
+              { screen, conversationId: activeConversationId, settingsTab },
+              '',
+              targetUrl
+            );
+          }
         }}
       />
     );
@@ -1085,6 +1159,7 @@ export default function App() {
         >
           {screen === 'overview' && (
             <HomeView
+              token={token}
               user={user}
               homeSummary={homeSummary}
               nativeReady={nativeReady}
@@ -1094,6 +1169,7 @@ export default function App() {
                 void handleStartPrompt(prompt, mode, attachment)
               }
               onOpenConversation={(cid) => pushRoute('workspace', cid, settingsTab)}
+              onOpenAccountSettings={() => pushRoute('settings', null, 'account')}
               onNavigate={(next, options) => {
                 if (next === 'create' && options?.preset) {
                   const preset = options.preset;
@@ -1249,6 +1325,7 @@ export default function App() {
                 onCapturePerfSample={handleCapturePerfSampleNow}
                 onChangeTab={(nextTab) => pushRoute('settings', null, nextTab)}
                 onOpenMemory={() => pushRoute('memory', null, 'account')}
+                onUserUpdated={(updatedUser) => setUser(updatedUser)}
                 onUpdatePreferences={(prefs) => {
                   if (prefs.autoExpandTrace !== undefined) setAutoExpandTrace(prefs.autoExpandTrace);
                   if (prefs.defaultMode !== undefined) setDefaultMode(prefs.defaultMode);

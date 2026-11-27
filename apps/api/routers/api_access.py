@@ -12,6 +12,8 @@ from apps.api.api_access import API_KEY_SCOPE, create_api_key_secret
 from apps.api.api_access_models import ApiKey, AuditLog
 from apps.api.api_access_schemas import (
     ApiKeyAutoRotateRequest,
+    ApiKeyBulkRevokeRequest,
+    ApiKeyBulkRevokeResponse,
     ApiKeyCreateRequest,
     ApiKeyCreated,
     ApiKeyDailyUsagePoint,
@@ -162,6 +164,47 @@ def create_api_key(
         rotation_count=key.rotation_count,
         key=secret,
     )
+
+
+@router.post("/bulk-revoke", response_model=ApiKeyBulkRevokeResponse)
+def bulk_revoke_api_keys(
+    data: ApiKeyBulkRevokeRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    unique_ids = list(dict.fromkeys(data.ids))
+    try:
+        keys = (
+            db.query(ApiKey)
+            .filter(
+                ApiKey.user_id == current_user.id,
+                ApiKey.id.in_(unique_ids),
+                ApiKey.revoked_at.is_(None),
+            )
+            .with_for_update()
+            .all()
+        )
+        now = datetime.now(timezone.utc)
+        revoked_ids: list[UUID] = []
+        for key in keys:
+            key.revoked_at = now
+            key.auto_rotate_enabled = False
+            key.next_rotation_at = None
+            revoked_ids.append(key.id)
+            db.add(
+                AuditLog(
+                    actor_user_id=current_user.id,
+                    action="api_key.bulk_revoked",
+                    resource_id=str(key.id),
+                )
+            )
+        db.commit()
+        return ApiKeyBulkRevokeResponse(
+            revoked_ids=revoked_ids,
+            revoked_count=len(revoked_ids),
+        )
+    except SQLAlchemyError:
+        raise _database_failure(db) from None
 
 
 @router.patch("/{key_id}/auto-rotate", response_model=ApiKeyMetadata)

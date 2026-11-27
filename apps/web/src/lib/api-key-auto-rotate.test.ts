@@ -271,4 +271,79 @@ describe("API key auto-rotate & 7-day usage backend lifecycle", () => {
     });
     expect(scheduleRevoked.status).toBe(409);
   });
+
+  it("supports bulk-revoking active owned API keys and marks newly registered users email_verified=false", async () => {
+    const email = `bulk-${Date.now()}@zyrquen.test`;
+    const password = "StrongTestPassword123!";
+    const reg = await handleInMemoryBackendRequest({
+      method: "POST",
+      path: "auth/register",
+      authorizationHeader: null,
+      rawBody: JSON.stringify({ email, password }),
+    });
+    expect(reg.status).toBe(200);
+    expect((reg.body as { email_verified?: boolean }).email_verified).toBe(false);
+
+    const login = await handleInMemoryBackendRequest({
+      method: "POST",
+      path: "auth/login",
+      authorizationHeader: null,
+      rawBody: JSON.stringify({ email, password }),
+    });
+    const auth = `Bearer ${(login.body as { access_token: string }).access_token}`;
+
+    const me = await handleInMemoryBackendRequest({
+      method: "GET",
+      path: "auth/me",
+      authorizationHeader: auth,
+    });
+    expect(me.status).toBe(200);
+    expect((me.body as { email_verified?: boolean }).email_verified).toBe(false);
+
+    const resend = await handleInMemoryBackendRequest({
+      method: "POST",
+      path: "auth/verification/resend",
+      authorizationHeader: auth,
+    });
+    expect(resend.status).toBe(200);
+    expect((resend.body as { deliveryReason?: string }).deliveryReason).toBe(
+      "EMAIL_PROVIDER_NOT_CONFIGURED",
+    );
+
+    const expiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString();
+    const k1 = await handleInMemoryBackendRequest({
+      method: "POST",
+      path: "users/me/api-keys",
+      authorizationHeader: auth,
+      rawBody: JSON.stringify({ name: "bulk-1", expires_at: expiresAt }),
+    });
+    const k2 = await handleInMemoryBackendRequest({
+      method: "POST",
+      path: "users/me/api-keys",
+      authorizationHeader: auth,
+      rawBody: JSON.stringify({ name: "bulk-2", expires_at: expiresAt }),
+    });
+    const id1 = (k1.body as { id: string }).id;
+    const id2 = (k2.body as { id: string }).id;
+
+    const bulkRes = await handleInMemoryBackendRequest({
+      method: "POST",
+      path: "users/me/api-keys/bulk-revoke",
+      authorizationHeader: auth,
+      rawBody: JSON.stringify({ ids: [id1, id2] }),
+    });
+    expect(bulkRes.status).toBe(200);
+    expect(bulkRes.body).toMatchObject({
+      revoked_count: 2,
+    });
+
+    const listRes = await handleInMemoryBackendRequest({
+      method: "GET",
+      path: "users/me/api-keys",
+      authorizationHeader: auth,
+    });
+    const listBody = listRes.body as Array<{ id: string; revoked_at: string | null }>;
+    expect(listBody.find((x) => x.id === id1)?.revoked_at).not.toBeNull();
+    expect(listBody.find((x) => x.id === id2)?.revoked_at).not.toBeNull();
+  });
 });

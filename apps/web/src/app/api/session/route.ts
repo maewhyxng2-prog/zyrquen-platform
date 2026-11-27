@@ -70,6 +70,7 @@ function buildSessionResponse(
     email?: unknown;
     role?: unknown;
     is_active?: unknown;
+    email_verified?: unknown;
   };
 
   if (
@@ -86,6 +87,7 @@ function buildSessionResponse(
         userId: null,
         role: null,
         verified: false,
+        emailVerified: false,
         error: "ข้อมูลเซสชันจากบริการยืนยันตัวตนไม่สมบูรณ์",
       },
       { headers: { "Cache-Control": "no-store" } },
@@ -101,6 +103,8 @@ function buildSessionResponse(
       email: user.email.trim().toLowerCase(),
       role: typeof user.role === "string" ? user.role.trim().toLowerCase() : null,
       verified: true,
+      emailVerified:
+        typeof user.email_verified === "boolean" ? user.email_verified : true,
     },
     { headers: { "Cache-Control": "no-store" } },
   );

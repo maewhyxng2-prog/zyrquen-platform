@@ -10,7 +10,9 @@ import {
   GitCompare,
   KeyRound,
   Layers,
+  Link2,
   LogOut,
+  Mail,
   Moon,
   Play,
   Shield,
@@ -18,6 +20,7 @@ import {
   Sun,
   Terminal,
   Trash2,
+  Unlink,
   User as UserIcon,
   X,
 } from 'lucide-react';
@@ -34,8 +37,10 @@ const AdminStabilityPanel = lazy(() =>
   import('./AdminStabilityPanel').then((m) => ({ default: m.AdminStabilityPanel }))
 );
 import type {
+  AccountIdentitiesResponse,
   AdminOverview,
   AuditLogItem,
+  AuthProvidersResponse,
   ClientLatencySample,
   CodeCorpusCurateResult,
   CodeModelEvaluationResult,
@@ -65,6 +70,7 @@ interface SettingsViewProps {
   onCapturePerfSample?: () => void;
   onChangeTab: (tab: SettingsTab) => void;
   onOpenMemory?: () => void;
+  onUserUpdated?: (user: User) => void;
   onUpdatePreferences: (prefs: {
     autoExpandTrace?: boolean;
     defaultMode?: ReasoningMode;
@@ -86,6 +92,7 @@ export function SettingsView({
   onCapturePerfSample,
   onChangeTab,
   onOpenMemory,
+  onUserUpdated,
   onUpdatePreferences,
   onLogout,
 }: SettingsViewProps) {
@@ -97,8 +104,22 @@ export function SettingsView({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [accountSecurity, setAccountSecurity] = useState<AccountIdentitiesResponse | null>(null);
+  const [authProviders, setAuthProviders] = useState<AuthProvidersResponse | null>(null);
+  const [accountNotice, setAccountNotice] = useState<string | null>(null);
+  const [resendingVerify, setResendingVerify] = useState(false);
+  const [linkingProvider, setLinkingProvider] = useState<'google' | 'github' | null>(null);
+  const [unlinkingProvider, setUnlinkingProvider] = useState<'google' | 'github' | null>(null);
+  const [currentPasswordInput, setCurrentPasswordInput] = useState('');
+  const [newPasswordInput, setNewPasswordInput] = useState('');
+  const [savingPassword, setSavingPassword] = useState(false);
+
   const [keyName, setKeyName] = useState('');
   const [createdSecret, setCreatedSecret] = useState<string | null>(null);
+  const [selectedKeyIds, setSelectedKeyIds] = useState<string[]>([]);
+  const [bulkRevokeConfirmOpen, setBulkRevokeConfirmOpen] = useState(false);
+  const [bulkRevoking, setBulkRevoking] = useState(false);
+  const [keyNotice, setKeyNotice] = useState<string | null>(null);
 
   const [dsName, setDsName] = useState('');
   const [dsContent, setDsContent] = useState('');
@@ -149,6 +170,23 @@ export function SettingsView({
     undefined
   );
 
+  const loadAccountSecurity = useCallback(async () => {
+    try {
+      const [idRes, provRes] = await Promise.all([
+        apiRequest<AccountIdentitiesResponse>('/api/auth/identities', { token }).catch(() => null),
+        apiRequest<AuthProvidersResponse>('/api/auth/providers').catch(() => null),
+      ]);
+      if (idRes && idRes.ok) {
+        setAccountSecurity(idRes);
+      }
+      if (provRes) {
+        setAuthProviders(provRes);
+      }
+    } catch {
+      // Optional enrichment for unit tests that only mock overview routes
+    }
+  }, [token]);
+
   const loadDeveloper = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -158,6 +196,8 @@ export function SettingsView({
         apiRequest<ToolsOverview>('/api/developer/tools', { token }).catch(() => null),
       ]);
       setDevData(res);
+      const activeIds = new Set((res.keys || []).filter((k) => !k.revoked).map((k) => k.id));
+      setSelectedKeyIds((prev) => prev.filter((id) => activeIds.has(id)));
       const checkpoints = res.checkpoints || [];
       if (checkpoints.length > 0) {
         setSelectedArtifactVersion((prev) => {
@@ -193,7 +233,9 @@ export function SettingsView({
     let active = true;
     Promise.resolve().then(() => {
       if (!active) return;
-      if (activeTab === 'developer') {
+      if (activeTab === 'account') {
+        void loadAccountSecurity();
+      } else if (activeTab === 'developer') {
         void loadDeveloper();
       } else if (activeTab === 'admin' && user.role === 'admin') {
         void loadAdmin();
@@ -202,11 +244,146 @@ export function SettingsView({
     return () => {
       active = false;
     };
-  }, [activeTab, loadAdmin, loadDeveloper, user.role]);
+  }, [activeTab, loadAccountSecurity, loadAdmin, loadDeveloper, user.role]);
+
+  useEffect(() => {
+    function handleOAuthLinkMessage(event: MessageEvent) {
+      if (event.origin !== window.location.origin) return;
+      const data = event.data as
+        | {
+            type?: string;
+            ok?: boolean;
+            intent?: string;
+            provider?: string;
+            user?: User;
+            error?: string;
+          }
+        | undefined;
+      if (!data || data.type !== 'ZYRQUEN_OAUTH_RESULT' || data.intent !== 'link') return;
+      setLinkingProvider(null);
+      if (data.ok) {
+        setAccountNotice(`เชื่อมต่อบัญชี ${data.provider === 'github' ? 'GitHub' : 'Google'} สำเร็จแล้ว`);
+        if (data.user) {
+          onUserUpdated?.(data.user);
+        }
+        void loadAccountSecurity();
+      } else {
+        setError(data.error || 'ไม่สามารถเชื่อมต่อบัญชีภายนอกได้');
+      }
+    }
+    window.addEventListener('message', handleOAuthLinkMessage);
+    return () => window.removeEventListener('message', handleOAuthLinkMessage);
+  }, [loadAccountSecurity, onUserUpdated]);
+
+  async function handleResendEmailVerification() {
+    setResendingVerify(true);
+    setError(null);
+    setAccountNotice(null);
+    try {
+      const res = await apiRequest<{
+        ok: boolean;
+        alreadyVerified?: boolean;
+        verification?: { emailSent: boolean; deliveryReason: string | null };
+      }>('/api/auth/verification/resend', {
+        method: 'POST',
+        token,
+      });
+      if (res.alreadyVerified) {
+        setAccountNotice('อีเมลของคุณได้รับการยืนยันเรียบร้อยแล้ว');
+        void loadAccountSecurity();
+      } else if (res.verification?.emailSent) {
+        setAccountNotice(`ส่งลิงก์ยืนยันอีเมลไปยัง ${user.email} แล้ว`);
+      } else {
+        setAccountNotice(
+          `สร้างคำขอยืนยันอีเมลแล้ว แต่ยังไม่ได้ส่งอีเมลจริง (${res.verification?.deliveryReason || 'EMAIL_PROVIDER_NOT_CONFIGURED'})`
+        );
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'ไม่สามารถส่งลิงก์ยืนยันอีเมลได้');
+    } finally {
+      setResendingVerify(false);
+    }
+  }
+
+  async function handleLinkOAuthProvider(provider: 'google' | 'github') {
+    setError(null);
+    setAccountNotice(null);
+    setLinkingProvider(provider);
+    try {
+      const origin = window.location.origin;
+      const res = await apiRequest<{ ok: boolean; url: string }>(
+        `/api/auth/oauth/${provider}/url?intent=link&origin=${encodeURIComponent(origin)}`,
+        { token }
+      );
+      const popup = window.open(
+        res.url,
+        'zyrquen-oauth-link',
+        'width=560,height=680,menubar=no,toolbar=no,status=no'
+      );
+      if (!popup) {
+        setLinkingProvider(null);
+        setError('เบราว์เซอร์บล็อกป๊อปอัป กรุณาอนุญาตป๊อปอัปเพื่อเชื่อมต่อบัญชี');
+      }
+    } catch (err) {
+      setLinkingProvider(null);
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : `ไม่สามารถเริ่มเชื่อมต่อบัญชี ${provider === 'github' ? 'GitHub' : 'Google'} ได้`
+      );
+    }
+  }
+
+  async function handleUnlinkOAuthProvider(provider: 'google' | 'github') {
+    setUnlinkingProvider(provider);
+    setError(null);
+    setAccountNotice(null);
+    try {
+      await apiRequest(`/api/auth/identities/${provider}`, {
+        method: 'DELETE',
+        token,
+      });
+      setAccountNotice(`ยกเลิกการเชื่อมต่อ ${provider === 'github' ? 'GitHub' : 'Google'} แล้ว`);
+      await loadAccountSecurity();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'ยกเลิกการเชื่อมต่อบัญชีไม่สำเร็จ');
+    } finally {
+      setUnlinkingProvider(null);
+    }
+  }
+
+  async function handleSaveAccountPassword(e: React.FormEvent) {
+    e.preventDefault();
+    setSavingPassword(true);
+    setError(null);
+    setAccountNotice(null);
+    try {
+      const res = await apiRequest<{ ok: boolean; has_password: boolean }>('/api/auth/password', {
+        method: 'POST',
+        token,
+        body: {
+          currentPassword: currentPasswordInput || undefined,
+          newPassword: newPasswordInput,
+        },
+      });
+      if (res.ok) {
+        setCurrentPasswordInput('');
+        setNewPasswordInput('');
+        setAccountNotice('บันทึกรหัสผ่านสำหรับเข้าสู่ระบบด้วยอีเมลเรียบร้อยแล้ว');
+        onUserUpdated?.({ ...user, has_password: true });
+        await loadAccountSecurity();
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'บันทึกรหัสผ่านไม่สำเร็จ');
+    } finally {
+      setSavingPassword(false);
+    }
+  }
 
   async function handleCreateKey(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setKeyNotice(null);
     try {
       const res = await apiRequest<{ plaintextKey: string }>('/api/developer/keys', {
         method: 'POST',
@@ -222,11 +399,38 @@ export function SettingsView({
   }
 
   async function handleRevokeKey(id: string) {
+    setKeyNotice(null);
     try {
       await apiRequest(`/api/developer/keys/${id}`, { method: 'DELETE', token });
+      setSelectedKeyIds((prev) => prev.filter((item) => item !== id));
       await loadDeveloper();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'เพิกถอน API Key ไม่สำเร็จ');
+    }
+  }
+
+  async function handleConfirmBulkRevoke() {
+    if (selectedKeyIds.length === 0) return;
+    setBulkRevoking(true);
+    setError(null);
+    setKeyNotice(null);
+    try {
+      const res = await apiRequest<{ ok: boolean; revokedCount: number }>(
+        '/api/developer/keys/bulk-revoke',
+        {
+          method: 'POST',
+          token,
+          body: { ids: selectedKeyIds },
+        }
+      );
+      setBulkRevokeConfirmOpen(false);
+      setSelectedKeyIds([]);
+      setKeyNotice(`เพิกถอน API Key ที่เลือกจำนวน ${res.revokedCount} รายการเรียบร้อยแล้ว`);
+      await loadDeveloper();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'เพิกถอน API Key แบบกลุ่มไม่สำเร็จ');
+    } finally {
+      setBulkRevoking(false);
     }
   }
 
@@ -857,6 +1061,16 @@ export function SettingsView({
       {/* TAB 1: บัญชีผู้ใช้ */}
       {activeTab === 'account' && (
         <div className="space-y-6">
+          {accountNotice && (
+            <div
+              role="status"
+              className="flex items-start gap-2 rounded-2xl border border-[var(--color-success)]/40 bg-[var(--color-surface-raised)] px-4 py-3 text-sm text-[var(--color-success)]"
+            >
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{accountNotice}</span>
+            </div>
+          )}
+
           <section className="rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-5 sm:p-6">
             <h3 className="text-base font-semibold text-[var(--color-text)]">โปรไฟล์และเซสชัน</h3>
             <div className="mt-4 grid gap-4 sm:grid-cols-3">
@@ -867,6 +1081,29 @@ export function SettingsView({
               <div>
                 <p className="text-xs text-[var(--color-text-secondary)]">อีเมล</p>
                 <p className="mt-1 text-sm font-medium text-[var(--color-text)]">{user.email}</p>
+                <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                  {(accountSecurity?.email_verified ?? user.email_verified) === true ? (
+                    <span className="inline-flex items-center gap-1 rounded-md border border-[var(--color-success)]/35 bg-[var(--color-surface)] px-2 py-0.5 text-[11px] font-medium text-[var(--color-success)]">
+                      <CheckCircle2 className="h-3 w-3" />
+                      <span>ยืนยันอีเมลแล้ว</span>
+                    </span>
+                  ) : (accountSecurity?.email_verified ?? user.email_verified) === false ? (
+                    <>
+                      <span className="inline-flex items-center gap-1 rounded-md border border-[var(--color-warning)]/40 bg-[var(--color-warning-bg)] px-2 py-0.5 text-[11px] font-medium text-[var(--color-warning)]">
+                        <Mail className="h-3 w-3" />
+                        <span>Verify Email · ยังไม่ยืนยัน</span>
+                      </span>
+                      <button
+                        type="button"
+                        disabled={resendingVerify}
+                        onClick={() => void handleResendEmailVerification()}
+                        className="text-[11px] font-semibold text-[var(--color-accent)] hover:underline disabled:opacity-60"
+                      >
+                        {resendingVerify ? 'กำลังส่ง...' : 'ส่งลิงก์ยืนยันอีกครั้ง'}
+                      </button>
+                    </>
+                  ) : null}
+                </div>
               </div>
               <div>
                 <p className="text-xs text-[var(--color-text-secondary)]">สิทธิ์การเข้าถึง</p>
@@ -875,6 +1112,116 @@ export function SettingsView({
                 </p>
               </div>
             </div>
+          </section>
+
+          <section className="rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-5 sm:p-6">
+            <div className="flex items-center gap-2">
+              <Link2 className="h-4 w-4 text-[var(--color-accent)]" />
+              <h3 className="text-base font-semibold text-[var(--color-text)]">
+                การเชื่อมต่อบัญชีภายนอก (Account Linking · OAuth 2.0)
+              </h3>
+            </div>
+            <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
+              เชื่อมโยงบัญชี Google หรือ GitHub เข้ากับบัญชี ZYRQUEN ของคุณ (ใช้สำหรับการยืนยันตัวตนเท่านั้น ไม่ใช่โมเดล AI ภายนอก)
+            </p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              {(['google', 'github'] as const).map((provider) => {
+                const linked = accountSecurity?.identities?.find((item) => item.provider === provider);
+                const configured = authProviders?.providers?.[provider]?.configured;
+                const label = provider === 'google' ? 'Google' : 'GitHub';
+                return (
+                  <div
+                    key={provider}
+                    className="flex flex-col justify-between gap-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4"
+                  >
+                    <div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-semibold text-[var(--color-text)]">{label}</span>
+                        <span
+                          className={`text-[11px] font-medium ${
+                            linked ? 'text-[var(--color-success)]' : 'text-[var(--color-text-muted)]'
+                          }`}
+                        >
+                          {linked ? 'เชื่อมต่อแล้ว' : 'ยังไม่เชื่อมต่อ'}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
+                        {linked
+                          ? linked.provider_email || linked.display_name || `บัญชี ${label} ที่เชื่อมอยู่`
+                          : configured === false
+                            ? `ยังไม่ได้ตั้งค่า ${label} OAuth บนเซิร์ฟเวอร์`
+                            : `คลิกเพื่อเชื่อมต่อกับบัญชี ${label}`}
+                      </p>
+                    </div>
+                    {linked ? (
+                      <button
+                        type="button"
+                        disabled={unlinkingProvider === provider}
+                        onClick={() => void handleUnlinkOAuthProvider(provider)}
+                        className="inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-xl border border-[var(--color-danger)]/35 bg-[var(--color-danger-bg)] px-3 text-xs font-medium text-[var(--color-danger)] hover:opacity-90 disabled:opacity-50"
+                      >
+                        <Unlink className="h-3.5 w-3.5" />
+                        <span>
+                          {unlinkingProvider === provider ? 'กำลังยกเลิก...' : `ยกเลิกการเชื่อมต่อ ${label}`}
+                        </span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={linkingProvider === provider}
+                        onClick={() => void handleLinkOAuthProvider(provider)}
+                        className="inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] px-3 text-xs font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] disabled:opacity-50"
+                      >
+                        <Link2 className="h-3.5 w-3.5 text-[var(--color-accent)]" />
+                        <span>{linkingProvider === provider ? 'กำลังเชื่อมต่อ...' : `เชื่อมต่อ ${label}`}</span>
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+
+          <section className="rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-5 sm:p-6">
+            <div className="flex items-center gap-2">
+              <KeyRound className="h-4 w-4 text-[var(--color-accent)]" />
+              <h3 className="text-base font-semibold text-[var(--color-text)]">
+                {(accountSecurity?.has_password ?? user.has_password ?? true)
+                  ? 'เปลี่ยนรหัสผ่านบัญชี'
+                  : 'ตั้งรหัสผ่านสำหรับการเข้าสู่ระบบด้วยอีเมล'}
+              </h3>
+            </div>
+            <form onSubmit={handleSaveAccountPassword} className="mt-4 grid gap-3 sm:grid-cols-3">
+              {(accountSecurity?.has_password ?? user.has_password ?? true) && (
+                <input
+                  type="password"
+                  required
+                  aria-label="รหัสผ่านปัจจุบัน"
+                  value={currentPasswordInput}
+                  onChange={(e) => setCurrentPasswordInput(e.target.value)}
+                  placeholder="รหัสผ่านปัจจุบัน"
+                  className="h-11 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-focus)] focus:outline-none"
+                />
+              )}
+              <input
+                type="password"
+                required
+                minLength={8}
+                maxLength={256}
+                aria-label="รหัสผ่านใหม่"
+                value={newPasswordInput}
+                onChange={(e) => setNewPasswordInput(e.target.value)}
+                placeholder="รหัสผ่านใหม่ (อย่างน้อย 8 ตัวอักษร)"
+                className="h-11 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-focus)] focus:outline-none"
+              />
+              <button
+                type="submit"
+                disabled={savingPassword}
+                className="h-11 rounded-xl bg-[var(--color-primary)] px-4 text-sm font-medium text-white hover:bg-[var(--color-primary-hover)] disabled:opacity-60 whitespace-nowrap"
+              >
+                {savingPassword ? 'กำลังบันทึก...' : 'บันทึกรหัสผ่าน'}
+              </button>
+            </form>
           </section>
 
           <section className="rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-5 sm:p-6">
@@ -1064,13 +1411,27 @@ export function SettingsView({
               </section>
 
               <section className="rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-5 sm:p-6">
-                <div className="flex items-center gap-2">
-                  <KeyRound className="h-4 w-4 text-[var(--color-accent)]" />
-                  <h3 className="text-base font-semibold text-[var(--color-text)]">จัดการ API Keys</h3>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <KeyRound className="h-4 w-4 text-[var(--color-accent)]" />
+                      <h3 className="text-base font-semibold text-[var(--color-text)]">จัดการ API Keys</h3>
+                    </div>
+                    <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
+                      คีย์ถูกแฮชด้วย SHA-256 บนเซิร์ฟเวอร์ และแสดงคีย์เต็มเพียงครั้งเดียวตอนสร้าง
+                    </p>
+                  </div>
+                  {selectedKeyIds.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setBulkRevokeConfirmOpen(true)}
+                      className="inline-flex min-h-[40px] items-center gap-2 rounded-xl border border-[var(--color-danger)]/45 bg-[var(--color-danger-bg)] px-4 text-xs font-semibold text-[var(--color-danger)] hover:opacity-90 whitespace-nowrap"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      <span>Bulk Revoke ({selectedKeyIds.length})</span>
+                    </button>
+                  )}
                 </div>
-                <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
-                  คีย์ถูกแฮชด้วย SHA-256 บนเซิร์ฟเวอร์ และแสดงคีย์เต็มเพียงครั้งเดียวตอนสร้าง
-                </p>
 
                 <form onSubmit={handleCreateKey} className="mt-4 flex flex-col gap-2 sm:flex-row">
                   <input
@@ -1090,6 +1451,12 @@ export function SettingsView({
                   </button>
                 </form>
 
+                {keyNotice && (
+                  <p className="mt-3 text-xs font-medium text-[var(--color-success)]" role="status">
+                    {keyNotice}
+                  </p>
+                )}
+
                 {createdSecret && (
                   <div className="mt-4 rounded-xl border border-[var(--color-accent)]/45 bg-[var(--color-surface)] p-3.5">
                     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1104,37 +1471,145 @@ export function SettingsView({
                   </div>
                 )}
 
-                <div className="mt-4 divide-y divide-[var(--color-border)]">
-                  {(devData?.keys || []).length === 0 ? (
-                    <p className="py-3 text-sm text-[var(--color-text-secondary)]">ยังไม่มี API Key ที่สร้างไว้</p>
-                  ) : (
-                    devData!.keys.map((k) => (
-                      <div
-                        key={k.id}
-                        className="flex min-h-[56px] items-center justify-between gap-3 py-3"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm font-medium text-[var(--color-text)]">{k.name}</p>
-                          <p className="font-mono text-xs text-[var(--color-text-secondary)] tabular-nums">
-                            {k.key_prefix}… · โควตา {k.quota_daily}/วัน ·{' '}
-                            {k.revoked ? 'เพิกถอนแล้ว' : 'ใช้งานได้'}
-                          </p>
+                {(() => {
+                  const activeKeys = (devData?.keys || []).filter((k) => !k.revoked);
+                  const allActiveSelected =
+                    activeKeys.length > 0 && activeKeys.every((k) => selectedKeyIds.includes(k.id));
+                  return (
+                    <div className="mt-4">
+                      {activeKeys.length > 0 && (
+                        <div className="mb-2 flex items-center justify-between gap-2 border-b border-[var(--color-border)] pb-2 text-xs text-[var(--color-text-secondary)]">
+                          <label className="inline-flex cursor-pointer items-center gap-2">
+                            <input
+                              type="checkbox"
+                              aria-label="เลือก API Key ที่ใช้งานอยู่ทั้งหมด"
+                              checked={allActiveSelected}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedKeyIds(activeKeys.map((k) => k.id));
+                                } else {
+                                  setSelectedKeyIds([]);
+                                }
+                              }}
+                              className="h-4 w-4 accent-[var(--color-primary)]"
+                            />
+                            <span>เลือกทั้งหมดที่ใช้งานได้ ({activeKeys.length})</span>
+                          </label>
+                          {selectedKeyIds.length > 0 && (
+                            <span className="font-mono text-[11px] text-[var(--color-accent)]">
+                              เลือกแล้ว {selectedKeyIds.length} รายการ
+                            </span>
+                          )}
                         </div>
-                        {!k.revoked && (
-                          <button
-                            type="button"
-                            onClick={() => void handleRevokeKey(k.id)}
-                            aria-label={`เพิกถอน ${k.name}`}
-                            className="flex min-h-[40px] items-center gap-1.5 rounded-xl px-3 text-xs text-[var(--color-danger)] hover:bg-[var(--color-danger-bg)]"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                            <span>เพิกถอน</span>
-                          </button>
+                      )}
+                      <div className="divide-y divide-[var(--color-border)]">
+                        {(devData?.keys || []).length === 0 ? (
+                          <p className="py-3 text-sm text-[var(--color-text-secondary)]">ยังไม่มี API Key ที่สร้างไว้</p>
+                        ) : (
+                          devData!.keys.map((k) => {
+                            const isSelected = selectedKeyIds.includes(k.id);
+                            return (
+                              <div
+                                key={k.id}
+                                className="flex min-h-[56px] items-center justify-between gap-3 py-3"
+                              >
+                                <div className="flex min-w-0 flex-1 items-center gap-3">
+                                  <input
+                                    type="checkbox"
+                                    aria-label={`เลือก API Key ${k.name}`}
+                                    disabled={Boolean(k.revoked)}
+                                    checked={isSelected}
+                                    onChange={(e) => {
+                                      setSelectedKeyIds((prev) =>
+                                        e.target.checked
+                                          ? Array.from(new Set([...prev, k.id]))
+                                          : prev.filter((item) => item !== k.id)
+                                      );
+                                    }}
+                                    className="h-4 w-4 shrink-0 accent-[var(--color-primary)] disabled:opacity-40"
+                                  />
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-sm font-medium text-[var(--color-text)]">{k.name}</p>
+                                    <p className="font-mono text-xs text-[var(--color-text-secondary)] tabular-nums">
+                                      {k.key_prefix}… · โควตา {k.quota_daily}/วัน ·{' '}
+                                      {k.revoked ? 'เพิกถอนแล้ว' : 'ใช้งานได้'}
+                                    </p>
+                                  </div>
+                                </div>
+                                {!k.revoked && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleRevokeKey(k.id)}
+                                    aria-label={`เพิกถอน ${k.name}`}
+                                    className="flex min-h-[40px] items-center gap-1.5 rounded-xl px-3 text-xs text-[var(--color-danger)] hover:bg-[var(--color-danger-bg)]"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                    <span>เพิกถอน</span>
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })
                         )}
                       </div>
-                    ))
-                  )}
-                </div>
+                    </div>
+                  );
+                })()}
+
+                {bulkRevokeConfirmOpen && (
+                  <div
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="bulk-revoke-dialog-title"
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+                  >
+                    <div className="w-full max-w-md rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-5 shadow-xl">
+                      <div className="flex items-start gap-3">
+                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[var(--color-danger)]/40 bg-[var(--color-danger-bg)] text-[var(--color-danger)]">
+                          <AlertTriangle className="h-4 w-4" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <h4
+                            id="bulk-revoke-dialog-title"
+                            className="text-base font-semibold text-[var(--color-text)]"
+                          >
+                            ยืนยัน Bulk Revoke API Keys
+                          </h4>
+                          <p className="mt-1 text-xs leading-relaxed text-[var(--color-text-secondary)]">
+                            คุณกำลังจะเพิกถอน API Key จำนวน {selectedKeyIds.length} รายการอย่างถาวร เมื่อเพิกถอนแล้วจะไม่สามารถนำกลับมาใช้งานได้อีก
+                          </p>
+                        </div>
+                      </div>
+                      <ul className="mt-3 max-h-36 space-y-1 overflow-y-auto rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-xs text-[var(--color-text)]">
+                        {(devData?.keys || [])
+                          .filter((k) => selectedKeyIds.includes(k.id))
+                          .map((k) => (
+                            <li key={k.id} className="truncate font-mono">
+                              {k.name} ({k.key_prefix}…)
+                            </li>
+                          ))}
+                      </ul>
+                      <div className="mt-4 flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          disabled={bulkRevoking}
+                          onClick={() => setBulkRevokeConfirmOpen(false)}
+                          className="min-h-[38px] rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-4 text-xs font-medium text-[var(--color-text)] hover:bg-[var(--color-surface-hover)]"
+                        >
+                          ยกเลิก
+                        </button>
+                        <button
+                          type="button"
+                          disabled={bulkRevoking}
+                          onClick={() => void handleConfirmBulkRevoke()}
+                          className="min-h-[38px] rounded-xl bg-[var(--color-danger)] px-4 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
+                        >
+                          {bulkRevoking ? 'กำลังเพิกถอน...' : 'ยืนยัน Bulk Revoke'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </section>
 
               <div className="grid gap-6 lg:grid-cols-2">

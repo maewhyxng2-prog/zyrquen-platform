@@ -7,11 +7,13 @@ import {
   Code2,
   FileText,
   FolderKanban,
+  Mail,
   Paperclip,
   Plus,
   Wrench,
   X,
 } from 'lucide-react';
+import { apiRequest, ApiError } from '../lib/api';
 import { serializeTableToTsv } from '../lib/clipboard';
 import type {
   AppScreen,
@@ -27,6 +29,7 @@ import { SpacetimeFabric } from './SpacetimeFabric';
 import { TemporalIntelligenceCore } from './TemporalIntelligenceCore';
 
 interface HomeViewProps {
+  token?: string | null;
   user: User;
   homeSummary: HomeSummary | null;
   nativeReady: boolean;
@@ -34,6 +37,7 @@ interface HomeViewProps {
   error: string | null;
   onStartPrompt: (prompt: string, mode: ReasoningMode, attachment?: string) => void;
   onOpenConversation: (conversationId: string) => void;
+  onOpenAccountSettings?: () => void;
   onNavigate: (screen: AppScreen, options?: { preset?: string }) => void;
   onRetry: () => void;
 }
@@ -104,6 +108,7 @@ function formatMissionStatusThai(status: string): string {
 }
 
 export function HomeView({
+  token = null,
   user,
   homeSummary,
   nativeReady: _nativeReady,
@@ -111,12 +116,43 @@ export function HomeView({
   error,
   onStartPrompt,
   onOpenConversation,
+  onOpenAccountSettings,
   onNavigate,
   onRetry,
 }: HomeViewProps) {
   const [goal, setGoal] = useState('');
   const [attachment, setAttachment] = useState<{ name: string; content: string } | null>(null);
+  const [resendingVerify, setResendingVerify] = useState(false);
+  const [verifyNotice, setVerifyNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  async function handleResendVerification() {
+    setResendingVerify(true);
+    setVerifyNotice(null);
+    try {
+      const res = await apiRequest<{
+        ok: boolean;
+        alreadyVerified?: boolean;
+        verification?: { emailSent: boolean; deliveryReason: string | null };
+      }>('/api/auth/verification/resend', {
+        method: 'POST',
+        token,
+      });
+      if (res.alreadyVerified) {
+        setVerifyNotice('อีเมลของคุณได้รับการยืนยันแล้ว');
+      } else if (res.verification?.emailSent) {
+        setVerifyNotice(`ส่งลิงก์ยืนยันอีเมลไปยัง ${user.email} เรียบร้อยแล้ว`);
+      } else {
+        setVerifyNotice(
+          `สร้างโทเคนยืนยันอีเมลแล้ว แต่ยังไม่ได้ส่งอีเมลจริง (${res.verification?.deliveryReason || 'EMAIL_PROVIDER_NOT_CONFIGURED'})`
+        );
+      }
+    } catch (err) {
+      setVerifyNotice(err instanceof ApiError ? err.message : 'ไม่สามารถส่งคำขอยืนยันอีเมลได้');
+    } finally {
+      setResendingVerify(false);
+    }
+  }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -198,6 +234,55 @@ export function HomeView({
           </div>
         </div>
       </section>
+
+      {user.email_verified === false && (
+        <section
+          role="status"
+          aria-label="Verify Email status notice"
+          className="mb-6 flex flex-col gap-3 rounded-2xl border border-[var(--color-warning)]/45 bg-[var(--color-warning-bg)] px-4 py-3.5 text-sm sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div className="flex min-w-0 items-start gap-3">
+            <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-[var(--color-warning)]/40 bg-[var(--color-surface)] text-[var(--color-warning)]">
+              <Mail className="h-4 w-4" />
+            </span>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-[11px] font-bold tracking-wider text-[var(--color-warning)] uppercase">
+                  Verify Email
+                </span>
+                <span className="font-semibold text-[var(--color-text)]">
+                  บัญชียังไม่ได้ยืนยันอีเมล ({user.email})
+                </span>
+              </div>
+              <p className="mt-0.5 text-xs text-[var(--color-text-secondary)]">
+                กรุณาตรวจสอบกล่องจดหมายและคลิกลิงก์ยืนยันอีเมล หรือส่งลิงก์ยืนยันใหม่อีกครั้ง
+              </p>
+              {verifyNotice && (
+                <p className="mt-1 text-xs font-medium text-[var(--color-text)]">{verifyNotice}</p>
+              )}
+            </div>
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={resendingVerify}
+              onClick={() => void handleResendVerification()}
+              className="min-h-[38px] rounded-xl bg-[var(--color-primary)] px-3.5 text-xs font-semibold text-white transition-colors hover:bg-[var(--color-primary-hover)] disabled:opacity-60 whitespace-nowrap"
+            >
+              {resendingVerify ? 'กำลังส่ง...' : 'ส่งลิงก์ยืนยันอีเมล'}
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                onOpenAccountSettings ? onOpenAccountSettings() : onNavigate('settings')
+              }
+              className="min-h-[38px] rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3.5 text-xs font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] whitespace-nowrap"
+            >
+              ตั้งค่าบัญชี
+            </button>
+          </div>
+        </section>
+      )}
 
       {/* Four Real Task Workflows */}
       <section aria-label="ประเภทงานหลัก" className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

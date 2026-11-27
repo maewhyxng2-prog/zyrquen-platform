@@ -77,6 +77,17 @@ class ApiKeyRevoked(BaseModel):
     revoked: bool
 
 
+class ApiKeyBulkRevokeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
+class ApiKeyBulkRevokeResponse(BaseModel):
+    revoked_ids: list[UUID]
+    revoked_count: int
+
+
 class ApiKeyDailyUsagePoint(BaseModel):
     date: str
     successful_requests: int

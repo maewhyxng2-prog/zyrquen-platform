@@ -12,6 +12,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { readSession } from "@/lib/api";
 import {
   AUTO_ROTATE_PRESETS,
+  bulkRevokeApiKeys,
   createApiKey,
   getApiKeyUsage,
   listApiKeys,
@@ -101,6 +102,9 @@ export default function DeveloperApiKeysPage() {
     string | null
   >(null);
   const [apiKeyUsageError, setApiKeyUsageError] = useState("");
+  const [selectedKeyIds, setSelectedKeyIds] = useState<string[]>([]);
+  const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
+  const [bulkRevoking, setBulkRevoking] = useState(false);
 
   useEffect(() => {
     const refreshSession = () => {
@@ -119,6 +123,8 @@ export default function DeveloperApiKeysPage() {
             setSelectedUsageKeyId(null);
             setApiKeyUsageOwnerId(null);
             setApiKeyUsageError("");
+            setSelectedKeyIds([]);
+            setBulkConfirmOpen(false);
           }
           sessionRef.current = current;
           setSession(current);
@@ -435,6 +441,49 @@ export default function DeveloperApiKeysPage() {
     }
   }
 
+  async function confirmBulkRevoke() {
+    const ownerId = session?.userId;
+    if (!ownerId || sessionRef.current?.userId !== ownerId) {
+      setApiKeysError("ไม่สามารถยืนยันบัญชีผู้ใช้ปัจจุบันได้");
+      return;
+    }
+    const activeSelected = selectedKeyIds.filter((id) =>
+      apiKeys.some((k) => k.id === id && !k.revokedAt),
+    );
+    if (activeSelected.length === 0) {
+      setBulkConfirmOpen(false);
+      setSelectedKeyIds([]);
+      return;
+    }
+    setBulkRevoking(true);
+    setApiKeysError("");
+    setApiKeysNotice("");
+    try {
+      const result = await bulkRevokeApiKeys(ownerId, activeSelected);
+      const verifiedSession = await readSession();
+      if (!verifiedSession.authenticated || verifiedSession.userId !== ownerId) {
+        throw new Error("บัญชีผู้ใช้เปลี่ยนระหว่างเพิกถอน API Keys");
+      }
+      const nextKeys = await listApiKeys(ownerId);
+      setApiKeys(nextKeys);
+      setRotateDrafts(buildRotateDraftMap(nextKeys));
+      setSelectedKeyIds([]);
+      setBulkConfirmOpen(false);
+      setNewApiKey("");
+      setNewApiKeyLabel("");
+      setApiKeysNotice(`เพิกถอน API Keys จำนวน ${result.revokedCount} รายการแล้ว`);
+    } catch (reason) {
+      if (sessionRef.current?.userId !== ownerId) return;
+      setApiKeysError(
+        reason instanceof Error
+          ? reason.message
+          : "ไม่สามารถเพิกถอน API Keys แบบกลุ่มได้",
+      );
+    } finally {
+      setBulkRevoking(false);
+    }
+  }
+
   async function loadApiKeyUsage(keyId: string) {
     const ownerId = session?.userId;
     if (!ownerId || sessionRef.current?.userId !== ownerId) {
@@ -505,6 +554,13 @@ export default function DeveloperApiKeysPage() {
 
   const apiKeysAreLoading =
     apiKeysLoading || !belongsToAccount(apiKeysOwnerId, session.userId);
+  const activeApiKeys = apiKeys.filter((k) => !k.revokedAt);
+  const selectedActiveKeyIds = selectedKeyIds.filter((id) =>
+    activeApiKeys.some((k) => k.id === id),
+  );
+  const allActiveSelected =
+    activeApiKeys.length > 0 &&
+    selectedActiveKeyIds.length === activeApiKeys.length;
 
   return (
     <div className="page-stack">
@@ -657,6 +713,47 @@ export default function DeveloperApiKeysPage() {
               <p className="settings-key-meta">ยังไม่มี API Key ที่บันทึกไว้</p>
             ) : (
               <div className="settings-key-list">
+                {activeApiKeys.length > 0 && (
+                  <div
+                    className="settings-key-head"
+                    style={{
+                      paddingBottom: "8px",
+                      borderBottom: "1px solid var(--line)",
+                    }}
+                  >
+                    <label
+                      className="settings-checkbox-row"
+                      htmlFor="api-keys-select-all"
+                    >
+                      <input
+                        checked={allActiveSelected}
+                        disabled={bulkRevoking}
+                        id="api-keys-select-all"
+                        onChange={(event) => {
+                          if (event.target.checked) {
+                            setSelectedKeyIds(activeApiKeys.map((k) => k.id));
+                          } else {
+                            setSelectedKeyIds([]);
+                          }
+                        }}
+                        type="checkbox"
+                      />
+                      <span>
+                        เลือกทั้งหมด ({selectedActiveKeyIds.length}/{activeApiKeys.length})
+                      </span>
+                    </label>
+                    {selectedActiveKeyIds.length > 0 && (
+                      <button
+                        className="button button-danger"
+                        disabled={bulkRevoking}
+                        onClick={() => setBulkConfirmOpen(true)}
+                        type="button"
+                      >
+                        Bulk Revoke ({selectedActiveKeyIds.length})
+                      </button>
+                    )}
+                  </div>
+                )}
                 {apiKeys.map((key) => {
                   const draft = rotateDrafts[key.id] ?? draftFromKey(key);
                   const draftIntervalDays = resolveIntervalDays(
@@ -668,10 +765,30 @@ export default function DeveloperApiKeysPage() {
                     draft.enabled !== key.autoRotateEnabled ||
                     (draft.enabled &&
                       draftIntervalDays !== key.autoRotateIntervalDays);
+                  const isSelected = selectedActiveKeyIds.includes(key.id);
                   return (
                     <div className="settings-key-card" key={key.id}>
                       <div className="settings-key-head">
-                        <strong>{key.name}</strong>
+                        <label
+                          className="settings-checkbox-row"
+                          htmlFor={`select-api-key-${key.id}`}
+                        >
+                          <input
+                            aria-label={`Select API Key ${key.name}`}
+                            checked={isSelected}
+                            disabled={Boolean(key.revokedAt) || bulkRevoking}
+                            id={`select-api-key-${key.id}`}
+                            onChange={(event) => {
+                              setSelectedKeyIds((prev) =>
+                                event.target.checked
+                                  ? [...new Set([...prev, key.id])]
+                                  : prev.filter((id) => id !== key.id),
+                              );
+                            }}
+                            type="checkbox"
+                          />
+                          <strong>{key.name}</strong>
+                        </label>
                         <StatusBadge
                           tone={
                             key.revokedAt
@@ -881,6 +998,70 @@ export default function DeveloperApiKeysPage() {
           </>
         )}
       </Panel>
+
+      {bulkConfirmOpen && (
+        <div
+          aria-labelledby="bulk-revoke-dialog-title"
+          aria-modal="true"
+          className="modal-backdrop"
+          role="dialog"
+        >
+          <div className="panel modal-dialog">
+            <div className="modal-header">
+              <div>
+                <div className="eyebrow">ยืนยันการดำเนินการ</div>
+                <h2 id="bulk-revoke-dialog-title">
+                  ยืนยันเพิกถอน API Keys ({selectedActiveKeyIds.length} รายการ)
+                </h2>
+              </div>
+              <button
+                aria-label="ปิดหน้าต่างยืนยัน"
+                className="button button-secondary"
+                disabled={bulkRevoking}
+                onClick={() => setBulkConfirmOpen(false)}
+                type="button"
+              >
+                <Icon name="close" size={16} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <p>
+                คีย์ที่เลือกจะถูกเพิกถอนทันทีและไม่สามารถนำกลับมาใช้งานได้อีก
+                แอปพลิเคชันที่ใช้คีย์เหล่านี้จะไม่สามารถเรียก Native Inference ได้
+              </p>
+              <ul className="settings-key-meta">
+                {activeApiKeys
+                  .filter((k) => selectedActiveKeyIds.includes(k.id))
+                  .map((k) => (
+                    <li key={k.id}>
+                      <strong>{k.name}</strong> ({k.keyPrefix}…)
+                    </li>
+                  ))}
+              </ul>
+            </div>
+            <div className="modal-footer">
+              <button
+                className="button button-secondary"
+                disabled={bulkRevoking}
+                onClick={() => setBulkConfirmOpen(false)}
+                type="button"
+              >
+                ยกเลิก
+              </button>
+              <button
+                className="button button-danger"
+                disabled={bulkRevoking}
+                onClick={() => void confirmBulkRevoke()}
+                type="button"
+              >
+                {bulkRevoking
+                  ? "กำลังเพิกถอน..."
+                  : `ยืนยันเพิกถอน ${selectedActiveKeyIds.length} คีย์`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

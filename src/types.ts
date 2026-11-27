@@ -62,6 +62,49 @@ export interface User {
   display_name: string;
   role: 'admin' | 'user';
   created_at: string;
+  email_verified?: boolean;
+  email_verified_at?: string | null;
+  avatar_url?: string | null;
+  has_password?: boolean;
+}
+
+export interface AuthProviderInfo {
+  id: 'github' | 'google';
+  name: string;
+  configured: boolean;
+  scopes: string[];
+  callbackPath: string;
+  callbackUrl: string;
+}
+
+export interface AuthProvidersResponse {
+  providers: {
+    github: AuthProviderInfo;
+    google: AuthProviderInfo;
+  };
+  emailVerification: {
+    emailProviderConfigured: boolean;
+    provider: string | null;
+  };
+}
+
+export interface LinkedIdentity {
+  id: string;
+  provider: 'github' | 'google';
+  provider_email: string | null;
+  email_verified: boolean;
+  display_name: string | null;
+  avatar_url: string | null;
+  linked_at: string;
+}
+
+export interface AccountIdentitiesResponse {
+  ok: boolean;
+  email: string;
+  email_verified: boolean;
+  email_verified_at: string | null;
+  has_password: boolean;
+  identities: LinkedIdentity[];
 }
 
 export interface AuthStatus {

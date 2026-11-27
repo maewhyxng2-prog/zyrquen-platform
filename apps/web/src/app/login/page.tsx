@@ -66,6 +66,7 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [signedIn, setSignedIn] = useState(false);
+  const [oauthLoading, setOauthLoading] = useState<"github" | "google" | null>(null);
 
   useEffect(() => {
     readSession()
@@ -148,6 +149,36 @@ export default function LoginPage() {
       setError(message);
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function startOAuth(provider: "github" | "google") {
+    if (submitting || oauthLoading) return;
+    setError("");
+    setNotice("");
+    setOauthLoading(provider);
+    try {
+      const response = await fetch(`/api/backend/auth/oauth/${provider}/url`, {
+        method: "GET",
+        cache: "no-store",
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        url?: unknown;
+        detail?: unknown;
+      } | null;
+      if (!response.ok || typeof payload?.url !== "string" || !payload.url) {
+        const message =
+          typeof payload?.detail === "string" && payload.detail.trim()
+            ? payload.detail
+            : `ยังไม่ได้ตั้งค่าการเข้าสู่ระบบผ่าน ${provider === "github" ? "GitHub" : "Google"} OAuth 2.0 ใน Backend นี้`;
+        setError(message);
+        return;
+      }
+      window.location.assign(payload.url);
+    } catch {
+      setError(`ไม่สามารถเชื่อมต่อบริการ ${provider === "github" ? "GitHub" : "Google"} OAuth 2.0 ได้`);
+    } finally {
+      setOauthLoading(null);
     }
   }
 
@@ -252,6 +283,26 @@ export default function LoginPage() {
                 {submitting ? <><span className="spinner" /> กำลังดำเนินการ...</> : <>{mode === "login" ? "เข้าสู่ระบบไปยังพื้นที่ทำงาน" : "สร้างบัญชีผู้ใช้"} <Icon name="arrow-right" size={16} /></>}
               </button>
             </form>
+            <div style={{ display: "grid", gap: "10px", marginTop: "14px" }}>
+              <button
+                className="button button-secondary full-button"
+                disabled={submitting || oauthLoading !== null}
+                onClick={() => void startOAuth("github")}
+                type="button"
+              >
+                <Icon name="code" size={16} />
+                {oauthLoading === "github" ? "กำลังเชื่อมต่อ GitHub..." : "Login with GitHub"}
+              </button>
+              <button
+                className="button button-secondary full-button"
+                disabled={submitting || oauthLoading !== null}
+                onClick={() => void startOAuth("google")}
+                type="button"
+              >
+                <Icon name="user" size={16} />
+                {oauthLoading === "google" ? "กำลังเชื่อมต่อ Google..." : "Login with Google"}
+              </button>
+            </div>
             <div className="auth-security-note"><Icon name="shield" size={15} /><span>ข้อมูลการเข้าสู่ระบบจะถูกส่งผ่านพร็อกซีฝั่งเซิร์ฟเวอร์ไปยัง API ที่กำหนดไว้ และจัดเก็บ Token ในคุกกี้แบบ HTTP-only</span></div>
             <Link className="auth-back-link" href="/">กลับสู่หน้าภาพรวมแพลตฟอร์ม</Link>
           </>

@@ -143,6 +143,24 @@ export async function revokeApiKey(
   );
 }
 
+export async function bulkRevokeApiKeys(
+  userId: string,
+  keyIds: string[],
+): Promise<{ revokedIds: string[]; revokedCount: number }> {
+  const result = await apiRequest<{
+    revoked_ids?: string[];
+    revoked_count?: number;
+  }>("users/me/api-keys/bulk-revoke", {
+    method: "POST",
+    headers: identityHeaders(userId),
+    body: JSON.stringify({ ids: keyIds }),
+  });
+  return {
+    revokedIds: Array.isArray(result.revoked_ids) ? result.revoked_ids : [],
+    revokedCount: Number(result.revoked_count ?? 0),
+  };
+}
+
 export function normalizeLast7DaysUsage(
   points: ApiKeyDailyUsagePoint[] | undefined,
   referenceDate: Date = new Date(),

@@ -30,11 +30,16 @@ export interface AuthUser {
   display_name: string;
   role: 'admin' | 'user';
   created_at: string;
+  email_verified?: boolean;
+  email_verified_at?: string | null;
+  avatar_url?: string | null;
+  has_password?: boolean;
 }
 
 interface AuthedRequest extends Request {
   user?: AuthUser;
   tokenJti?: string;
+  tokenExp?: number;
 }
 
 interface PendingWorkerCall {
@@ -338,6 +343,298 @@ function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email.length <= 160;
 }
 
+type OAuthProvider = 'google' | 'github';
+
+interface PendingOAuthState {
+  nonce: string;
+  provider: OAuthProvider;
+  intent: 'login' | 'link';
+  userId?: string;
+  redirectUri: string;
+  codeVerifier: string;
+  targetOrigin: string;
+  expiresAt: number;
+}
+
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const pendingOAuthStates = new Map<string, PendingOAuthState>();
+
+function pruneExpiredOAuthStates(): void {
+  const now = Date.now();
+  for (const [nonce, entry] of pendingOAuthStates.entries()) {
+    if (entry.expiresAt <= now) {
+      pendingOAuthStates.delete(nonce);
+    }
+  }
+}
+
+function signOAuthState(nonce: string): string {
+  const sig = crypto
+    .createHmac('sha256', SESSION_SECRET)
+    .update(`oauth_state:${nonce}`)
+    .digest('base64url');
+  return `${nonce}.${sig}`;
+}
+
+function verifyOAuthState(rawState: string): string | null {
+  const parts = rawState.split('.');
+  if (parts.length !== 2) return null;
+  const [nonce, sig] = parts;
+  if (!nonce || !sig) return null;
+  const expected = crypto
+    .createHmac('sha256', SESSION_SECRET)
+    .update(`oauth_state:${nonce}`)
+    .digest('base64url');
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  return nonce;
+}
+
+function createPkcePair(): { codeVerifier: string; codeChallenge: string } {
+  const codeVerifier = crypto.randomBytes(32).toString('base64url');
+  const codeChallenge = crypto
+    .createHash('sha256')
+    .update(codeVerifier)
+    .digest('base64url');
+  return { codeVerifier, codeChallenge };
+}
+
+function normalizeOrigin(candidate: string | undefined): string | null {
+  if (!candidate) return null;
+  try {
+    const parsed = new URL(candidate.trim());
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+function resolvePublicBaseUrl(req: Request): string {
+  const configuredAppUrl = normalizeOrigin(process.env.APP_URL);
+  if (configuredAppUrl) {
+    return configuredAppUrl;
+  }
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '')
+    .split(',')[0]
+    .trim();
+  const proto = forwardedProto || (req.secure ? 'https' : req.protocol || 'http');
+  const host = String(req.headers['x-forwarded-host'] || req.get('host') || '')
+    .split(',')[0]
+    .trim();
+  if (host) {
+    return `${proto}://${host}`;
+  }
+  return `http://127.0.0.1:${PORT}`;
+}
+
+function resolveAllowedClientOrigin(req: Request, originParam: unknown): string {
+  const baseOrigin = resolvePublicBaseUrl(req);
+  const requestedOrigin = normalizeOrigin(typeof originParam === 'string' ? originParam : '');
+  if (!requestedOrigin) return baseOrigin;
+  try {
+    const host = new URL(requestedOrigin).hostname;
+    if (host === 'localhost' || host === '127.0.0.1' || host.endsWith('.run.app')) {
+      return requestedOrigin;
+    }
+  } catch {
+    // ignore invalid
+  }
+  return baseOrigin;
+}
+
+function allowTestOAuthEndpoints(): boolean {
+  return (
+    (process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST)) &&
+    process.env.ZYRQUEN_OAUTH_ALLOW_TEST_ENDPOINTS === '1'
+  );
+}
+
+function getOAuthProviderConfig(provider: OAuthProvider, baseUrl: string) {
+  const cleanBase = baseUrl.replace(/\/+$/, '');
+  const callbackPath = `/api/auth/oauth/${provider}/callback`;
+  const callbackUrl = `${cleanBase}${callbackPath}`;
+
+  if (provider === 'github') {
+    const clientId = (process.env.GITHUB_OAUTH_CLIENT_ID || '').trim();
+    const clientSecret = (process.env.GITHUB_OAUTH_CLIENT_SECRET || '').trim();
+    const useTest = allowTestOAuthEndpoints();
+    return {
+      provider,
+      name: 'GitHub',
+      configured: Boolean(clientId && clientSecret),
+      clientId,
+      clientSecret,
+      scopes: ['read:user', 'user:email'],
+      callbackPath,
+      callbackUrl,
+      authorizeUrl:
+        (useTest && process.env.ZYRQUEN_GITHUB_AUTH_URL) ||
+        'https://github.com/login/oauth/authorize',
+      tokenUrl:
+        (useTest && process.env.ZYRQUEN_GITHUB_TOKEN_URL) ||
+        'https://github.com/login/oauth/access_token',
+      userUrl:
+        (useTest && process.env.ZYRQUEN_GITHUB_USER_URL) ||
+        'https://api.github.com/user',
+      emailsUrl:
+        (useTest && process.env.ZYRQUEN_GITHUB_EMAILS_URL) ||
+        'https://api.github.com/user/emails',
+    };
+  }
+
+  const clientId = (process.env.GOOGLE_OAUTH_CLIENT_ID || '').trim();
+  const clientSecret = (process.env.GOOGLE_OAUTH_CLIENT_SECRET || '').trim();
+  const useTest = allowTestOAuthEndpoints();
+  return {
+    provider,
+    name: 'Google',
+    configured: Boolean(clientId && clientSecret),
+    clientId,
+    clientSecret,
+    scopes: ['openid', 'email', 'profile'],
+    callbackPath,
+    callbackUrl,
+    authorizeUrl:
+      (useTest && process.env.ZYRQUEN_GOOGLE_AUTH_URL) ||
+      'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenUrl:
+      (useTest && process.env.ZYRQUEN_GOOGLE_TOKEN_URL) ||
+      'https://oauth2.googleapis.com/token',
+    userInfoUrl:
+      (useTest && process.env.ZYRQUEN_GOOGLE_USERINFO_URL) ||
+      'https://openidconnect.googleapis.com/v1/userinfo',
+  };
+}
+
+function escapeHtmlText(val: string): string {
+  return val
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderOAuthCallbackHtml(
+  targetOrigin: string,
+  payload: Record<string, unknown>,
+  statusLabel: string
+): string {
+  const safePayloadJson = JSON.stringify(payload).replace(/</g, '\\u003c');
+  const safeOriginJson = JSON.stringify(targetOrigin || '*').replace(/</g, '\\u003c');
+  const safeLabel = escapeHtmlText(statusLabel);
+  return `<!DOCTYPE html>
+<html lang="th">
+<head><meta charset="utf-8"><title>ZYRQUEN Authentication</title></head>
+<body style="font-family:system-ui,sans-serif;background:#090d16;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;text-align:center;">
+  <div>
+    <p style="font-size:15px;margin:0 0 8px;">${safeLabel}</p>
+    <p style="font-size:12px;color:#94a3b8;margin:0;">หน้าต่างนี้จะปิดลงโดยอัตโนมัติ...</p>
+  </div>
+  <script>
+    (function () {
+      var payload = ${safePayloadJson};
+      var targetOrigin = ${safeOriginJson};
+      try {
+        if (window.opener && !window.opener.closed) {
+          try {
+            window.opener.postMessage(payload, targetOrigin);
+          } catch (_err) {
+            window.opener.postMessage(payload, '*');
+          }
+          window.close();
+          return;
+        }
+      } catch (_e) {}
+      if (payload && payload.type === 'OAUTH_AUTH_SUCCESS') {
+        window.location.replace('/');
+      }
+    })();
+  </script>
+</body>
+</html>`;
+}
+
+async function sendTransactionalEmail(params: {
+  to: string;
+  subject: string;
+  html: string;
+  text: string;
+}): Promise<{ sent: boolean; reason: string | null }> {
+  const apiKey = (process.env.RESEND_API_KEY || '').trim();
+  const from = (process.env.EMAIL_FROM || '').trim();
+  if (!apiKey || !from) {
+    return { sent: false, reason: 'EMAIL_PROVIDER_NOT_CONFIGURED' };
+  }
+  try {
+    const resp = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from,
+        to: [params.to],
+        subject: params.subject,
+        html: params.html,
+        text: params.text,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) {
+      return { sent: false, reason: `EMAIL_PROVIDER_HTTP_${resp.status}` };
+    }
+    return { sent: true, reason: null };
+  } catch {
+    return { sent: false, reason: 'EMAIL_SEND_FAILED' };
+  }
+}
+
+async function issueAndSendVerificationEmail(
+  req: Request,
+  user: Pick<AuthUser, 'id' | 'email' | 'display_name'>
+): Promise<{ required: boolean; emailSent: boolean; deliveryReason: string | null }> {
+  const rawToken = crypto.randomBytes(32).toString('base64url');
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  await runPythonScript('db_bridge.py', {
+    action: 'auth_create_token',
+    payload: {
+      user_id: user.id,
+      token_type: 'email_verify',
+      token_hash: tokenHash,
+      target_email: user.email,
+      expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    },
+  });
+
+  const baseUrl = resolvePublicBaseUrl(req);
+  const verifyUrl = `${baseUrl}/?verify_token=${encodeURIComponent(rawToken)}`;
+  const safeName = escapeHtmlText(user.display_name || user.email);
+  const safeVerifyUrl = escapeHtmlText(verifyUrl);
+  const delivery = await sendTransactionalEmail({
+    to: user.email,
+    subject: 'ยืนยันอีเมลสำหรับบัญชี ZYRQUEN ของคุณ',
+    text: `สวัสดี ${user.display_name || user.email},\n\nกรุณาคลิกลิงก์ด้านล่างเพื่อยืนยันอีเมลสำหรับบัญชี ZYRQUEN ของคุณ (ลิงก์มีอายุ 24 ชั่วโมง):\n${verifyUrl}\n`,
+    html: `<div style="font-family:system-ui,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#0f172a;">
+      <h2 style="margin:0 0 12px;">ยืนยันอีเมลบัญชี ZYRQUEN</h2>
+      <p>สวัสดี ${safeName},</p>
+      <p>กรุณากดปุ่มด้านล่างเพื่อยืนยันที่อยู่อีเมลของคุณ (ลิงก์มีอายุ 24 ชั่วโมง):</p>
+      <p style="margin:24px 0;"><a href="${safeVerifyUrl}" style="display:inline-block;background:#2563eb;color:#ffffff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600;">Verify Email</a></p>
+      <p style="font-size:12px;color:#475569;word-break:break-all;">หรือคัดลอกลิงก์นี้: ${safeVerifyUrl}</p>
+    </div>`,
+  });
+
+  return {
+    required: true,
+    emailSent: delivery.sent,
+    deliveryReason: delivery.reason,
+  };
+}
+
+
 async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
   const header = req.headers.authorization || '';
   const bearerToken = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
@@ -371,6 +668,15 @@ async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction
     return;
   }
   try {
+    const revokedCheck = await runPythonScript<{ ok: boolean; revoked?: boolean }>('db_bridge.py', {
+      action: 'auth_is_token_revoked',
+      payload: { jti: decoded.jti },
+    });
+    if (revokedCheck.revoked) {
+      revokedTokenIds.add(decoded.jti);
+      res.status(401).json({ error: 'Invalid or expired session token' });
+      return;
+    }
     const result = await runPythonScript<{ ok: boolean; user: AuthUser | null }>('db_bridge.py', {
       action: 'auth_find_by_id',
       payload: { user_id: decoded.sub },
@@ -381,6 +687,7 @@ async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction
     }
     req.user = result.user;
     req.tokenJti = decoded.jti;
+    req.tokenExp = decoded.exp;
     next();
   } catch {
     res.status(500).json({ error: 'Session verification failed' });
@@ -639,6 +946,8 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
       return;
     }
 
+    const verification = await issueAndSendVerificationEmail(req, created.user);
+
     await runPythonScript('db_bridge.py', {
       action: 'log_audit',
       payload: {
@@ -646,13 +955,13 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
         actor_email: created.user.email,
         action: 'AUTH_REGISTER',
         target: created.user.id,
-        outcome: 'SUCCESS',
+        outcome: verification.emailSent ? 'SUCCESS_VERIFICATION_SENT' : 'SUCCESS_EMAIL_NOT_CONFIGURED',
       },
     });
 
     const token = signToken(created.user);
     setSessionCookie(req, res, token);
-    res.status(201).json({ token, user: created.user });
+    res.status(201).json({ token, user: created.user, verification });
   });
 
   app.post('/api/auth/login', async (req, res) => {
@@ -682,6 +991,10 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
       display_name: found.user.display_name,
       role: found.user.role,
       created_at: found.user.created_at,
+      email_verified: Boolean(found.user.email_verified),
+      email_verified_at: found.user.email_verified_at ?? null,
+      avatar_url: found.user.avatar_url ?? null,
+      has_password: Boolean(found.user.has_password ?? (found.user.password_hash && found.user.password_hash.includes(':'))),
     };
 
     await runPythonScript('db_bridge.py', {
@@ -703,6 +1016,14 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
   app.post('/api/auth/logout', requireAuth, async (req: AuthedRequest, res: Response) => {
     if (req.tokenJti) {
       revokedTokenIds.add(req.tokenJti);
+      await runPythonScript('db_bridge.py', {
+        action: 'auth_revoke_token',
+        payload: {
+          jti: req.tokenJti,
+          user_id: req.user?.id || null,
+          expires_at: new Date(req.tokenExp || Date.now() + TOKEN_TTL_MS).toISOString(),
+        },
+      });
     }
     clearSessionCookie(req, res);
     if (req.user) {
@@ -722,6 +1043,740 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
 
   app.get('/api/auth/me', requireAuth, (req: AuthedRequest, res: Response) => {
     res.json({ user: req.user });
+  });
+
+  app.get('/api/auth/providers', (req: Request, res: Response) => {
+    const baseUrl = resolvePublicBaseUrl(req);
+    const github = getOAuthProviderConfig('github', baseUrl);
+    const google = getOAuthProviderConfig('google', baseUrl);
+    const emailConfigured = Boolean(
+      (process.env.RESEND_API_KEY || '').trim() && (process.env.EMAIL_FROM || '').trim()
+    );
+    res.json({
+      providers: {
+        github: {
+          id: 'github',
+          name: github.name,
+          configured: github.configured,
+          scopes: github.scopes,
+          callbackPath: github.callbackPath,
+          callbackUrl: github.callbackUrl,
+        },
+        google: {
+          id: 'google',
+          name: google.name,
+          configured: google.configured,
+          scopes: google.scopes,
+          callbackPath: google.callbackPath,
+          callbackUrl: google.callbackUrl,
+        },
+      },
+      emailVerification: {
+        emailProviderConfigured: emailConfigured,
+        provider: emailConfigured ? 'resend' : null,
+      },
+    });
+  });
+
+  app.get('/api/auth/oauth/:provider/url', async (req: Request, res: Response) => {
+    const rawProvider = String(req.params.provider || '').toLowerCase();
+    if (rawProvider !== 'github' && rawProvider !== 'google') {
+      res.status(400).json({ error: 'Unsupported OAuth provider' });
+      return;
+    }
+    const provider: OAuthProvider = rawProvider;
+    const intent = req.query.intent === 'link' ? 'link' : 'login';
+
+    let linkUserId: string | undefined;
+    if (intent === 'link') {
+      const header = req.headers.authorization || '';
+      const bearerToken = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+      const cookieToken = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME] || '';
+      const tok = bearerToken || cookieToken;
+      const decoded = tok ? verifyToken(tok) : null;
+      if (!decoded) {
+        res.status(401).json({ error: 'Authentication required to link an external account' });
+        return;
+      }
+      const revokedCheck = await runPythonScript<{ ok: boolean; revoked?: boolean }>('db_bridge.py', {
+        action: 'auth_is_token_revoked',
+        payload: { jti: decoded.jti },
+      });
+      if (revokedCheck.revoked) {
+        revokedTokenIds.add(decoded.jti);
+        res.status(401).json({ error: 'Authentication required to link an external account' });
+        return;
+      }
+      linkUserId = decoded.sub;
+    }
+
+    const baseUrl = resolvePublicBaseUrl(req);
+    const cfg = getOAuthProviderConfig(provider, baseUrl);
+    if (!cfg.configured) {
+      res.status(503).json({
+        error: `ยังไม่ได้ตั้งค่า ${cfg.name} OAuth 2.0 บนเซิร์ฟเวอร์ (${provider === 'github' ? 'GITHUB_OAUTH_CLIENT_ID / GITHUB_OAUTH_CLIENT_SECRET' : 'GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET'})`,
+        code: 'OAUTH_NOT_CONFIGURED',
+        provider,
+        callbackUrl: cfg.callbackUrl,
+      });
+      return;
+    }
+
+    pruneExpiredOAuthStates();
+    const nonce = crypto.randomBytes(24).toString('base64url');
+    const signedState = signOAuthState(nonce);
+    const { codeVerifier, codeChallenge } = createPkcePair();
+    const targetOrigin = resolveAllowedClientOrigin(req, req.query.origin);
+
+    pendingOAuthStates.set(nonce, {
+      nonce,
+      provider,
+      intent,
+      userId: linkUserId,
+      redirectUri: cfg.callbackUrl,
+      codeVerifier,
+      targetOrigin,
+      expiresAt: Date.now() + OAUTH_STATE_TTL_MS,
+    });
+
+    const params = new URLSearchParams({
+      client_id: cfg.clientId,
+      redirect_uri: cfg.callbackUrl,
+      response_type: 'code',
+      scope: cfg.scopes.join(' '),
+      state: signedState,
+      code_challenge: codeChallenge,
+      code_challenge_method: 'S256',
+    });
+    if (provider === 'google') {
+      params.set('prompt', 'select_account');
+    }
+
+    res.json({
+      url: `${cfg.authorizeUrl}?${params.toString()}`,
+      provider,
+      callbackUrl: cfg.callbackUrl,
+    });
+  });
+
+  app.get(
+    ['/api/auth/oauth/:provider/callback', '/api/auth/oauth/:provider/callback/'],
+    async (req: Request, res: Response) => {
+      const rawProvider = String(req.params.provider || '').toLowerCase();
+      const defaultOrigin = resolvePublicBaseUrl(req);
+      if (rawProvider !== 'github' && rawProvider !== 'google') {
+        res
+          .status(400)
+          .type('html')
+          .send(
+            renderOAuthCallbackHtml(
+              defaultOrigin,
+              { type: 'OAUTH_AUTH_ERROR', error: 'ผู้ให้บริการ OAuth ไม่ถูกต้อง' },
+              'ผู้ให้บริการไม่ถูกต้อง'
+            )
+          );
+        return;
+      }
+      const provider: OAuthProvider = rawProvider;
+      const rawState = String(req.query.state || '');
+      const nonce = verifyOAuthState(rawState);
+      const stateEntry = nonce ? pendingOAuthStates.get(nonce) : undefined;
+      if (nonce) pendingOAuthStates.delete(nonce);
+
+      const targetOrigin = stateEntry?.targetOrigin || defaultOrigin;
+
+      if (req.query.error) {
+        const providerErr = String(req.query.error_description || req.query.error || 'การเข้าสู่ระบบถูกยกเลิก');
+        res
+          .status(400)
+          .type('html')
+          .send(
+            renderOAuthCallbackHtml(
+              targetOrigin,
+              { type: 'OAUTH_AUTH_ERROR', provider, error: providerErr },
+              'การยืนยันตัวตนถูกยกเลิก'
+            )
+          );
+        return;
+      }
+
+      if (
+        !stateEntry ||
+        stateEntry.provider !== provider ||
+        stateEntry.expiresAt <= Date.now()
+      ) {
+        res
+          .status(400)
+          .type('html')
+          .send(
+            renderOAuthCallbackHtml(
+              targetOrigin,
+              {
+                type: 'OAUTH_AUTH_ERROR',
+                provider,
+                error: 'OAuth state ไม่ถูกต้องหรือหมดอายุ กรุณาลองใหม่อีกครั้ง',
+              },
+              'เซสชัน OAuth หมดอายุ'
+            )
+          );
+        return;
+      }
+
+      const code = String(req.query.code || '').trim();
+      if (!code) {
+        res
+          .status(400)
+          .type('html')
+          .send(
+            renderOAuthCallbackHtml(
+              targetOrigin,
+              { type: 'OAUTH_AUTH_ERROR', provider, error: 'ไม่ได้รับ Authorization Code จากผู้ให้บริการ' },
+              'ไม่ได้รับรหัสยืนยันจากผู้ให้บริการ'
+            )
+          );
+        return;
+      }
+
+      const cfg = getOAuthProviderConfig(provider, defaultOrigin);
+      if (!cfg.configured) {
+        res
+          .status(503)
+          .type('html')
+          .send(
+            renderOAuthCallbackHtml(
+              targetOrigin,
+              { type: 'OAUTH_AUTH_ERROR', provider, error: 'OAuth provider is not configured on server' },
+              'ยังไม่ได้ตั้งค่า OAuth บนเซิร์ฟเวอร์'
+            )
+          );
+        return;
+      }
+
+      try {
+        let providerUserId = '';
+        let providerEmail = '';
+        let providerEmailVerified = false;
+        let providerDisplayName = '';
+        let providerAvatarUrl = '';
+
+        if (provider === 'github') {
+          const tokenResp = await fetch(cfg.tokenUrl, {
+            method: 'POST',
+            headers: {
+              Accept: 'application/json',
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: new URLSearchParams({
+              client_id: cfg.clientId,
+              client_secret: cfg.clientSecret,
+              code,
+              redirect_uri: stateEntry.redirectUri,
+              code_verifier: stateEntry.codeVerifier,
+            }).toString(),
+            signal: AbortSignal.timeout(12_000),
+          });
+          const tokenJson = (await tokenResp.json().catch(() => ({}))) as {
+            access_token?: string;
+            error_description?: string;
+            error?: string;
+          };
+          if (!tokenResp.ok || !tokenJson.access_token) {
+            throw new Error(tokenJson.error_description || tokenJson.error || 'GitHub token exchange failed');
+          }
+
+          const ghHeaders = {
+            Authorization: `Bearer ${tokenJson.access_token}`,
+            Accept: 'application/vnd.github+json',
+            'User-Agent': 'ZYRQUEN-Platform',
+          };
+          const [userResp, emailsResp] = await Promise.all([
+            fetch(cfg.userUrl!, { headers: ghHeaders, signal: AbortSignal.timeout(10_000) }),
+            fetch(cfg.emailsUrl!, { headers: ghHeaders, signal: AbortSignal.timeout(10_000) }),
+          ]);
+          if (!userResp.ok) {
+            throw new Error(`GitHub user lookup failed (${userResp.status})`);
+          }
+          const ghUser = (await userResp.json()) as {
+            id?: number | string;
+            login?: string;
+            name?: string;
+            email?: string;
+            avatar_url?: string;
+          };
+          providerUserId = ghUser.id !== undefined ? String(ghUser.id) : '';
+          providerDisplayName = String(ghUser.name || ghUser.login || '').trim();
+          providerAvatarUrl = String(ghUser.avatar_url || '').trim();
+
+          if (emailsResp.ok) {
+            const emails = (await emailsResp.json().catch(() => [])) as Array<{
+              email?: string;
+              primary?: boolean;
+              verified?: boolean;
+            }>;
+            const preferred =
+              emails.find((e) => e.primary && e.verified) ||
+              emails.find((e) => e.verified) ||
+              emails.find((e) => e.primary) ||
+              emails[0];
+            if (preferred?.email) {
+              providerEmail = String(preferred.email).trim().toLowerCase();
+              providerEmailVerified = Boolean(preferred.verified);
+            }
+          }
+          if (!providerEmail && ghUser.email) {
+            providerEmail = String(ghUser.email).trim().toLowerCase();
+            providerEmailVerified = false;
+          }
+        } else {
+          const tokenResp = await fetch(cfg.tokenUrl, {
+            method: 'POST',
+            headers: {
+              Accept: 'application/json',
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: new URLSearchParams({
+              client_id: cfg.clientId,
+              client_secret: cfg.clientSecret,
+              code,
+              redirect_uri: stateEntry.redirectUri,
+              code_verifier: stateEntry.codeVerifier,
+              grant_type: 'authorization_code',
+            }).toString(),
+            signal: AbortSignal.timeout(12_000),
+          });
+          const tokenJson = (await tokenResp.json().catch(() => ({}))) as {
+            access_token?: string;
+            error_description?: string;
+            error?: string;
+          };
+          if (!tokenResp.ok || !tokenJson.access_token) {
+            throw new Error(tokenJson.error_description || tokenJson.error || 'Google token exchange failed');
+          }
+
+          const infoResp = await fetch(cfg.userInfoUrl!, {
+            headers: {
+              Authorization: `Bearer ${tokenJson.access_token}`,
+              Accept: 'application/json',
+            },
+            signal: AbortSignal.timeout(10_000),
+          });
+          if (!infoResp.ok) {
+            throw new Error(`Google userinfo lookup failed (${infoResp.status})`);
+          }
+          const gUser = (await infoResp.json()) as {
+            sub?: string;
+            email?: string;
+            email_verified?: boolean;
+            name?: string;
+            picture?: string;
+          };
+          providerUserId = String(gUser.sub || '').trim();
+          providerEmail = String(gUser.email || '').trim().toLowerCase();
+          providerEmailVerified = Boolean(gUser.email_verified);
+          providerDisplayName = String(gUser.name || '').trim();
+          providerAvatarUrl = String(gUser.picture || '').trim();
+        }
+
+        if (stateEntry.intent === 'link' && stateEntry.userId) {
+          const linkRes = await runPythonScript<{
+            ok: boolean;
+            identity?: Record<string, unknown>;
+            error?: string;
+            error_code?: string;
+          }>('db_bridge.py', {
+            action: 'auth_link_identity',
+            payload: {
+              user_id: stateEntry.userId,
+              provider,
+              provider_user_id: providerUserId,
+              email: providerEmail,
+              email_verified: providerEmailVerified,
+              display_name: providerDisplayName,
+              avatar_url: providerAvatarUrl,
+            },
+          });
+
+          if (!linkRes.ok) {
+            res
+              .status(409)
+              .type('html')
+              .send(
+                renderOAuthCallbackHtml(
+                  targetOrigin,
+                  {
+                    type: 'OAUTH_AUTH_ERROR',
+                    provider,
+                    code: linkRes.error_code || 'LINK_FAILED',
+                    error: linkRes.error || 'ไม่สามารถเชื่อมบัญชีภายนอกได้',
+                  },
+                  'ไม่สามารถเชื่อมบัญชีได้'
+                )
+              );
+            return;
+          }
+
+          await runPythonScript('db_bridge.py', {
+            action: 'log_audit',
+            payload: {
+              actor_id: stateEntry.userId,
+              actor_email: providerEmail || stateEntry.userId,
+              action: 'AUTH_IDENTITY_LINK',
+              target: `${provider}:${providerUserId}`,
+              outcome: 'SUCCESS',
+            },
+          });
+
+          res
+            .status(200)
+            .type('html')
+            .send(
+              renderOAuthCallbackHtml(
+                targetOrigin,
+                {
+                  type: 'OAUTH_LINK_SUCCESS',
+                  provider,
+                  identity: linkRes.identity,
+                },
+                `เชื่อมต่อบัญชี ${cfg.name} เรียบร้อยแล้ว`
+              )
+            );
+          return;
+        }
+
+        const loginRes = await runPythonScript<{
+          ok: boolean;
+          action?: string;
+          user?: AuthUser;
+          error?: string;
+          error_code?: string;
+        }>('db_bridge.py', {
+          action: 'auth_oauth_login_or_register',
+          payload: {
+            provider,
+            provider_user_id: providerUserId,
+            email: providerEmail,
+            email_verified: providerEmailVerified,
+            display_name: providerDisplayName,
+            avatar_url: providerAvatarUrl,
+          },
+        });
+
+        if (!loginRes.ok || !loginRes.user) {
+          res
+            .status(403)
+            .type('html')
+            .send(
+              renderOAuthCallbackHtml(
+                targetOrigin,
+                {
+                  type: 'OAUTH_AUTH_ERROR',
+                  provider,
+                  code: loginRes.error_code || 'OAUTH_REJECTED',
+                  error: loginRes.error || 'ไม่สามารถเข้าสู่ระบบผ่านบัญชีภายนอกได้',
+                },
+                'ไม่สามารถเข้าสู่ระบบได้'
+              )
+            );
+          return;
+        }
+
+        const sessionToken = signToken(loginRes.user);
+        setSessionCookie(req, res, sessionToken);
+
+        await runPythonScript('db_bridge.py', {
+          action: 'log_audit',
+          payload: {
+            actor_id: loginRes.user.id,
+            actor_email: loginRes.user.email,
+            action: 'AUTH_OAUTH_LOGIN',
+            target: `${provider}:${loginRes.action || 'login'}`,
+            outcome: 'SUCCESS',
+          },
+        });
+
+        res
+          .status(200)
+          .type('html')
+          .send(
+            renderOAuthCallbackHtml(
+              targetOrigin,
+              {
+                type: 'OAUTH_AUTH_SUCCESS',
+                provider,
+                token: sessionToken,
+                user: loginRes.user,
+              },
+              `เข้าสู่ระบบด้วย ${cfg.name} สำเร็จ`
+            )
+          );
+      } catch (err) {
+        res
+          .status(500)
+          .type('html')
+          .send(
+            renderOAuthCallbackHtml(
+              targetOrigin,
+              {
+                type: 'OAUTH_AUTH_ERROR',
+                provider,
+                error: err instanceof Error ? err.message : 'OAuth authentication failed',
+              },
+              'การยืนยันตัวตนไม่สำเร็จ'
+            )
+          );
+      }
+    }
+  );
+
+  app.post('/api/auth/verification/resend', requireAuth, async (req: AuthedRequest, res: Response) => {
+    const user = req.user!;
+    if (user.email_verified) {
+      res.json({ ok: true, alreadyVerified: true });
+      return;
+    }
+    const verification = await issueAndSendVerificationEmail(req, user);
+    await runPythonScript('db_bridge.py', {
+      action: 'log_audit',
+      payload: {
+        actor_id: user.id,
+        actor_email: user.email,
+        action: 'AUTH_VERIFICATION_RESEND',
+        target: user.id,
+        outcome: verification.emailSent ? 'SENT' : verification.deliveryReason || 'NOT_SENT',
+      },
+    });
+    res.json({ ok: true, alreadyVerified: false, verification });
+  });
+
+  app.post('/api/auth/verify-email', async (req: Request, res: Response) => {
+    const rawToken = String(req.body?.token || '').trim();
+    if (!rawToken || rawToken.length < 16 || rawToken.length > 512) {
+      res.status(400).json({ error: 'โทเคนยืนยันอีเมลไม่ถูกต้อง' });
+      return;
+    }
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const verified = await runPythonScript<{
+      ok: boolean;
+      user?: AuthUser;
+      error?: string;
+    }>('db_bridge.py', {
+      action: 'auth_consume_email_verify_token',
+      payload: { token_hash: tokenHash },
+    });
+    if (!verified.ok || !verified.user) {
+      res.status(400).json({ error: verified.error || 'ลิงก์ยืนยันอีเมลไม่ถูกต้องหรือหมดอายุแล้ว' });
+      return;
+    }
+    await runPythonScript('db_bridge.py', {
+      action: 'log_audit',
+      payload: {
+        actor_id: verified.user.id,
+        actor_email: verified.user.email,
+        action: 'AUTH_EMAIL_VERIFIED',
+        target: verified.user.id,
+        outcome: 'SUCCESS',
+      },
+    });
+    res.json({ ok: true, user: verified.user });
+  });
+
+  app.post('/api/auth/forgot-password', async (req: Request, res: Response) => {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    if (!isValidEmail(email)) {
+      res.status(400).json({ error: 'กรุณากรอกอีเมลให้ถูกต้อง' });
+      return;
+    }
+
+    const found = await runPythonScript<{ ok: boolean; user: AuthUser | null }>('db_bridge.py', {
+      action: 'auth_find_by_email',
+      payload: { email },
+    });
+    let emailSent = false;
+    let deliveryReason: string | null = null;
+    if (found.ok && found.user) {
+      const rawToken = crypto.randomBytes(32).toString('base64url');
+      const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+      await runPythonScript('db_bridge.py', {
+        action: 'auth_create_token',
+        payload: {
+          user_id: found.user.id,
+          token_type: 'password_reset',
+          token_hash: tokenHash,
+          target_email: found.user.email,
+          expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        },
+      });
+      const resetUrl = `${resolvePublicBaseUrl(req)}/?reset_token=${encodeURIComponent(rawToken)}`;
+      const safeResetUrl = escapeHtmlText(resetUrl);
+      const delivery = await sendTransactionalEmail({
+        to: found.user.email,
+        subject: 'รีเซ็ตรหัสผ่านบัญชี ZYRQUEN ของคุณ',
+        text: `คุณได้ร้องขอการรีเซ็ตรหัสผ่านบัญชี ZYRQUEN (ลิงก์มีอายุ 30 นาที):\n${resetUrl}\n`,
+        html: `<div style="font-family:system-ui,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#0f172a;">
+          <h2 style="margin:0 0 12px;">รีเซ็ตรหัสผ่าน ZYRQUEN</h2>
+          <p>กดปุ่มด้านล่างเพื่อตั้งรหัสผ่านใหม่ (ลิงก์มีอายุ 30 นาที):</p>
+          <p style="margin:24px 0;"><a href="${safeResetUrl}" style="display:inline-block;background:#2563eb;color:#ffffff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600;">ตั้งรหัสผ่านใหม่</a></p>
+        </div>`,
+      });
+      emailSent = delivery.sent;
+      deliveryReason = delivery.reason;
+      await runPythonScript('db_bridge.py', {
+        action: 'log_audit',
+        payload: {
+          actor_id: found.user.id,
+          actor_email: found.user.email,
+          action: 'AUTH_PASSWORD_RESET_REQUESTED',
+          target: found.user.id,
+          outcome: emailSent ? 'SENT' : deliveryReason || 'NOT_SENT',
+        },
+      });
+    }
+
+    res.json({
+      ok: true,
+      message: 'หากอีเมลนี้ลงทะเบียนอยู่ในระบบ เราได้ดำเนินการส่งคำแนะนำสำหรับรีเซ็ตรหัสผ่านแล้ว',
+      emailProviderConfigured: Boolean(
+        (process.env.RESEND_API_KEY || '').trim() && (process.env.EMAIL_FROM || '').trim()
+      ),
+      deliveryReason: emailSent ? null : deliveryReason,
+    });
+  });
+
+  app.post('/api/auth/reset-password', async (req: Request, res: Response) => {
+    const rawToken = String(req.body?.token || '').trim();
+    const newPassword = String(req.body?.password || '');
+    if (!rawToken || rawToken.length < 16 || rawToken.length > 512) {
+      res.status(400).json({ error: 'โทเคนรีเซ็ตรหัสผ่านไม่ถูกต้อง' });
+      return;
+    }
+    if (newPassword.length < 8 || newPassword.length > 256) {
+      res.status(400).json({ error: 'รหัสผ่านใหม่ต้องมีความยาว 8–256 ตัวอักษร' });
+      return;
+    }
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const result = await runPythonScript<{ ok: boolean; user?: AuthUser; error?: string }>('db_bridge.py', {
+      action: 'auth_consume_password_reset_token',
+      payload: {
+        token_hash: tokenHash,
+        new_password_hash: hashPassword(newPassword),
+      },
+    });
+    if (!result.ok || !result.user) {
+      res.status(400).json({ error: result.error || 'ลิงก์รีเซ็ตรหัสผ่านไม่ถูกต้องหรือหมดอายุแล้ว' });
+      return;
+    }
+    await runPythonScript('db_bridge.py', {
+      action: 'log_audit',
+      payload: {
+        actor_id: result.user.id,
+        actor_email: result.user.email,
+        action: 'AUTH_PASSWORD_RESET_COMPLETED',
+        target: result.user.id,
+        outcome: 'SUCCESS',
+      },
+    });
+    res.json({ ok: true });
+  });
+
+  app.get('/api/auth/identities', requireAuth, async (req: AuthedRequest, res: Response) => {
+    const result = await runPythonScript<{
+      ok: boolean;
+      email: string;
+      email_verified: boolean;
+      email_verified_at: string | null;
+      has_password: boolean;
+      identities: Array<Record<string, unknown>>;
+    }>('db_bridge.py', {
+      action: 'auth_list_identities',
+      payload: { user_id: req.user!.id },
+    });
+    res.json(result);
+  });
+
+  app.delete('/api/auth/identities/:provider', requireAuth, async (req: AuthedRequest, res: Response) => {
+    const rawProvider = String(req.params.provider || '').toLowerCase();
+    if (rawProvider !== 'github' && rawProvider !== 'google') {
+      res.status(400).json({ error: 'Invalid provider' });
+      return;
+    }
+    const result = await runPythonScript<{
+      ok: boolean;
+      error?: string;
+      error_code?: string;
+    }>('db_bridge.py', {
+      action: 'auth_unlink_identity',
+      payload: { user_id: req.user!.id, provider: rawProvider },
+    });
+    if (!result.ok) {
+      const status =
+        result.error_code === 'NOT_FOUND'
+          ? 404
+          : result.error_code === 'LOCKOUT_PREVENTED'
+            ? 409
+            : 400;
+      res.status(status).json({ error: result.error || 'ไม่สามารถยกเลิกการเชื่อมต่อบัญชีได้' });
+      return;
+    }
+    await runPythonScript('db_bridge.py', {
+      action: 'log_audit',
+      payload: {
+        actor_id: req.user!.id,
+        actor_email: req.user!.email,
+        action: 'AUTH_IDENTITY_UNLINK',
+        target: rawProvider,
+        outcome: 'SUCCESS',
+      },
+    });
+    res.json({ ok: true, provider: rawProvider });
+  });
+
+  app.post('/api/auth/password', requireAuth, async (req: AuthedRequest, res: Response) => {
+    const currentPassword = String(req.body?.currentPassword || '');
+    const newPassword = String(req.body?.newPassword || '');
+    if (newPassword.length < 8 || newPassword.length > 256) {
+      res.status(400).json({ error: 'รหัสผ่านใหม่ต้องมีความยาว 8–256 ตัวอักษร' });
+      return;
+    }
+    const found = await runPythonScript<{
+      ok: boolean;
+      user: (AuthUser & { password_hash: string }) | null;
+    }>('db_bridge.py', {
+      action: 'auth_find_by_email',
+      payload: { email: req.user!.email },
+    });
+    if (!found.user) {
+      res.status(404).json({ error: 'Account not found' });
+      return;
+    }
+    const alreadyHasPassword = Boolean(found.user.password_hash && found.user.password_hash.includes(':'));
+    if (alreadyHasPassword) {
+      if (!currentPassword || !verifyPassword(currentPassword, found.user.password_hash)) {
+        res.status(401).json({ error: 'รหัสผ่านปัจจุบันไม่ถูกต้อง' });
+        return;
+      }
+    }
+    const updated = await runPythonScript<{ ok: boolean; error?: string }>('db_bridge.py', {
+      action: 'auth_set_password',
+      payload: {
+        user_id: req.user!.id,
+        new_password_hash: hashPassword(newPassword),
+      },
+    });
+    if (!updated.ok) {
+      res.status(400).json({ error: updated.error || 'อัปเดตรหัสผ่านไม่สำเร็จ' });
+      return;
+    }
+    await runPythonScript('db_bridge.py', {
+      action: 'log_audit',
+      payload: {
+        actor_id: req.user!.id,
+        actor_email: req.user!.email,
+        action: alreadyHasPassword ? 'AUTH_PASSWORD_CHANGED' : 'AUTH_PASSWORD_SET',
+        target: req.user!.id,
+        outcome: 'SUCCESS',
+      },
+    });
+    res.json({ ok: true, has_password: true });
   });
 
   app.get('/api/home', requireAuth, async (req: AuthedRequest, res: Response) => {
@@ -1566,6 +2621,54 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
       return;
     }
     res.json({ ok: true });
+  });
+
+  app.post('/api/developer/keys/bulk-revoke', requireAuth, async (req: AuthedRequest, res: Response) => {
+    const rawIds = Array.isArray(req.body?.ids) ? req.body.ids : null;
+    if (!rawIds || rawIds.length === 0) {
+      res.status(400).json({ error: 'กรุณาเลือก API Key อย่างน้อย 1 รายการ' });
+      return;
+    }
+    const ids = Array.from(
+      new Set(rawIds.map((id: unknown) => String(id || '').trim()).filter(Boolean))
+    ).slice(0, 100);
+    if (ids.length === 0) {
+      res.status(400).json({ error: 'กรุณาเลือก API Key อย่างน้อย 1 รายการ' });
+      return;
+    }
+
+    const data = await runPythonScript<{
+      ok: boolean;
+      revoked_ids?: string[];
+      revoked_count?: number;
+      error?: string;
+    }>('db_bridge.py', {
+      action: 'dev_key_bulk_revoke',
+      payload: { key_ids: ids, user_id: req.user!.id },
+    });
+
+    if (!data.ok || !data.revoked_count) {
+      res.status(404).json({ error: 'ไม่พบ API Key ที่ใช้งานอยู่ตามรายการที่เลือก' });
+      return;
+    }
+
+    await runPythonScript('db_bridge.py', {
+      action: 'log_audit',
+      payload: {
+        actor_id: req.user!.id,
+        actor_email: req.user!.email,
+        action: 'API_KEYS_BULK_REVOKE',
+        target: `${data.revoked_count} keys`,
+        outcome: 'SUCCESS',
+        details_json: JSON.stringify({ revoked_ids: data.revoked_ids || [] }),
+      },
+    });
+
+    res.json({
+      ok: true,
+      revokedIds: data.revoked_ids || [],
+      revokedCount: data.revoked_count,
+    });
   });
 
   app.post('/api/developer/datasets', requireAuth, async (req: AuthedRequest, res: Response) => {

@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import time
 import uuid
 from zyrquen_core import (
     DATA_DIR,
@@ -1081,6 +1082,12 @@ def handle_action(action: str, payload: dict) -> dict:
         token_hash = str(payload.get("token_hash") or "").strip()
         target_email = str(payload.get("target_email") or "").strip().lower()
         expires_at = str(payload.get("expires_at") or "").strip()
+        if not expires_at and payload.get("expires_in_sec") is not None:
+            try:
+                ttl_sec = max(1, int(payload.get("expires_in_sec")))
+                expires_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + ttl_sec))
+            except (TypeError, ValueError):
+                expires_at = ""
         if token_type not in ("email_verify", "password_reset") or not uid or not token_hash or not target_email or not expires_at:
             conn.close()
             return {"ok": False, "error": "Invalid auth token parameters"}
@@ -1138,7 +1145,9 @@ def handle_action(action: str, payload: dict) -> dict:
 
     if action == "auth_consume_password_reset_token":
         token_hash = str(payload.get("token_hash") or "").strip()
-        new_password_hash = str(payload.get("new_password_hash") or "").strip()
+        new_password_hash = str(
+            payload.get("new_password_hash") or payload.get("password_hash") or ""
+        ).strip()
         ts = now_iso()
         row = conn.execute(
             "SELECT * FROM auth_tokens WHERE token_hash=? AND token_type='password_reset'",
@@ -1165,7 +1174,9 @@ def handle_action(action: str, payload: dict) -> dict:
 
     if action == "auth_set_password":
         uid = str(payload.get("user_id") or "").strip()
-        new_password_hash = str(payload.get("new_password_hash") or "").strip()
+        new_password_hash = str(
+            payload.get("new_password_hash") or payload.get("password_hash") or ""
+        ).strip()
         if not uid or ":" not in new_password_hash:
             conn.close()
             return {"ok": False, "error": "Invalid password payload"}
@@ -1173,6 +1184,40 @@ def handle_action(action: str, payload: dict) -> dict:
             cur = conn.execute("UPDATE users SET password_hash=? WHERE id=?", (new_password_hash, uid))
         conn.close()
         return {"ok": cur.rowcount > 0}
+
+    if action == "auth_revoke_token":
+        jti = str(payload.get("jti") or "").strip()
+        uid = str(payload.get("user_id") or "").strip() or None
+        expires_at = str(payload.get("expires_at") or "").strip() or now_iso()
+        ts = now_iso()
+        if not jti:
+            conn.close()
+            return {"ok": False, "error": "Missing jti"}
+        with conn:
+            conn.execute("DELETE FROM revoked_tokens WHERE expires_at <= ?", (ts,))
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO revoked_tokens (jti, user_id, expires_at, revoked_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (jti, uid, expires_at, ts),
+            )
+        conn.close()
+        return {"ok": True}
+
+    if action == "auth_is_token_revoked":
+        jti = str(payload.get("jti") or "").strip()
+        if not jti:
+            conn.close()
+            return {"ok": True, "revoked": False}
+        ts = now_iso()
+        row = conn.execute(
+            "SELECT jti, expires_at FROM revoked_tokens WHERE jti=?",
+            (jti,),
+        ).fetchone()
+        conn.close()
+        revoked = row is not None and str(row["expires_at"]) > ts
+        return {"ok": True, "revoked": revoked}
 
     if action == "home_summary":
         uid = str(payload["user_id"])

@@ -225,6 +225,7 @@ const store = {
   users: [] as UserRow[],
   userIdentities: [] as UserIdentityRow[],
   authTokens: [] as AuthTokenRow[],
+  revokedTokens: [] as Array<{ jti: string; user_id: string | null; expires_at: string; revoked_at: string }>,
   conversations: [] as ConversationRow[],
   messages: [] as MessageRow[],
   triples: [] as TripleRow[],
@@ -980,7 +981,13 @@ export function runFallbackDbBridge(action: string, payload: AnyRecord = {}): An
     const tokenType = String(payload.token_type || '').trim() as 'email_verify' | 'password_reset';
     const tokenHash = String(payload.token_hash || '').trim();
     const targetEmail = String(payload.target_email || '').trim().toLowerCase();
-    const expiresAt = String(payload.expires_at || '').trim();
+    let expiresAt = String(payload.expires_at || '').trim();
+    if (!expiresAt && payload.expires_in_sec != null) {
+      const ttlSec = Math.max(1, Number(payload.expires_in_sec) || 0);
+      if (ttlSec > 0) {
+        expiresAt = new Date(Date.now() + ttlSec * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+      }
+    }
     const ts = nowIso();
     for (const t of store.authTokens) {
       if (t.user_id === uid && t.token_type === tokenType && !t.used_at) {
@@ -1022,7 +1029,7 @@ export function runFallbackDbBridge(action: string, payload: AnyRecord = {}): An
 
   if (action === 'auth_consume_password_reset_token') {
     const tokenHash = String(payload.token_hash || '').trim();
-    const newHash = String(payload.new_password_hash || '').trim();
+    const newHash = String(payload.new_password_hash || payload.password_hash || '').trim();
     const ts = nowIso();
     const row = store.authTokens.find(
       (t) => t.token_hash === tokenHash && t.token_type === 'password_reset'
@@ -1039,11 +1046,30 @@ export function runFallbackDbBridge(action: string, payload: AnyRecord = {}): An
 
   if (action === 'auth_set_password') {
     const uid = String(payload.user_id || '').trim();
-    const newHash = String(payload.new_password_hash || '').trim();
+    const newHash = String(payload.new_password_hash || payload.password_hash || '').trim();
     const u = store.users.find((x) => x.id === uid);
     if (!u || !newHash.includes(':')) return { ok: false, error: 'Invalid password payload' };
     u.password_hash = newHash;
     return { ok: true };
+  }
+
+  if (action === 'auth_revoke_token') {
+    const jti = String(payload.jti || '').trim();
+    const uid = String(payload.user_id || '').trim() || null;
+    const expiresAt = String(payload.expires_at || '').trim() || nowIso();
+    const ts = nowIso();
+    if (!jti) return { ok: false, error: 'Missing jti' };
+    store.revokedTokens = store.revokedTokens.filter((t) => t.expires_at > ts && t.jti !== jti);
+    store.revokedTokens.push({ jti, user_id: uid, expires_at: expiresAt, revoked_at: ts });
+    return { ok: true };
+  }
+
+  if (action === 'auth_is_token_revoked') {
+    const jti = String(payload.jti || '').trim();
+    if (!jti) return { ok: true, revoked: false };
+    const ts = nowIso();
+    const found = store.revokedTokens.find((t) => t.jti === jti && t.expires_at > ts);
+    return { ok: true, revoked: Boolean(found) };
   }
 
   if (action === 'home_summary') {
