@@ -274,12 +274,22 @@ class TestCentralWorkflowMaintainerIntegration(unittest.TestCase):
         ci_path = repo_root / ".github" / "workflows" / "ci.yml"
         self.assertTrue(ci_path.is_file())
         self.assertTrue(is_protected_path(".github/workflows/ci.yml"))
+
         content = ci_path.read_text(encoding="utf-8")
         self.assertIn("pull_request:", content)
         self.assertIn("npm run lint", content)
         self.assertIn("npm run test", content)
         self.assertIn("Codex Review", content)
         self.assertIn("createCommitStatus", content)
+
+        review_path = repo_root / ".github" / "workflows" / "maintainer-pr-review.yml"
+        self.assertTrue(review_path.is_file())
+
+        review_content = review_path.read_text(encoding="utf-8")
+        self.assertIn("codex-advisory-review", review_content)
+        self.assertIn("openai/codex-action@v1", review_content)
+        self.assertIn("sandbox: read-only", review_content)
+        self.assertIn("read-only: true", review_content)
 
 
 if __name__ == "__main__":
