@@ -2,7 +2,10 @@ import json
 from pathlib import Path
 
 def test_observability_patch_injection():
-    content = Path("apps/core/native/train.py").read_text()
+    target = Path("apps/core/native/train/__init__.py")
+    if not target.is_file():
+        target = Path("apps/core/native/train.py")
+    content = target.read_text(encoding="utf-8")
     assert "loss_val = loss.item()" in content
     assert "json.dumps(log_data)" in content
     assert "is_finite" in content

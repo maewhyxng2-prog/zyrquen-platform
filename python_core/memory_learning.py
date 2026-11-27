@@ -16,7 +16,10 @@ Controlled Self-Improvement Loop:
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
+import shutil
 import sqlite3
 import time
 import uuid
@@ -336,15 +339,83 @@ def decide_experiment(
         return {"ok": False, "error": "Cannot promote experiment without measured improvement"}
 
     cand = json.loads(exp["candidate_metrics_json"] or "{}")
-    weights_path = Path(str(cand.get("weights_path", "")))
-    if not weights_path.exists():
+    raw_artifact = str(cand.get("weights_path") or cand.get("checkpoint_path") or "").strip()
+    if not raw_artifact:
+        return {"ok": False, "error": "Candidate checkpoint artifact path missing"}
+    weights_path = Path(raw_artifact)
+    if weights_path.is_symlink() or not weights_path.is_file():
         return {"ok": False, "error": "Candidate checkpoint artifact missing on disk"}
 
+    actual_sha = hashlib.sha256(weights_path.read_bytes()).hexdigest()
+    expected_sha = str(cand.get("checkpoint_sha256") or "").strip()
+    if expected_sha and actual_sha != expected_sha:
+        return {
+            "ok": False,
+            "error": (
+                f"Candidate checkpoint SHA-256 mismatch "
+                f"(expected {expected_sha[:12]}, got {actual_sha[:12]})"
+            ),
+        }
+
+    focus = str(cand.get("training_focus") or "")
+    is_ast = focus == "real_only_jsonl_ast_classifier" or (
+        weights_path.suffix.lower() == ".json"
+        and "checkpoint_path" in cand
+        and isinstance(cand.get("final_metrics"), dict)
+    )
+    is_continual = (
+        "retention_rate" in cand
+        or "forgetting_loss_delta" in cand
+        or str(weights_path.name).startswith("exp_cl_")
+    )
+    is_code_neural = focus == "code_understanding_and_problem_solving"
+
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
     max_ver = conn.execute("SELECT COALESCE(MAX(version), 0) FROM checkpoints").fetchone()[0]
     new_ver = int(max_ver) + 1
     ckpt_id = str(uuid.uuid4())
-    final_path = checkpoint_dir / f"ckpt_neural_v{new_ver}_{ckpt_id[:8]}.json.gz"
-    weights_path.replace(final_path)
+
+    if is_ast:
+        final_path = checkpoint_dir / f"ckpt_ast_v{new_ver}_{ckpt_id[:8]}.json"
+        shutil.copy2(weights_path, final_path)
+        final_metrics = cand.get("final_metrics") or {}
+        tr_m = final_metrics.get("train") or {}
+        va_m = final_metrics.get("val") or {}
+        te_m = final_metrics.get("test") or {}
+        train_loss = float(tr_m.get("loss") if tr_m.get("loss") is not None else 0.0)
+        val_loss = float(va_m.get("loss") if va_m.get("loss") is not None else 0.0)
+        perplexity = round(math.exp(min(val_loss, 20.0)), 4)
+        eval_accuracy = float(te_m.get("accuracy") if te_m.get("accuracy") is not None else 0.0)
+        try:
+            ast_payload = json.loads(final_path.read_text(encoding="utf-8"))
+            feat_count = len(ast_payload.get("feature_names") or [])
+        except Exception:
+            feat_count = 6
+        vocab_size = int(cand.get("vocab_size") or feat_count or 6)
+        ngram_order = -1
+        eval_status = "AST_VERIFIED"
+        dataset_id = str(exp["dataset_id"] or f"real-only:{str(cand.get('data_sha256') or actual_sha)[:12]}")
+        cand["checkpoint_path"] = str(final_path)
+        cand["weights_path"] = str(final_path)
+    else:
+        final_path = checkpoint_dir / f"ckpt_neural_v{new_ver}_{ckpt_id[:8]}.json.gz"
+        weights_path.replace(final_path)
+        vocab_size = int(cand.get("vocab_size", 0))
+        ngram_order = 0
+        train_loss = float(cand.get("final_train_loss", 0.0))
+        val_loss = float(cand.get("final_val_loss", 0.0))
+        perplexity = float(cand.get("val_perplexity", 1.0))
+        eval_accuracy = float(cand.get("test_accuracy", 0.0))
+        if is_continual:
+            eval_status = "NEURAL_CONTINUAL_VERIFIED"
+        elif is_code_neural:
+            eval_status = "NEURAL_CODE_VERIFIED"
+        else:
+            eval_status = "NEURAL_VERIFIED"
+        dataset_id = str(exp["dataset_id"] or "unknown-dataset")
+        cand["weights_path"] = str(final_path)
+
+    cand["checkpoint_sha256"] = actual_sha
 
     with conn:
         conn.execute(
@@ -359,20 +430,19 @@ def decide_experiment(
             (
                 ckpt_id,
                 new_ver,
-                exp["dataset_id"],
-                int(cand.get("vocab_size", 0)),
-                0,
-                float(cand.get("final_train_loss", 0.0)),
-                float(cand.get("final_val_loss", 0.0)),
-                float(cand.get("val_perplexity", 1.0)),
-                float(cand.get("test_accuracy", 0.0)),
-                "NEURAL_VERIFIED",
+                dataset_id,
+                vocab_size,
+                ngram_order,
+                train_loss,
+                val_loss,
+                perplexity,
+                eval_accuracy,
+                eval_status,
                 str(final_path),
                 admin_id or admin_email,
                 _now_iso(),
             ),
         )
-        cand["weights_path"] = str(final_path)
         conn.execute(
             """
             UPDATE experiments

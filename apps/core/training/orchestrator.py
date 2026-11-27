@@ -161,14 +161,6 @@ class TrainingOrchestrator:
             ):
                 import hashlib as _hashlib
                 dataset_content_sha256 = _hashlib.sha256(json.dumps(manifest, sort_keys=True, default=str).encode("utf-8")).hexdigest()
-            dataset_content_sha256 = manifest.get("content_sha256")
-            if (
-                not isinstance(dataset_content_sha256, str)
-                or len(dataset_content_sha256) != 64
-                or any(c not in "0123456789abcdef" for c in dataset_content_sha256.lower())
-            ):
-                import hashlib as _hashlib
-                dataset_content_sha256 = _hashlib.sha256(json.dumps(manifest, sort_keys=True, default=str).encode("utf-8")).hexdigest()
         except TrainingUnavailable:
             raise
         except (

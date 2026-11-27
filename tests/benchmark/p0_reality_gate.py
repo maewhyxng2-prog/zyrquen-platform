@@ -262,6 +262,14 @@ def detect_unsupported_capabilities() -> dict[str, Any]:
     torch_installed = importlib.util.find_spec("torch") is not None
     pydantic_installed = importlib.util.find_spec("pydantic") is not None
     dataset_v11_exists = (REPO_ROOT / "apps" / "core" / "native" / "dataset_v11.py").is_file()
+    dataset_v11_contract_ok = False
+    if dataset_v11_exists:
+        try:
+            from apps.core.native.dataset_v11 import DataAdapter, DatasetLeakageError
+
+            dataset_v11_contract_ok = callable(DataAdapter) and issubclass(DatasetLeakageError, Exception)
+        except Exception:
+            dataset_v11_contract_ok = False
 
     eval_status = EvaluationEngine().get_status()
     loader = NativeModelLoader()
@@ -282,7 +290,7 @@ def detect_unsupported_capabilities() -> dict[str, Any]:
             and reasoning_out["model_inference"] is False
             and reasoning_out["engine_type"] == "rule_based_scaffold"
         ),
-        "dataset_v11_absence_reported": not dataset_v11_exists,
+        "dataset_v11_honest_contract": (not dataset_v11_exists) or dataset_v11_contract_ok,
         "pydantic_runtime_honesty": True,
     }
     return {
@@ -292,6 +300,7 @@ def detect_unsupported_capabilities() -> dict[str, Any]:
             "torch_installed": torch_installed,
             "pydantic_installed": pydantic_installed,
             "dataset_v11_present": dataset_v11_exists,
+            "dataset_v11_contract_ok": dataset_v11_contract_ok,
             "eval_engine_status": eval_status["status"],
             "model_loader_health": loader.health_state(),
         },

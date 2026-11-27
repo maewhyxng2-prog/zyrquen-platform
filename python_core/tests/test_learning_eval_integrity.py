@@ -1,0 +1,248 @@
+"""Integrity tests for ZYRQUEN checkpoint promotion, held-out evaluation, and inference guards."""
+
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+PYTHON_CORE_DIR = Path(__file__).resolve().parent.parent
+if str(PYTHON_CORE_DIR) not in sys.path:
+    sys.path.insert(0, str(PYTHON_CORE_DIR))
+
+import continual_learning as cl  # noqa: E402
+import memory_learning as ml  # noqa: E402
+import real_only_trainer as rot  # noqa: E402
+import zyrquen_core as zc  # noqa: E402
+from tests.benchmark_suite import isolated_core_env  # noqa: E402
+
+
+def _write_real_ast_jsonl(path: Path, count_per_class: int = 24) -> None:
+    lines: list[str] = []
+    for idx in range(count_per_class):
+        code = (
+            f"def guarded_op_{idx}(x, y):\n"
+            f"    if y == 0:\n"
+            f"        return 0\n"
+            f"    try:\n"
+            f"        return x / (y + {idx})\n"
+            f"    except ZeroDivisionError:\n"
+            f"        return 0\n"
+        )
+        lines.append(json.dumps({"code": code, "label": 1, "source": "internal_ast_verified"}))
+    for idx in range(count_per_class):
+        code = f"raw_val_{idx} = {idx + 1} * 2 + {idx % 5}\n"
+        lines.append(json.dumps({"code": code, "label": 0, "source": "internal_ast_verified"}))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+class LearningAndEvalIntegrityTests(unittest.TestCase):
+    def test_decide_experiment_rejects_empty_and_tampered_paths(self) -> None:
+        with isolated_core_env():
+            conn = zc.get_db()
+            exp_id = "exp-empty-path-1"
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO experiments (
+                        id, hypothesis, dataset_id, baseline_ckpt_id, candidate_ckpt_id,
+                        baseline_metrics_json, candidate_metrics_json, improved,
+                        approval_status, approved_by, created_by, created_at
+                    )
+                    VALUES (?, ?, ?, NULL, NULL, '{}', '{}', 1, 'PENDING_APPROVAL', NULL, 'u1', '2026-11-27T00:00:00Z')
+                    """,
+                    (exp_id, "Empty path test", "real-only:empty"),
+                )
+            res = ml.decide_experiment(
+                conn,
+                zc.CHECKPOINT_DIR,
+                experiment_id=exp_id,
+                decision="approve",
+                admin_email="admin@zyrquen.local",
+                admin_id="admin-1",
+            )
+            self.assertFalse(res["ok"])
+            self.assertIn("missing", res["error"].lower())
+
+            with tempfile.TemporaryDirectory() as tmp:
+                jsonl_path = Path(tmp) / "real.jsonl"
+                _write_real_ast_jsonl(jsonl_path, count_per_class=22)
+                rec = rot.record_real_only_training_in_db(
+                    conn,
+                    checkpoint_dir=zc.CHECKPOINT_DIR,
+                    user_id="u1",
+                    data_path=jsonl_path,
+                    epochs=12,
+                    lr=0.1,
+                    seed=7,
+                    min_samples=30,
+                )
+                self.assertTrue(rec["ok"], rec)
+                if rec["approval"] == "PENDING_APPROVAL":
+                    ckpt_file = Path(rec["checkpoint_path"])
+                    ckpt_obj = json.loads(ckpt_file.read_text(encoding="utf-8"))
+                    ckpt_obj["bias"] = float(ckpt_obj["bias"]) + 9.5
+                    ckpt_file.write_text(json.dumps(ckpt_obj), encoding="utf-8")
+
+                    tamper_res = ml.decide_experiment(
+                        conn,
+                        zc.CHECKPOINT_DIR,
+                        experiment_id=rec["experiment_id"],
+                        decision="approve",
+                        admin_email="admin@zyrquen.local",
+                        admin_id="admin-1",
+                    )
+                    self.assertFalse(tamper_res["ok"])
+                    self.assertIn("SHA-256", tamper_res["error"])
+            conn.close()
+
+    def test_ast_promotion_evaluation_and_missing_weights_fail_closed(self) -> None:
+        with isolated_core_env():
+            conn = zc.get_db()
+            with tempfile.TemporaryDirectory() as tmp:
+                jsonl_path = Path(tmp) / "real.jsonl"
+                _write_real_ast_jsonl(jsonl_path, count_per_class=24)
+                rec = rot.record_real_only_training_in_db(
+                    conn,
+                    checkpoint_dir=zc.CHECKPOINT_DIR,
+                    user_id="u1",
+                    data_path=jsonl_path,
+                    epochs=15,
+                    lr=0.1,
+                    seed=11,
+                    min_samples=30,
+                )
+                self.assertTrue(rec["ok"], rec)
+                self.assertEqual(rec["approval"], "PENDING_APPROVAL", rec)
+
+                promo = ml.decide_experiment(
+                    conn,
+                    zc.CHECKPOINT_DIR,
+                    experiment_id=rec["experiment_id"],
+                    decision="approve",
+                    admin_email="admin@zyrquen.local",
+                    admin_id="admin-1",
+                )
+                self.assertTrue(promo["ok"], promo)
+                ckpt = promo["checkpoint"]
+                self.assertEqual(ckpt["eval_status"], "AST_VERIFIED")
+                self.assertEqual(ckpt["ngram_order"], -1)
+                self.assertTrue(Path(ckpt["weights_path"]).is_file())
+
+            # Evaluation verifies AST checkpoint via SHA-256 + report
+            ev_ok = zc.handle_run_evaluation({"user_id": "u1", "suite_name": "AST Eval"})
+            self.assertTrue(ev_ok["ok"])
+            ev_row = ev_ok["evaluation"]
+            details = json.loads(ev_row["details_json"])
+            self.assertEqual(details["heldout_test"]["status"], "PASS")
+            self.assertIsNotNone(ev_row["test_accuracy"])
+
+            # Inference cleanly ignores AST .json checkpoint rather than crashing in NativeTransformerLM
+            infer_res = zc.handle_infer({"prompt": "ทดสอบโครงสร้างระบบ", "mode": "model", "user_id": "u1"})
+            self.assertNotEqual(infer_res.get("status"), "ERROR")
+
+            # Tampering checkpoint post-promotion MUST fail evaluation cleanly (never cached WARN)
+            promoted_path = Path(ckpt["weights_path"])
+            promoted_path.write_text('{"schema":"corrupted"}', encoding="utf-8")
+            ev_tamper = zc.handle_run_evaluation({"user_id": "u1", "suite_name": "Tampered AST Eval"})["evaluation"]
+            tamper_details = json.loads(ev_tamper["details_json"])
+            self.assertEqual(tamper_details["heldout_test"]["status"], "FAILED")
+            self.assertEqual(ev_tamper["overall_status"], "FAILED")
+            self.assertIsNone(ev_tamper["test_accuracy"])
+            self.assertIsNone(ev_tamper["perplexity"])
+
+            # Removing checkpoint file on disk MUST block evaluation honestly (never cached WARN)
+            promoted_path.unlink()
+            ev_missing = zc.handle_run_evaluation({"user_id": "u1", "suite_name": "Missing AST Eval"})["evaluation"]
+            missing_details = json.loads(ev_missing["details_json"])
+            self.assertEqual(missing_details["heldout_test"]["status"], "BLOCKED")
+            self.assertEqual(ev_missing["overall_status"], "BLOCKED")
+            self.assertIsNone(ev_missing["test_accuracy"])
+            self.assertIsNone(ev_missing["perplexity"])
+            conn.close()
+
+    def test_continual_promotion_sets_neural_continual_verified(self) -> None:
+        with isolated_core_env():
+            conn = zc.get_db()
+            ing = zc.handle_ingest_dataset(
+                {
+                    "name": "continual-base-corpus",
+                    "user_id": "u1",
+                    "source": "internal_test_corpus",
+                    "content": "\n".join(
+                        [
+                            f"สถาปัตยกรรมโครงข่ายประสาทเทียมโมดูลที่ {i} ใช้หน่วยความจำอ้างอิงลำดับ {k} กับตัวแปร {w} และทดสอบสมรรถนะจริง"
+                            for i, (k, w) in enumerate([
+                                ("เอกเทศ", "อัลฟา"), ("ทวินาม", "เบตา"), ("ตรีโกณ", "แกมมา"),
+                                ("จตุรัส", "เดลตา"), ("ปัญจภาค", "เอปซิลอน"), ("ฉกัณฑ์", "ซีตา"),
+                                ("สัตตม", "อีตา"), ("อัฐม", "ทีตา"), ("นวม", "ไอโอตา"),
+                                ("ทศนิยม", "แคปปา"), ("เอกาทศ", "แลมบ์ดา"), ("ทวาทศ", "มิว"),
+                                ("เตรส", "นิว"), ("จตุรทศ", "ไซ"), ("ปัญจทศ", "โอไมครอน"),
+                                ("โสฬส", "พาย"), ("สัตตทศ", "โร"), ("อัฐทศ", "ซิกมา"),
+                            ])
+                        ]
+                    ),
+                }
+            )
+            self.assertTrue(ing["ok"], ing)
+            ds_id = ing["dataset"]["id"]
+
+            exp = ml.run_controlled_neural_experiment(
+                conn,
+                zc.CHECKPOINT_DIR,
+                "u1",
+                dataset_id=ds_id,
+                epochs=4,
+                seed=42,
+            )
+            self.assertTrue(exp["ok"], exp)
+            if exp["experiment"]["approval_status"] == "PENDING_APPROVAL":
+                p1 = ml.decide_experiment(
+                    conn,
+                    zc.CHECKPOINT_DIR,
+                    experiment_id=exp["experiment"]["id"],
+                    decision="approve",
+                    admin_email="admin@zyrquen.local",
+                    admin_id="admin-1",
+                )
+                self.assertTrue(p1["ok"], p1)
+
+            cl_res = cl.run_continual_learning_round(
+                conn,
+                zc.CHECKPOINT_DIR,
+                "u1",
+                new_samples=[
+                    f"ความรู้เชิงตรรกะใหม่ลำดับที่ {i} เชื่อมโยงระบบหน่วยความจำภายในและตรวจสอบข้อมูลย้อนกลับ"
+                    for i in range(10)
+                ],
+                anchor_samples=[
+                    f"ระบบประมวลผลฐานข้อมูลซิร์เควนชุดที่ {i} ตรวจสอบความถูกต้องและบันทึกผลลัพธ์อย่างแม่นยำ"
+                    for i in range(8)
+                ],
+                epochs=4,
+                seed=43,
+            )
+            self.assertTrue(cl_res["ok"], cl_res)
+            if cl_res["experiment"]["approval_status"] == "PENDING_APPROVAL":
+                p2 = ml.decide_experiment(
+                    conn,
+                    zc.CHECKPOINT_DIR,
+                    experiment_id=cl_res["experiment"]["id"],
+                    decision="approve",
+                    admin_email="admin@zyrquen.local",
+                    admin_id="admin-1",
+                )
+                self.assertTrue(p2["ok"], p2)
+                self.assertEqual(p2["checkpoint"]["eval_status"], "NEURAL_CONTINUAL_VERIFIED")
+                # Evaluates genuinely against clean dataset split
+                ev = zc.handle_run_evaluation({"user_id": "u1", "suite_name": "Continual Eval"})["evaluation"]
+                details = json.loads(ev["details_json"])
+                self.assertEqual(details["heldout_test"]["status"], "PASS")
+                self.assertIsNotNone(ev["test_accuracy"])
+            conn.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

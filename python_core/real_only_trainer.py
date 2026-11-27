@@ -636,6 +636,7 @@ def record_real_only_training_in_db(
         f"{epochs} epochs, seed={seed}"
     )
 
+    dataset_ref = f"real-only:{res['data_sha256'][:12]}"
     with conn:
         conn.execute(
             """
@@ -644,11 +645,12 @@ def record_real_only_training_in_db(
                 baseline_metrics_json, candidate_metrics_json, improved,
                 approval_status, approved_by, created_by, created_at
             )
-            VALUES (?, ?, NULL, NULL, NULL, ?, ?, ?, ?, NULL, ?, ?)
+            VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, NULL, ?, ?)
             """,
             (
                 exp_id,
                 hypothesis,
+                dataset_ref,
                 json.dumps(baseline_metrics, ensure_ascii=False),
                 json.dumps(candidate_metrics, ensure_ascii=False),
                 1 if res["improved"] else 0,

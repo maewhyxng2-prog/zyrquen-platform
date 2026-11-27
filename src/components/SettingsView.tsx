@@ -2427,12 +2427,34 @@ export function SettingsView({
                       adminData!.pending_experiments!.map((exp) => {
                         let metricsInfo = '';
                         try {
-                          const b = JSON.parse(exp.baseline_metrics_json) as { initial_val_loss?: number };
+                          const b = JSON.parse(exp.baseline_metrics_json) as {
+                            initial_val_loss?: number;
+                            baseline_anchor_loss?: number;
+                            majority_class_test_accuracy?: number;
+                          };
                           const c = JSON.parse(exp.candidate_metrics_json) as {
+                            training_focus?: string;
                             final_val_loss?: number;
                             val_perplexity?: number;
+                            retention_rate?: number;
+                            forgetting_loss_delta?: number;
+                            final_metrics?: {
+                              val?: { loss?: number };
+                              test?: { accuracy?: number };
+                            };
                           };
-                          metricsInfo = `val_loss: ${b.initial_val_loss?.toFixed(4) ?? '-'} → ${c.final_val_loss?.toFixed(4) ?? '-'} (ppl ${c.val_perplexity?.toFixed(2) ?? '-'})`;
+                          if (c.training_focus === 'real_only_jsonl_ast_classifier' && c.final_metrics) {
+                            const astValLoss = c.final_metrics.val?.loss;
+                            const astTestAcc = c.final_metrics.test?.accuracy;
+                            const majAcc = b.majority_class_test_accuracy;
+                            metricsInfo = `AST val_loss: ${astValLoss?.toFixed(4) ?? '-'} · test_acc: ${
+                              astTestAcc != null ? `${(astTestAcc * 100).toFixed(1)}%` : '-'
+                            } (baseline ${majAcc != null ? `${(majAcc * 100).toFixed(1)}%` : '-'})`;
+                          } else if (typeof c.retention_rate === 'number') {
+                            metricsInfo = `anchor_loss: ${b.baseline_anchor_loss?.toFixed(4) ?? '-'} → ${c.final_val_loss?.toFixed(4) ?? '-'} · retention ${(c.retention_rate * 100).toFixed(1)}%`;
+                          } else {
+                            metricsInfo = `val_loss: ${b.initial_val_loss?.toFixed(4) ?? '-'} → ${c.final_val_loss?.toFixed(4) ?? '-'} (ppl ${c.val_perplexity?.toFixed(2) ?? '-'})`;
+                          }
                         } catch {
                           // ignore malformed metrics JSON
                         }

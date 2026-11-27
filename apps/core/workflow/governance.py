@@ -11,6 +11,22 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 
+TIER2_GATED_ACTIONS: frozenset[str] = frozenset(
+    {
+        "git.merge_main",
+        "git.push",
+        "training.execute",
+        "model.stage",
+        "model.promote",
+        "model.rollback",
+        "deploy.production",
+        "compute.paid_gpu",
+        "architecture.modify",
+        "data.delete",
+    }
+)
+
+
 class ApprovalViolationError(PermissionError):
     """Raised when a Tier-2 Approval Gate ticket is missing, unapproved, expired, forged, or already consumed."""
 
@@ -224,6 +240,9 @@ class WorkflowGovernance:
         *,
         expected_action_type: str | None = None,
         expected_scope: str | None = None,
+        expected_run_id: str | None = None,
+        expected_step_key: str | None = None,
+        expected_model_version: str | None = None,
     ) -> dict[str, Any]:
         clean_id = str(approval_id or "").strip()
         if not clean_id:
@@ -236,6 +255,16 @@ class WorkflowGovernance:
                 f"Approval {clean_id} action_type={approval.get('action_type')!r} "
                 f"does not match required {expected_action_type!r}."
             )
+        if expected_run_id is not None and str(approval.get("run_id") or "") != str(expected_run_id):
+            raise ApprovalViolationError(
+                f"Approval {clean_id} run_id={approval.get('run_id')!r} "
+                f"does not match required {expected_run_id!r}."
+            )
+        if expected_step_key is not None and str(approval.get("step_key") or "") != str(expected_step_key):
+            raise ApprovalViolationError(
+                f"Approval {clean_id} step_key={approval.get('step_key')!r} "
+                f"does not match required {expected_step_key!r}."
+            )
         if approval.get("status") != "approved":
             raise ApprovalViolationError(
                 f"Approval {clean_id} is not in 'approved' state (status={approval.get('status')!r})."
@@ -244,6 +273,13 @@ class WorkflowGovernance:
             raise ApprovalViolationError(
                 f"Approval {clean_id} scope={approval.get('scope')!r} does not authorize {expected_scope!r}."
             )
+        if expected_model_version is not None:
+            model_scope = f"model:{expected_model_version}"
+            actual_scope = str(approval.get("scope") or "")
+            if not _scope_matches(actual_scope, model_scope) and actual_scope != str(expected_model_version):
+                raise ApprovalViolationError(
+                    f"Approval {clean_id} scope={actual_scope!r} does not authorize model {expected_model_version!r}."
+                )
         try:
             expires_at = datetime.fromisoformat(str(approval["expires_at"]))
         except (KeyError, TypeError, ValueError) as exc:
@@ -272,11 +308,17 @@ class WorkflowGovernance:
         *,
         expected_action_type: str | None = None,
         expected_scope: str | None = None,
+        expected_run_id: str | None = None,
+        expected_step_key: str | None = None,
+        expected_model_version: str | None = None,
     ) -> dict[str, Any]:
         approval = self.verify_approval_readonly(
             approval_id,
             expected_action_type=expected_action_type,
             expected_scope=expected_scope,
+            expected_run_id=expected_run_id,
+            expected_step_key=expected_step_key,
+            expected_model_version=expected_model_version,
         )
         now_iso = datetime.now(timezone.utc).isoformat()
         consumed = self.store.consume_approval(approval["id"], consumed_at=now_iso)

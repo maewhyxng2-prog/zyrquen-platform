@@ -2472,27 +2472,124 @@ def _score_interpolated_ngram(
     return total_log_prob / total_preds, correct / total_preds, total_preds
 
 
-def evaluate_checkpoint_heldout(conn: sqlite3.Connection, ckpt_row: sqlite3.Row) -> dict | None:
-    weights_path = Path(ckpt_row["weights_path"])
-    ds = conn.execute("SELECT records_json FROM datasets WHERE id=?", (ckpt_row["dataset_id"],)).fetchone()
-    if not weights_path.exists() or not ds:
-        return None
-    splits = json.loads(ds["records_json"])
-    test_lines = splits.get("test", [])
-    if str(ckpt_row["eval_status"]).startswith("NEURAL") or str(weights_path).endswith(".gz"):
-        n_model, n_tok, _ = NativeTransformerLM.load_checkpoint(weights_path)
-        test_seqs = [n_tok.encode(ln, add_bos=True, add_eos=True) for ln in test_lines if ln.strip()]
+def evaluate_checkpoint_heldout(conn: sqlite3.Connection, ckpt_row: sqlite3.Row) -> dict:
+    raw_weights = str(ckpt_row["weights_path"] or "").strip()
+    if not raw_weights:
+        return {"ok": False, "status": "BLOCKED", "error": "Checkpoint weights_path is empty"}
+    weights_path = Path(raw_weights)
+    if weights_path.is_symlink() or not weights_path.is_file():
+        return {"ok": False, "status": "BLOCKED", "error": "Checkpoint weights file missing or invalid on disk"}
+
+    actual_sha = hashlib.sha256(weights_path.read_bytes()).hexdigest()
+    exp_row = conn.execute(
+        "SELECT candidate_metrics_json FROM experiments WHERE candidate_ckpt_id=? LIMIT 1",
+        (ckpt_row["id"],),
+    ).fetchone()
+    exp_cand: dict = {}
+    if exp_row and exp_row["candidate_metrics_json"]:
+        try:
+            exp_cand = json.loads(exp_row["candidate_metrics_json"])
+        except Exception:
+            exp_cand = {}
+    recorded_sha = str(exp_cand.get("checkpoint_sha256") or "").strip()
+    if recorded_sha and actual_sha != recorded_sha:
+        return {
+            "ok": False,
+            "status": "FAILED",
+            "error": "Checkpoint SHA-256 verification failed (artifact modified after promotion)",
+        }
+
+    eval_status = str(ckpt_row["eval_status"] or "")
+    dataset_id = str(ckpt_row["dataset_id"] or "")
+
+    # 1. Real-only AST linear classifier checkpoint (.json)
+    if eval_status.startswith("AST") or int(ckpt_row["ngram_order"] or 0) < 0:
+        try:
+            ast_ckpt = json.loads(weights_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return {"ok": False, "status": "FAILED", "error": f"Invalid AST checkpoint JSON: {exc}"}
+        if ast_ckpt.get("schema") != "zyrquen.real_only_ast_classifier.v1.1":
+            return {"ok": False, "status": "FAILED", "error": "Unrecognized AST checkpoint schema"}
+        weights_vec = ast_ckpt.get("weights")
+        if not isinstance(weights_vec, list) or not all(
+            isinstance(w, (int, float)) and math.isfinite(float(w)) for w in weights_vec
+        ):
+            return {"ok": False, "status": "FAILED", "error": "Non-finite or invalid AST checkpoint weights"}
+        report_path_str = str(exp_cand.get("report_path") or "").strip()
+        if not report_path_str or not Path(report_path_str).is_file():
+            return {
+                "ok": False,
+                "status": "BLOCKED",
+                "error": "Verified real-only evaluation_report.json missing on disk",
+            }
+        try:
+            report_obj = json.loads(Path(report_path_str).read_text(encoding="utf-8"))
+        except Exception as exc:
+            return {"ok": False, "status": "FAILED", "error": f"Corrupt evaluation_report.json: {exc}"}
+        if str(report_obj.get("checkpoint_sha256") or "") != actual_sha:
+            return {
+                "ok": False,
+                "status": "FAILED",
+                "error": "evaluation_report.json checkpoint_sha256 mismatch",
+            }
+        if int(report_obj.get("leak_count") or 0) > 0:
+            return {"ok": False, "status": "FAILED", "error": "Data leakage recorded in evaluation report"}
+        test_m = (report_obj.get("final_metrics") or {}).get("test") or {}
+        test_acc = test_m.get("accuracy")
+        test_loss = test_m.get("loss")
+        if test_acc is None or test_loss is None:
+            return {"ok": False, "status": "NOT_RUN", "error": "AST evaluation report lacks test metrics"}
+        splits_info = ((report_obj.get("dataset_summary") or {}).get("splits") or {})
+        return {
+            "ok": True,
+            "engine": "real_only_ast_classifier",
+            "test_records": int(splits_info.get("test") or 0),
+            "test_accuracy": float(test_acc),
+            "test_perplexity": round(math.exp(min(float(test_loss), 20.0)), 3),
+            "checkpoint_sha256": actual_sha,
+        }
+
+    # 2. Native Neural Transformer checkpoint (.json.gz)
+    ds = conn.execute("SELECT records_json FROM datasets WHERE id=?", (dataset_id,)).fetchone()
+    if eval_status.startswith("NEURAL") or str(weights_path).endswith(".gz"):
+        try:
+            n_model, n_tok, _ = NativeTransformerLM.load_checkpoint(weights_path)
+        except Exception as exc:
+            return {"ok": False, "status": "FAILED", "error": f"Failed to load neural checkpoint: {exc}"}
+        if not ds and dataset_id == "continual-curriculum":
+            ds = conn.execute(
+                "SELECT records_json FROM datasets WHERE leakage_detected=0 ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+        if not ds:
+            return {
+                "ok": False,
+                "status": "BLOCKED" if dataset_id != "continual-curriculum" else "NOT_RUN",
+                "error": "Training/held-out dataset missing for neural checkpoint",
+            }
+        splits = json.loads(ds["records_json"])
+        test_lines = splits.get("test", [])
+        test_seqs = [n_tok.encode(ln, add_bos=True, add_eos=True) for ln in test_lines if str(ln).strip()]
         n_eval = n_model.evaluate_sequences(test_seqs)
         if n_eval["tokens"] == 0:
-            return {"test_records": len(test_lines), "test_accuracy": 0.0, "test_perplexity": ckpt_row["perplexity"]}
+            return {"ok": False, "status": "NOT_RUN", "error": "Held-out test split contains zero tokens"}
         return {
+            "ok": True,
             "test_records": len(test_lines),
             "test_tokens": n_eval["tokens"],
             "test_accuracy": n_eval["accuracy"],
             "test_perplexity": n_eval["perplexity"],
         }
-    with open(weights_path, "r", encoding="utf-8") as f:
-        weights = json.load(f)
+
+    # 3. N-Gram JSON checkpoint
+    if not ds:
+        return {"ok": False, "status": "BLOCKED", "error": "Training dataset missing for N-gram checkpoint"}
+    splits = json.loads(ds["records_json"])
+    test_lines = splits.get("test", [])
+    try:
+        with open(weights_path, "r", encoding="utf-8") as f:
+            weights = json.load(f)
+    except Exception as exc:
+        return {"ok": False, "status": "FAILED", "error": f"Failed to parse N-gram weights: {exc}"}
     bigrams = weights.get("bigrams", {})
     trigrams = weights.get("trigrams", {})
     unigrams = weights.get("unigrams", {})
@@ -2502,8 +2599,9 @@ def evaluate_checkpoint_heldout(conn: sqlite3.Connection, ckpt_row: sqlite3.Row)
         test_lines, bigrams, trigrams, unigrams, vocab_size
     )
     if total_preds == 0:
-        return {"test_records": len(test_lines), "test_accuracy": 0.0, "test_perplexity": ckpt_row["perplexity"]}
+        return {"ok": False, "status": "NOT_RUN", "error": "Held-out test split contains zero N-gram tokens"}
     return {
+        "ok": True,
         "test_records": len(test_lines),
         "test_tokens": total_preds,
         "test_accuracy": round(acc, 4),
@@ -2587,13 +2685,17 @@ def handle_run_evaluation(payload: dict) -> dict:
 
     if latest_ckpt:
         heldout = evaluate_checkpoint_heldout(conn, latest_ckpt)
-        if heldout:
+        if heldout and heldout.get("ok") is True:
             test_acc = heldout["test_accuracy"]
             test_ppl = heldout["test_perplexity"]
-            heldout_detail = {"status": "PASS", "checkpoint_version": latest_ckpt["version"], **heldout}
+            heldout_detail = {
+                "status": "PASS",
+                "checkpoint_version": latest_ckpt["version"],
+                **{k: v for k, v in heldout.items() if k != "ok"},
+            }
             if prev_ckpt:
                 prev_heldout = evaluate_checkpoint_heldout(conn, prev_ckpt)
-                if prev_heldout:
+                if prev_heldout and prev_heldout.get("ok") is True:
                     baseline_delta = {
                         "baseline_version": prev_ckpt["version"],
                         "current_version": latest_ckpt["version"],
@@ -2601,17 +2703,18 @@ def handle_run_evaluation(payload: dict) -> dict:
                         "perplexity_delta": round(test_ppl - prev_heldout["test_perplexity"], 3),
                     }
         else:
-            test_acc = latest_ckpt["eval_accuracy"]
-            test_ppl = latest_ckpt["perplexity"]
+            err_status = str((heldout or {}).get("status") or "BLOCKED")
             heldout_detail = {
-                "status": "WARN",
+                "status": err_status,
                 "checkpoint_version": latest_ckpt["version"],
-                "reason": "Checkpoint weights or dataset missing; used stored metrics",
+                "reason": (heldout or {}).get("error") or "Held-out checkpoint evaluation failed",
             }
 
-    if math_score < 1.0 or planning_score < 1.0:
+    if math_score < 1.0 or planning_score < 1.0 or (latest_ckpt and heldout_detail["status"] == "FAILED"):
         overall_status = "FAILED"
-    elif not latest_ckpt or total_triples == 0:
+    elif latest_ckpt and heldout_detail["status"] == "BLOCKED":
+        overall_status = "BLOCKED"
+    elif not latest_ckpt or total_triples == 0 or heldout_detail["status"] != "PASS":
         overall_status = "PARTIAL"
     else:
         overall_status = "VERIFIED"
@@ -4652,7 +4755,7 @@ def handle_infer(payload: dict) -> dict:
     )
     if mode in ("auto", "model") and not is_explicit_math_cmd and allow_generative_ckpt:
         neural_ckpt = conn.execute(
-            "SELECT * FROM checkpoints WHERE eval_status LIKE 'NEURAL%' ORDER BY version DESC LIMIT 1"
+            "SELECT * FROM checkpoints WHERE eval_status LIKE 'NEURAL%' AND weights_path LIKE '%.gz' ORDER BY version DESC LIMIT 1"
         ).fetchone()
         if neural_ckpt and model_policy in ("neural_transformer_priority", "balanced_hybrid") and Path(neural_ckpt["weights_path"]).exists():
             t0 = time.perf_counter()
