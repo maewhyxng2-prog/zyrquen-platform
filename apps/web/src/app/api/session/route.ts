@@ -100,7 +100,7 @@ function buildSessionResponse(
       ? user.is_active
       : typeof user.isActive === "boolean"
         ? user.isActive
-        : true;
+        : false;
   const emailVerified =
     typeof user.emailVerified === "boolean"
       ? user.emailVerified
