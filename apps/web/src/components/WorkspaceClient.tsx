@@ -226,7 +226,10 @@ export function WorkspaceClient({
           applySession({
             authenticated: false,
             email: null,
+            userId: null,
             role: null,
+            verified: false,
+            emailVerified: false,
             error: "ไม่สามารถตรวจสอบสถานะเซสชันปัจจุบันได้",
           });
           setSessionReady(true);
@@ -782,8 +785,10 @@ export function WorkspaceClient({
         applySession({
           authenticated: false,
           email: null,
+          userId: null,
           role: null,
-          verified: true,
+          verified: false,
+          emailVerified: false,
         });
         setError(
           "เซสชันของคุณหมดอายุหรือไม่ถูกต้อง กรุณาเข้าสู่ระบบใหม่อีกครั้งเพื่อใช้งานต่อ",

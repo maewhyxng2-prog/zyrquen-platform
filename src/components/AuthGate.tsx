@@ -139,7 +139,18 @@ export function AuthGate({
             error?: string;
           }
         | undefined;
-      if (!data || data.type !== 'ZYRQUEN_OAUTH_RESULT') return;
+      if (!data) return;
+      if (data.type === 'OAUTH_AUTH_SUCCESS' && data.token && data.user) {
+        setOauthPending(null);
+        onAuthenticatedRef.current(data.token, data.user);
+        return;
+      }
+      if (data.type === 'OAUTH_AUTH_ERROR') {
+        setOauthPending(null);
+        setError(data.error || 'การเข้าสู่ระบบผ่านผู้ให้บริการภายนอกไม่สำเร็จ');
+        return;
+      }
+      if (data.type !== 'ZYRQUEN_OAUTH_RESULT') return;
       setOauthPending(null);
       if (data.ok && data.token && data.user) {
         onAuthenticatedRef.current(data.token, data.user);

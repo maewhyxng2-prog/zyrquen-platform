@@ -5,8 +5,11 @@ const routes: Record<string, ReadonlySet<string>> = {
     "v1/native-ai/health",
     "auth/me",
     "auth/providers",
+    "auth/identities",
     "auth/oauth/google/url",
     "auth/oauth/github/url",
+    "auth/oauth/google/callback",
+    "auth/oauth/github/callback",
     "users/me",
     "users/me/usage",
     "users/me/quota",
@@ -28,6 +31,7 @@ const routes: Record<string, ReadonlySet<string>> = {
     "auth/login",
     "auth/register",
     "auth/logout",
+    "auth/verify-email",
     "auth/verification/resend",
     "users/me/api-keys/bulk-revoke",
     "v1/native-ai/infer",
@@ -37,6 +41,10 @@ const routes: Record<string, ReadonlySet<string>> = {
     "training/runs",
   ]),
   PATCH: new Set(["users/me"]),
+  DELETE: new Set([
+    "auth/identities/google",
+    "auth/identities/github",
+  ]),
 };
 
 export function isAllowedBackendRoute(method: string, path: string): boolean {

@@ -259,7 +259,19 @@ export function SettingsView({
             error?: string;
           }
         | undefined;
-      if (!data || data.type !== 'ZYRQUEN_OAUTH_RESULT' || data.intent !== 'link') return;
+      if (!data) return;
+      if (data.type === 'OAUTH_LINK_SUCCESS') {
+        setLinkingProvider(null);
+        setAccountNotice(`เชื่อมต่อบัญชี ${data.provider === 'github' ? 'GitHub' : 'Google'} สำเร็จแล้ว`);
+        void loadAccountSecurity();
+        return;
+      }
+      if (data.type === 'OAUTH_AUTH_ERROR') {
+        setLinkingProvider(null);
+        setError(data.error || 'ไม่สามารถเชื่อมต่อบัญชีภายนอกได้');
+        return;
+      }
+      if (data.type !== 'ZYRQUEN_OAUTH_RESULT' || data.intent !== 'link') return;
       setLinkingProvider(null);
       if (data.ok) {
         setAccountNotice(`เชื่อมต่อบัญชี ${data.provider === 'github' ? 'GitHub' : 'Google'} สำเร็จแล้ว`);

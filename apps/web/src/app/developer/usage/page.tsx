@@ -84,25 +84,35 @@ export default function DeveloperUsagePage() {
   const [quotaError, setQuotaError] = useState("");
 
   useEffect(() => {
+    let active = true;
     const refreshSession = () => {
       readSession()
         .then((current) => {
+          if (!active) return;
           if (sessionRef.current?.userId !== current.userId) {
             setUsage(null);
             setQuota(null);
             setUsageOwnerId(null);
-            setUsageLoading(true);
+            setUsageLoading(Boolean(current.authenticated && current.userId));
             setUsageError("");
             setQuotaError("");
+          } else if (!current.authenticated) {
+            setUsageLoading(false);
           }
           sessionRef.current = current;
           setSession(current);
           setSessionReady(true);
         })
         .catch(() => {
-          const unavailableSession = {
+          if (!active) return;
+          setUsageLoading(false);
+          const unavailableSession: Session = {
             authenticated: false,
             email: null,
+            userId: null,
+            role: null,
+            verified: false,
+            emailVerified: false,
             error: "ไม่สามารถตรวจสอบสถานะเซสชันปัจจุบันได้",
           };
           sessionRef.current = unavailableSession;
@@ -112,18 +122,20 @@ export default function DeveloperUsagePage() {
     };
     refreshSession();
     window.addEventListener("zyrquen:session-change", refreshSession);
-    return () =>
+    return () => {
+      active = false;
       window.removeEventListener("zyrquen:session-change", refreshSession);
+    };
   }, []);
 
   useEffect(() => {
-    if (sessionReady && !session?.authenticated) {
+    if (sessionReady && (!session?.authenticated || !session.userId)) {
       router.replace("/login");
     }
-  }, [sessionReady, session, router]);
+  }, [sessionReady, session?.authenticated, session?.userId, router]);
 
   useEffect(() => {
-    if (!sessionReady || !session?.authenticated) {
+    if (!sessionReady || !session?.authenticated || !session.userId) {
       return;
     }
     const ownerId = session.userId;

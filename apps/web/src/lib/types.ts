@@ -53,12 +53,45 @@ export type NativeModelRegistryResponse = {
 export type Session = {
   authenticated: boolean;
   email: string | null;
-  userId?: string | null;
-  role?: string | null;
-  verified?: boolean;
-  emailVerified?: boolean;
+  userId: string | null;
+  role: string | null;
+  verified: boolean;
+  emailVerified: boolean;
   expired?: boolean;
   error?: string | null;
+};
+
+export type AuditEntry = {
+  id: string;
+  actor_user_id: string | null;
+  actor_email?: string | null;
+  action: string;
+  resource_id: string | null;
+  outcome?: string | null;
+  created_at: string;
+};
+
+export type AuthProviderConfigStatus = {
+  configured: boolean;
+  name?: string;
+};
+
+export type AuthProvidersResponse = {
+  providers: {
+    github: AuthProviderConfigStatus;
+    google: AuthProviderConfigStatus;
+  };
+};
+
+export type OAuthIdentity = {
+  id: string;
+  provider: "github" | "google";
+  provider_user_id: string;
+  provider_email: string | null;
+  email_verified: boolean;
+  display_name: string | null;
+  avatar_url: string | null;
+  linked_at: string;
 };
 
 export type InferenceResponse = {

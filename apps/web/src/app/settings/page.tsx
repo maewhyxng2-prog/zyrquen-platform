@@ -14,7 +14,11 @@ import {
 } from "@/lib/conversation-api";
 import { getMyProfile, updateMyProfile } from "@/lib/user-api";
 import { belongsToAccount } from "@/lib/user-state";
-import type { Session } from "@/lib/types";
+import type {
+  AuthProvidersResponse,
+  OAuthIdentity,
+  Session,
+} from "@/lib/types";
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -33,20 +37,33 @@ export default function SettingsPage() {
   const profileSavingRef = useRef<string | null>(null);
   const [profileError, setProfileError] = useState("");
   const [profileSuccess, setProfileSuccess] = useState("");
+  const [identities, setIdentities] = useState<OAuthIdentity[]>([]);
+  const [providers, setProviders] = useState<AuthProvidersResponse["providers"] | null>(null);
+  const [oauthNotice, setOauthNotice] = useState("");
+  const [oauthError, setOauthError] = useState("");
+  const [oauthBusy, setOauthBusy] = useState<string | null>(null);
+  const [resendingVerify, setResendingVerify] = useState(false);
+  const [verifyNotice, setVerifyNotice] = useState("");
 
   useEffect(() => {
+    let active = true;
     const refreshSession = () => {
       readSession()
         .then((current) => {
+          if (!active) return;
           sessionRef.current = current;
           setSession(current);
           setSessionReady(true);
         })
         .catch(() => {
-          const unavailableSession = {
+          if (!active) return;
+          const unavailableSession: Session = {
             authenticated: false,
             email: null,
+            userId: null,
             role: null,
+            verified: false,
+            emailVerified: false,
             error: "ไม่สามารถตรวจสอบสถานะเซสชันปัจจุบันได้",
           };
           sessionRef.current = unavailableSession;
@@ -56,7 +73,10 @@ export default function SettingsPage() {
     };
     refreshSession();
     window.addEventListener("zyrquen:session-change", refreshSession);
-    return () => window.removeEventListener("zyrquen:session-change", refreshSession);
+    return () => {
+      active = false;
+      window.removeEventListener("zyrquen:session-change", refreshSession);
+    };
   }, []);
 
   useEffect(() => {
@@ -98,10 +118,56 @@ export default function SettingsPage() {
         setProfileLoading(false);
       });
 
+    void Promise.all([
+      fetch("/api/backend/auth/providers", { cache: "no-store" }).then((r) =>
+        r.ok ? r.json() : null,
+      ),
+      fetch("/api/backend/auth/identities", { cache: "no-store" }).then((r) =>
+        r.ok ? r.json() : null,
+      ),
+    ])
+      .then(
+        ([provData, idData]: [
+          AuthProvidersResponse | null,
+          { identities?: OAuthIdentity[] } | null,
+        ]) => {
+          if (!isCurrentOwner()) return;
+          if (provData?.providers) setProviders(provData.providers);
+          if (Array.isArray(idData?.identities)) setIdentities(idData.identities);
+        },
+      )
+      .catch(() => {
+        // non-fatal
+      });
+
     return () => {
       active = false;
     };
   }, [sessionReady, session?.authenticated, session?.userId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const linked = params.get("oauth_linked")?.trim();
+    const err = params.get("oauth_error")?.trim();
+    if (!linked && !err) return;
+    if (linked) {
+      setOauthNotice(
+        `เชื่อมต่อบัญชี ${linked === "github" ? "GitHub" : "Google"} เรียบร้อยแล้ว`,
+      );
+      params.delete("oauth_linked");
+    }
+    if (err) {
+      setOauthError(err);
+      params.delete("oauth_error");
+    }
+    const nextSearch = params.toString();
+    window.history.replaceState(
+      {},
+      "",
+      `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}`,
+    );
+  }, []);
 
   async function clearConversationHistory() {
     setClearing(true);
@@ -186,11 +252,13 @@ export default function SettingsPage() {
       const payload = (await response.json().catch(() => null)) as {
         detail?: unknown;
       } | null;
-      const signedOutSession = {
+      const signedOutSession: Session = {
         authenticated: false,
         email: null,
+        userId: null,
         role: null,
-        verified: true,
+        verified: false,
+        emailVerified: false,
       };
       sessionRef.current = signedOutSession;
       setSession(signedOutSession);
@@ -214,6 +282,92 @@ export default function SettingsPage() {
       );
     } finally {
       setSigningOut(false);
+    }
+  }
+
+  async function linkOAuthAccount(provider: "github" | "google") {
+    if (oauthBusy) return;
+    setOauthBusy(provider);
+    setOauthError("");
+    setOauthNotice("");
+    try {
+      const origin =
+        typeof window !== "undefined" ? window.location.origin : "";
+      const resp = await fetch(
+        `/api/backend/auth/oauth/${provider}/url?intent=link&origin=${encodeURIComponent(origin)}`,
+        { cache: "no-store" },
+      );
+      const data = (await resp.json().catch(() => null)) as {
+        url?: string;
+        detail?: string;
+      } | null;
+      if (!resp.ok || !data?.url) {
+        setOauthError(
+          data?.detail ||
+            `ไม่สามารถเริ่มเชื่อมต่อบัญชี ${provider === "github" ? "GitHub" : "Google"} ได้`,
+        );
+        return;
+      }
+      window.location.assign(data.url);
+    } catch {
+      setOauthError("ไม่สามารถเชื่อมต่อบริการ OAuth ได้");
+    } finally {
+      setOauthBusy(null);
+    }
+  }
+
+  async function unlinkOAuthAccount(provider: "github" | "google") {
+    if (oauthBusy) return;
+    setOauthBusy(provider);
+    setOauthError("");
+    setOauthNotice("");
+    try {
+      const resp = await fetch(`/api/backend/auth/identities/${provider}`, {
+        method: "DELETE",
+      });
+      const data = (await resp.json().catch(() => null)) as {
+        detail?: string;
+      } | null;
+      if (!resp.ok) {
+        setOauthError(data?.detail || "ไม่สามารถยกเลิกการเชื่อมต่อบัญชีได้");
+        return;
+      }
+      setIdentities((prev) => prev.filter((item) => item.provider !== provider));
+      setOauthNotice(
+        `ยกเลิกการเชื่อมต่อบัญชี ${provider === "github" ? "GitHub" : "Google"} แล้ว`,
+      );
+    } catch {
+      setOauthError("ไม่สามารถยกเลิกการเชื่อมต่อบัญชีได้");
+    } finally {
+      setOauthBusy(null);
+    }
+  }
+
+  async function resendVerification() {
+    if (resendingVerify) return;
+    setResendingVerify(true);
+    setVerifyNotice("");
+    try {
+      const resp = await fetch("/api/backend/auth/verification/resend", {
+        method: "POST",
+      });
+      const data = (await resp.json().catch(() => null)) as {
+        emailSent?: boolean;
+        detail?: string;
+      } | null;
+      if (!resp.ok) {
+        setVerifyNotice(data?.detail || "ไม่สามารถส่งลิงก์ยืนยันอีเมลได้");
+        return;
+      }
+      setVerifyNotice(
+        data?.emailSent
+          ? "ส่งลิงก์ยืนยันอีเมลแล้ว กรุณาตรวจสอบกล่องจดหมายของคุณ"
+          : data?.detail || "ระบบยังไม่ได้ตั้งค่าผู้ให้บริการส่งอีเมล",
+      );
+    } catch {
+      setVerifyNotice("ไม่สามารถติดต่อบริการส่งอีเมลยืนยันได้");
+    } finally {
+      setResendingVerify(false);
     }
   }
 
@@ -283,6 +437,26 @@ export default function SettingsPage() {
           <div className="settings-info">
             <span>บัญชีที่ใช้งานอยู่</span>
             <code>{session.email || "เข้าสู่ระบบแล้ว"}</code>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginTop: "6px" }}>
+              <StatusBadge tone={session.emailVerified ? "good" : "warn"}>
+                {session.emailVerified ? "ยืนยันอีเมลแล้ว" : "Verify Email · ยังไม่ยืนยันอีเมล"}
+              </StatusBadge>
+              {!session.emailVerified && (
+                <button
+                  className="button button-secondary"
+                  disabled={resendingVerify}
+                  onClick={() => void resendVerification()}
+                  type="button"
+                >
+                  {resendingVerify ? "กำลังส่ง..." : "ส่งลิงก์ยืนยันอีเมล"}
+                </button>
+              )}
+            </div>
+            {verifyNotice && (
+              <p className="settings-confirmation" role="status">
+                {verifyNotice}
+              </p>
+            )}
             <p>อัปเดตอีเมลประจำบัญชี หรือออกจากระบบบนอุปกรณ์ปัจจุบัน</p>
           </div>
           {!session.userId ? (
@@ -378,6 +552,68 @@ export default function SettingsPage() {
           {clearError && (
             <p className="form-alert form-alert-error" role="alert">
               <Icon name="close" size={15} /> {clearError}
+            </p>
+          )}
+        </Panel>
+
+        <Panel className="settings-panel-wide">
+          <div className="panel-heading">
+            <div>
+              <div className="eyebrow">OAUTH 2.0 ACCOUNT LINKING</div>
+              <h2>บัญชีที่เชื่อมต่อ (GitHub &amp; Google)</h2>
+            </div>
+            <StatusBadge tone="info">{identities.length} เชื่อมต่อ</StatusBadge>
+          </div>
+          <div className="admin-list">
+            {(["github", "google"] as const).map((provider) => {
+              const linked = identities.find((item) => item.provider === provider);
+              const configured = providers ? providers[provider].configured : false;
+              const label = provider === "github" ? "GitHub" : "Google";
+              return (
+                <div className="admin-list-row" key={provider}>
+                  <div className="admin-list-main">
+                    <strong>{label} OAuth 2.0</strong>
+                    <span className="admin-list-meta">
+                      {linked
+                        ? `เชื่อมต่อแล้ว (${linked.provider_email || linked.display_name || linked.provider_user_id})`
+                        : configured
+                          ? "พร้อมเชื่อมต่อกับบัญชี ZYRQUEN"
+                          : "ยังไม่ได้ตั้งค่า OAuth Credentials ใน Backend"}
+                    </span>
+                  </div>
+                  <div className="workflow-actions">
+                    {linked ? (
+                      <button
+                        className="button button-secondary"
+                        disabled={oauthBusy !== null}
+                        onClick={() => void unlinkOAuthAccount(provider)}
+                        type="button"
+                      >
+                        {oauthBusy === provider ? "กำลังดำเนินการ..." : "ยกเลิกการเชื่อมต่อ"}
+                      </button>
+                    ) : (
+                      <button
+                        className="button button-secondary"
+                        disabled={oauthBusy !== null}
+                        onClick={() => void linkOAuthAccount(provider)}
+                        type="button"
+                      >
+                        {oauthBusy === provider ? "กำลังเชื่อมต่อ..." : `เชื่อมต่อ ${label}`}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {oauthNotice && (
+            <p className="settings-confirmation" role="status">
+              <Icon name="check-circle" size={15} /> {oauthNotice}
+            </p>
+          )}
+          {oauthError && (
+            <p className="form-alert form-alert-error" role="alert">
+              <Icon name="close" size={15} /> {oauthError}
             </p>
           )}
         </Panel>

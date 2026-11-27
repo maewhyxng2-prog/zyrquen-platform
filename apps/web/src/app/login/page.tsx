@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { Icon } from "@/components/Icon";
 import { StatusBadge } from "@/components/StatusBadge";
 import { readSession } from "@/lib/api";
+import type { AuthProvidersResponse, Session } from "@/lib/types";
 
 type Mode = "login" | "register";
 
@@ -65,18 +66,125 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [signedIn, setSignedIn] = useState(false);
+  const [session, setSession] = useState<Session | null>(null);
+  const [sessionReady, setSessionReady] = useState(false);
   const [oauthLoading, setOauthLoading] = useState<"github" | "google" | null>(null);
+  const [providers, setProviders] = useState<AuthProvidersResponse["providers"] | null>(null);
+
+  const signedIn = Boolean(session?.authenticated && session.userId);
 
   useEffect(() => {
-    readSession()
-      .then((session) => {
-        setSignedIn(session.authenticated);
-        if (!session.authenticated && session.expired) {
-          setError("เซสชันเดิมของคุณหมดอายุแล้ว กรุณาเข้าสู่ระบบใหม่อีกครั้ง");
-        }
+    let active = true;
+    const syncSession = () => {
+      readSession()
+        .then((current) => {
+          if (!active) return;
+          setSession(current);
+          setSessionReady(true);
+          if (!current.authenticated && current.expired) {
+            setError("เซสชันเดิมของคุณหมดอายุแล้ว กรุณาเข้าสู่ระบบใหม่อีกครั้ง");
+          } else if (!current.authenticated && current.error) {
+            setError(current.error);
+          }
+        })
+        .catch(() => {
+          if (!active) return;
+          setSession({
+            authenticated: false,
+            email: null,
+            userId: null,
+            role: null,
+            verified: false,
+            emailVerified: false,
+          });
+          setSessionReady(true);
+        });
+    };
+
+    syncSession();
+    window.addEventListener("zyrquen:session-change", syncSession);
+    return () => {
+      active = false;
+      window.removeEventListener("zyrquen:session-change", syncSession);
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/backend/auth/providers", { cache: "no-store" })
+      .then((resp) => (resp.ok ? resp.json() : null))
+      .then((data: AuthProvidersResponse | null) => {
+        if (!active || !data?.providers) return;
+        setProviders(data.providers);
       })
-      .catch(() => setSignedIn(false));
+      .catch(() => {
+        // leave provider availability as unknown
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const verifyToken = params.get("verify_token")?.trim();
+    const oauthError = params.get("oauth_error")?.trim();
+
+    if (oauthError) {
+      setError(oauthError);
+      params.delete("oauth_error");
+      const nextSearch = params.toString();
+      window.history.replaceState(
+        {},
+        "",
+        `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}`,
+      );
+    }
+
+    if (!verifyToken) return;
+    let active = true;
+
+    fetch("/api/backend/auth/verify-email", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: verifyToken }),
+    })
+      .then(async (resp) => {
+        const data = (await resp.json().catch(() => null)) as {
+          ok?: boolean;
+          detail?: string;
+          error?: string;
+        } | null;
+        if (!active) return;
+        if (!resp.ok) {
+          setError(
+            data?.detail ||
+              data?.error ||
+              "ลิงก์ยืนยันอีเมลไม่ถูกต้องหรือหมดอายุแล้ว",
+          );
+          return;
+        }
+        setNotice("ยืนยันอีเมลเรียบร้อยแล้ว บัญชีของคุณได้รับการยืนยันแล้ว");
+        window.dispatchEvent(new Event("zyrquen:session-change"));
+      })
+      .catch(() => {
+        if (!active) return;
+        setError("ไม่สามารถตรวจสอบโทเคนยืนยันอีเมลได้");
+      })
+      .finally(() => {
+        params.delete("verify_token");
+        const nextSearch = params.toString();
+        window.history.replaceState(
+          {},
+          "",
+          `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}`,
+        );
+      });
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   function switchMode(nextMode: Mode) {
@@ -121,10 +229,16 @@ export default function LoginPage() {
     const activeMode = mode;
 
     try {
+      let verificationNotice = "";
       if (activeMode === "register") {
-        await postJson("auth/register", { email: normalizedEmail, password });
+        const regResult = await postJson<{
+          verification?: { emailSent?: boolean; deliveryReason?: string | null };
+        }>("auth/register", { email: normalizedEmail, password });
         setMode("login");
-        setNotice("สร้างบัญชีเรียบร้อยแล้ว กำลังเข้าสู่ระบบ…");
+        verificationNotice = regResult.verification?.emailSent
+          ? "สร้างบัญชีเรียบร้อยแล้ว และส่งลิงก์ยืนยันอีเมลไปยังกล่องจดหมายของคุณแล้ว กำลังเข้าสู่ระบบ…"
+          : "สร้างบัญชีเรียบร้อยแล้ว (คุณสามารถยืนยันอีเมลได้จากแดชบอร์ดหรือหน้าการตั้งค่า) กำลังเข้าสู่ระบบ…";
+        setNotice(verificationNotice);
       }
 
       try {
@@ -132,7 +246,10 @@ export default function LoginPage() {
       } catch (reason) {
         if (activeMode === "register") {
           setPassword("");
-          setNotice("สร้างบัญชีเรียบร้อยแล้ว กรุณาเข้าสู่ระบบด้วยอีเมลและรหัสผ่านที่ตั้งไว้");
+          setNotice(
+            verificationNotice ||
+              "สร้างบัญชีเรียบร้อยแล้ว กรุณาเข้าสู่ระบบด้วยอีเมลและรหัสผ่านที่ตั้งไว้",
+          );
           return;
         }
         throw reason;
@@ -158,10 +275,17 @@ export default function LoginPage() {
     setNotice("");
     setOauthLoading(provider);
     try {
-      const response = await fetch(`/api/backend/auth/oauth/${provider}/url`, {
-        method: "GET",
-        cache: "no-store",
-      });
+      const originParam =
+        typeof window !== "undefined"
+          ? `?origin=${encodeURIComponent(window.location.origin)}`
+          : "";
+      const response = await fetch(
+        `/api/backend/auth/oauth/${provider}/url${originParam}`,
+        {
+          method: "GET",
+          cache: "no-store",
+        },
+      );
       const payload = (await response.json().catch(() => null)) as {
         url?: unknown;
         detail?: unknown;
@@ -198,11 +322,21 @@ export default function LoginPage() {
           />
           <div><span className="eyebrow">ZYRQUEN Ω∞</span><strong>แพลตฟอร์ม AI ระหว่างพัฒนา</strong></div>
         </div>
-        {signedIn ? (
+        {sessionReady && signedIn ? (
           <div className="auth-signed-in">
-            <StatusBadge tone="good" icon="check-circle">เซสชันพร้อมใช้งาน</StatusBadge>
+            <StatusBadge tone="good" icon="check-circle">
+              เซสชันพร้อมใช้งาน ({session?.role === "admin" ? "admin" : session?.role || "user"})
+            </StatusBadge>
             <h1 id="auth-title">คุณเข้าสู่ระบบแล้ว</h1>
-            <p>บัญชีของคุณพร้อมสำหรับเปิดพื้นที่ทำงานและสนทนากับ Native Model</p>
+            <p>
+              บัญชี {session?.email || ""} พร้อมสำหรับเปิดพื้นที่ทำงานและสนทนากับ Native Model
+            </p>
+            {session?.emailVerified === false && (
+              <div className="form-alert" role="status">
+                <Icon name="shield" size={16} />
+                <span>Verify Email: อีเมลของบัญชียังไม่ได้รับการยืนยัน</span>
+              </div>
+            )}
             <Link className="button button-primary full-button" href="/workspace">ไปยังพื้นที่ทำงาน AI <Icon name="arrow-right" size={16} /></Link>
           </div>
         ) : (
@@ -292,6 +426,7 @@ export default function LoginPage() {
               >
                 <Icon name="code" size={16} />
                 {oauthLoading === "github" ? "กำลังเชื่อมต่อ GitHub..." : "Login with GitHub"}
+                {providers && !providers.github.configured ? " (ยังไม่ตั้งค่า)" : ""}
               </button>
               <button
                 className="button button-secondary full-button"
@@ -301,6 +436,7 @@ export default function LoginPage() {
               >
                 <Icon name="user" size={16} />
                 {oauthLoading === "google" ? "กำลังเชื่อมต่อ Google..." : "Login with Google"}
+                {providers && !providers.google.configured ? " (ยังไม่ตั้งค่า)" : ""}
               </button>
             </div>
             <div className="auth-security-note"><Icon name="shield" size={15} /><span>ข้อมูลการเข้าสู่ระบบจะถูกส่งผ่านพร็อกซีฝั่งเซิร์ฟเวอร์ไปยัง API ที่กำหนดไว้ และจัดเก็บ Token ในคุกกี้แบบ HTTP-only</span></div>

@@ -91,6 +91,9 @@ export default function HomePage() {
   const [recentSearch, setRecentSearch] = useState("");
   const [homePrompt, setHomePrompt] = useState("");
   const [trackedUserId, setTrackedUserId] = useState<string | null>(null);
+  const [resendingVerification, setResendingVerification] = useState(false);
+  const [verificationNotice, setVerificationNotice] = useState("");
+  const [verificationError, setVerificationError] = useState("");
 
   const targetUserId =
     sessionReady && session?.authenticated ? (session.userId ?? null) : null;
@@ -101,6 +104,8 @@ export default function HomePage() {
     setConversationsError("");
     setRecentSearch("");
     setConversationsLoading(Boolean(targetUserId));
+    setVerificationNotice("");
+    setVerificationError("");
   }
 
   const groupedConversations = useMemo(
@@ -121,11 +126,72 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
-    syncSession();
-    window.addEventListener("zyrquen:session-change", syncSession);
-    return () =>
-      window.removeEventListener("zyrquen:session-change", syncSession);
-  }, [syncSession]);
+    let active = true;
+    const handleSync = () => {
+      readSession()
+        .then((current) => {
+          if (!active) return;
+          setSession(current);
+          setSessionReady(true);
+        })
+        .catch(() => {
+          if (!active) return;
+          setSession(null);
+          setSessionReady(true);
+        });
+    };
+    handleSync();
+    window.addEventListener("zyrquen:session-change", handleSync);
+    return () => {
+      active = false;
+      window.removeEventListener("zyrquen:session-change", handleSync);
+    };
+  }, []);
+
+  async function resendEmailVerification() {
+    if (resendingVerification) return;
+    setResendingVerification(true);
+    setVerificationNotice("");
+    setVerificationError("");
+    try {
+      const response = await fetch("/api/backend/auth/verification/resend", {
+        method: "POST",
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        alreadyVerified?: boolean;
+        emailSent?: boolean;
+        detail?: string;
+        verification?: { emailSent?: boolean; deliveryReason?: string | null };
+      } | null;
+      if (!response.ok) {
+        setVerificationError(
+          typeof payload?.detail === "string"
+            ? payload.detail
+            : "ไม่สามารถส่งลิงก์ยืนยันอีเมลได้ในขณะนี้",
+        );
+        return;
+      }
+      if (payload?.alreadyVerified) {
+        setVerificationNotice("อีเมลของคุณได้รับการยืนยันแล้ว");
+        syncSession();
+        return;
+      }
+      const sent = Boolean(payload?.emailSent ?? payload?.verification?.emailSent);
+      if (sent) {
+        setVerificationNotice("ส่งลิงก์ยืนยันอีเมลแล้ว กรุณาตรวจสอบกล่องจดหมายของคุณ");
+      } else {
+        setVerificationNotice(
+          typeof payload?.detail === "string"
+            ? payload.detail
+            : "ระบบยังไม่ได้ตั้งค่าผู้ให้บริการส่งอีเมล (RESEND_API_KEY / EMAIL_FROM)",
+        );
+      }
+    } catch {
+      setVerificationError("ไม่สามารถติดต่อบริการส่งลิงก์ยืนยันอีเมลได้");
+    } finally {
+      setResendingVerification(false);
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -203,6 +269,51 @@ export default function HomePage() {
 
   return (
     <div className="page-stack home-app-stack">
+      {sessionReady && session?.authenticated && session.emailVerified === false && (
+        <Panel
+          aria-label="Verify Email status notice"
+          className="notice-panel"
+          role="status"
+        >
+          <span className="notice-icon">
+            <Icon name="shield" size={18} />
+          </span>
+          <div style={{ flex: 1 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+              <StatusBadge icon="activity" tone="warn">
+                Verify Email
+              </StatusBadge>
+              <strong>บัญชีของคุณ ({session.email}) ยังไม่ได้ยืนยันอีเมล</strong>
+            </div>
+            <p>
+              กรุณาตรวจสอบกล่องจดหมายและคลิกลิงก์ยืนยันอีเมลเพื่อยืนยันความเป็นเจ้าของบัญชี
+              {verificationNotice ? ` · ${verificationNotice}` : ""}
+            </p>
+            {verificationError && (
+              <p className="form-alert form-alert-error" role="alert">
+                {verificationError}
+              </p>
+            )}
+            <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginTop: "8px" }}>
+              <button
+                className="button button-secondary"
+                disabled={resendingVerification}
+                onClick={() => void resendEmailVerification()}
+                type="button"
+              >
+                <Icon name="send" size={14} />
+                <span>
+                  {resendingVerification ? "กำลังส่ง..." : "ส่งลิงก์ยืนยันอีเมลอีกครั้ง"}
+                </span>
+              </button>
+              <Link className="button button-secondary" href="/settings">
+                <Icon name="settings" size={14} />
+                <span>จัดการบัญชี</span>
+              </Link>
+            </div>
+          </div>
+        </Panel>
+      )}
       <section aria-label="จุดเริ่มต้นใช้งาน ZYRQUEN Ω∞" className="home-launcher panel">
         <div className="home-launcher-top">
           <div className="home-identity">

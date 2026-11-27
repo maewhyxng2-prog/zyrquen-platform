@@ -37,7 +37,9 @@ function buildSessionResponse(
         authenticated: false,
         email: null,
         userId: null,
-        verified: true,
+        role: null,
+        verified: false,
+        emailVerified: false,
         expired: status === 401,
         error:
           status === 403
@@ -58,28 +60,55 @@ function buildSessionResponse(
         authenticated: false,
         email: null,
         userId: null,
+        role: null,
         verified: false,
+        emailVerified: false,
         error: `ตรวจสอบเซสชันไม่สำเร็จ (รหัสสถานะ ${status})`,
       },
       { status: 503, headers: { "Cache-Control": "no-store" } },
     );
   }
 
-  const user = payload as {
+  const nested =
+    payload.user && typeof payload.user === "object" && !Array.isArray(payload.user)
+      ? (payload.user as Record<string, unknown>)
+      : payload;
+
+  const user = nested as {
     id?: unknown;
+    userId?: unknown;
     email?: unknown;
     role?: unknown;
     is_active?: unknown;
+    isActive?: unknown;
     email_verified?: unknown;
+    emailVerified?: unknown;
   };
 
-  if (
-    typeof user.id !== "string" ||
-    !user.id ||
-    typeof user.email !== "string" ||
-    !user.email ||
-    user.is_active !== true
-  ) {
+  const resolvedId =
+    typeof user.id === "string" && user.id.trim()
+      ? user.id.trim()
+      : typeof user.userId === "string" && user.userId.trim()
+        ? user.userId.trim()
+        : null;
+  const resolvedEmail =
+    typeof user.email === "string" && user.email.trim()
+      ? user.email.trim().toLowerCase()
+      : null;
+  const isActive =
+    typeof user.is_active === "boolean"
+      ? user.is_active
+      : typeof user.isActive === "boolean"
+        ? user.isActive
+        : true;
+  const emailVerified =
+    typeof user.emailVerified === "boolean"
+      ? user.emailVerified
+      : typeof user.email_verified === "boolean"
+        ? user.email_verified
+        : true;
+
+  if (!resolvedId || !resolvedEmail || !isActive) {
     const response = NextResponse.json(
       {
         authenticated: false,
@@ -99,12 +128,11 @@ function buildSessionResponse(
   return NextResponse.json(
     {
       authenticated: true,
-      userId: user.id,
-      email: user.email.trim().toLowerCase(),
-      role: typeof user.role === "string" ? user.role.trim().toLowerCase() : null,
-      verified: true,
-      emailVerified:
-        typeof user.email_verified === "boolean" ? user.email_verified : true,
+      userId: resolvedId,
+      email: resolvedEmail,
+      role: typeof user.role === "string" && user.role.trim() ? user.role.trim().toLowerCase() : null,
+      verified: emailVerified,
+      emailVerified,
     },
     { headers: { "Cache-Control": "no-store" } },
   );
@@ -122,7 +150,8 @@ export async function GET(request: NextRequest) {
         email: null,
         userId: null,
         role: null,
-        verified: true,
+        verified: false,
+        emailVerified: false,
       },
       { headers: { "Cache-Control": "no-store" } },
     );
@@ -144,7 +173,9 @@ export async function GET(request: NextRequest) {
         authenticated: false,
         email: null,
         userId: null,
+        role: null,
         verified: false,
+        emailVerified: false,
         error: hasExplicitUrl
           ? "ค่า ZYRQUEN_API_BASE_URL ไม่ถูกต้องสำหรับตรวจสอบเซสชัน"
           : "BLOCKED: ยังไม่ได้กำหนดค่า ZYRQUEN_API_BASE_URL สำหรับตรวจสอบเซสชันในโหมด Production",
@@ -197,7 +228,9 @@ export async function GET(request: NextRequest) {
         authenticated: false,
         email: null,
         userId: null,
+        role: null,
         verified: false,
+        emailVerified: false,
         error: "BLOCKED: ไม่สามารถเชื่อมต่อบริการ ZYRQUEN API เพื่อยืนยันเซสชันได้",
       },
       { status: 503, headers: { "Cache-Control": "no-store" } },

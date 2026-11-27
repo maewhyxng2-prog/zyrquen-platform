@@ -12,8 +12,10 @@ import {
   apiRequest,
   buildModelRegistryMetadataFilename,
   downloadBackendFile,
+  normalizeAuditLogEntry,
   readSession,
 } from "@/lib/api";
+import type { AuditEntry, Session } from "@/lib/types";
 
 type AdminOverview = {
   users: number;
@@ -132,16 +134,10 @@ type AdminUser = {
   created_at: string;
 };
 
-type AuditEntry = {
-  id: string;
-  actor_user_id: string | null;
-  action: string;
-  resource_id: string | null;
-  created_at: string;
-};
-
 export default function AdminPage() {
   const router = useRouter();
+  const [session, setSession] = useState<Session | null>(null);
+  const sessionRef = useRef<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [overview, setOverview] = useState<AdminOverview | null>(null);
   const [users, setUsers] = useState<AdminUser[] | null>(null);
@@ -160,13 +156,16 @@ export default function AdminPage() {
 
   const fetchAdminData = useCallback(async (isCancelled?: () => boolean) => {
     try {
-      const session = await readSession();
+      const currentSession = await readSession();
       if (isCancelled?.()) return;
-      if (!session.authenticated) {
+      sessionRef.current = currentSession;
+      setSession(currentSession);
+
+      if (!currentSession.authenticated || !currentSession.userId) {
         router.replace("/login");
         return;
       }
-      if (session.role && session.role !== "admin") {
+      if (currentSession.role !== "admin") {
         setOverview(null);
         setUsers(null);
         setAuditLogs(null);
@@ -176,7 +175,7 @@ export default function AdminPage() {
       const results = await Promise.allSettled([
         apiRequest<AdminOverview>("admin/overview"),
         apiRequest<AdminUser[]>("admin/users"),
-        apiRequest<AuditEntry[]>("admin/audit-logs"),
+        apiRequest<unknown[]>("admin/audit-logs"),
       ]);
       if (isCancelled?.()) return;
       const failures = results.filter(
@@ -194,8 +193,24 @@ export default function AdminPage() {
         setError("");
       }
       if (results[0].status === "fulfilled") setOverview(results[0].value);
-      if (results[1].status === "fulfilled") setUsers(results[1].value);
-      if (results[2].status === "fulfilled") setAuditLogs(results[2].value);
+      const resolvedUsers =
+        results[1].status === "fulfilled" ? results[1].value : null;
+      if (resolvedUsers) setUsers(resolvedUsers);
+
+      if (results[2].status === "fulfilled") {
+        const userIdByEmail = new Map<string, string>();
+        for (const u of resolvedUsers ?? []) {
+          if (u.email && u.id) {
+            userIdByEmail.set(u.email.trim().toLowerCase(), u.id);
+          }
+        }
+        const normalizedEntries = Array.isArray(results[2].value)
+          ? results[2].value.map((entry) =>
+              normalizeAuditLogEntry(entry, currentSession, userIdByEmail),
+            )
+          : [];
+        setAuditLogs(normalizedEntries);
+      }
     } catch (reason) {
       if (isCancelled?.()) return;
       setError(
@@ -397,14 +412,15 @@ export default function AdminPage() {
 
   useEffect(() => {
     let active = true;
-    void (async () => {
-      await Promise.resolve();
-      if (active) {
-        await fetchAdminData(() => !active);
-      }
-    })();
+    const syncAndLoad = () => {
+      if (!active) return;
+      void fetchAdminData(() => !active);
+    };
+    void Promise.resolve().then(syncAndLoad);
+    window.addEventListener("zyrquen:session-change", syncAndLoad);
     return () => {
       active = false;
+      window.removeEventListener("zyrquen:session-change", syncAndLoad);
     };
   }, [fetchAdminData]);
 
@@ -757,7 +773,12 @@ export default function AdminPage() {
               <div className="panel-heading">
                 <div>
                   <div className="eyebrow">การตรวจสอบความปลอดภัย</div>
-                  <h2>Audit Log</h2>
+                  <h2>
+                    Audit Log
+                    {session?.authenticated && session.email
+                      ? ` · ${session.email} (${session.userId})`
+                      : ""}
+                  </h2>
                 </div>
                 <StatusBadge tone="neutral">
                   {auditLogs ? `${auditLogs.length} เหตุการณ์` : "ไม่ระบุ"}
@@ -775,12 +796,14 @@ export default function AdminPage() {
                         <div className="admin-list-main">
                           <strong>{entry.action}</strong>
                           <span className="admin-list-meta tabular-nums">
-                            ผู้ดำเนินการ {entry.actor_user_id ?? "บัญชีถูกลบ"} ·
+                            actor_user_id: <code>{entry.actor_user_id ?? "system/deleted"}</code> ·
                             ทรัพยากร {entry.resource_id ?? "ไม่ระบุ"} ·{" "}
                             {new Date(entry.created_at).toLocaleString("th-TH")}
                           </span>
                         </div>
-                        <StatusBadge tone="neutral">AUDIT</StatusBadge>
+                        <StatusBadge tone="neutral">
+                          {entry.outcome || "AUDIT"}
+                        </StatusBadge>
                       </div>
                     ))}
                   </div>

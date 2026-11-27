@@ -1,4 +1,4 @@
-import type { Session } from "./types";
+import type { AuditEntry, Session } from "./types";
 
 export class ApiError extends Error {
   status: number;
@@ -114,15 +114,175 @@ export async function apiStreamRequest(
   return response;
 }
 
+export function normalizeSessionPayload(payload: unknown): Session {
+  const root =
+    payload && typeof payload === "object" && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : {};
+  const nestedUser =
+    root.user && typeof root.user === "object" && !Array.isArray(root.user)
+      ? (root.user as Record<string, unknown>)
+      : null;
+  const candidate = nestedUser ?? root;
+
+  const rawUserId = candidate.userId ?? candidate.id ?? root.userId ?? root.id;
+  const userId =
+    typeof rawUserId === "string" && rawUserId.trim()
+      ? rawUserId.trim()
+      : null;
+
+  const rawEmail = candidate.email ?? root.email;
+  const email =
+    typeof rawEmail === "string" && rawEmail.trim()
+      ? rawEmail.trim().toLowerCase()
+      : null;
+
+  const rawRole = candidate.role ?? root.role;
+  const role =
+    typeof rawRole === "string" && rawRole.trim()
+      ? rawRole.trim().toLowerCase()
+      : null;
+
+  const isActive =
+    typeof candidate.is_active === "boolean"
+      ? candidate.is_active
+      : typeof candidate.isActive === "boolean"
+        ? candidate.isActive
+        : true;
+
+  const rawEmailVerified =
+    candidate.emailVerified ??
+    candidate.email_verified ??
+    root.emailVerified ??
+    root.email_verified;
+  const emailVerified =
+    typeof rawEmailVerified === "boolean"
+      ? rawEmailVerified
+      : typeof candidate.verified === "boolean"
+        ? candidate.verified
+        : typeof root.verified === "boolean"
+          ? root.verified
+          : true;
+
+  const explicitAuth =
+    typeof root.authenticated === "boolean"
+      ? root.authenticated
+      : typeof candidate.authenticated === "boolean"
+        ? candidate.authenticated
+        : undefined;
+
+  const authenticated = Boolean(
+    userId &&
+      isActive &&
+      (explicitAuth === true || explicitAuth === undefined),
+  );
+
+  const expired = Boolean(root.expired ?? candidate.expired);
+  const rawError = root.error ?? root.detail ?? candidate.error;
+  const error =
+    typeof rawError === "string" && rawError.trim() ? rawError.trim() : null;
+
+  return {
+    authenticated,
+    userId: authenticated ? userId : null,
+    email: authenticated ? email : null,
+    role: authenticated ? role : null,
+    verified: authenticated ? emailVerified : false,
+    emailVerified: authenticated ? emailVerified : false,
+    expired,
+    error,
+  };
+}
+
+export function normalizeAuditLogEntry(
+  raw: unknown,
+  session?: Session | null,
+  userIdByEmail?: ReadonlyMap<string, string>,
+): AuditEntry {
+  const row =
+    raw && typeof raw === "object" && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)
+      : {};
+  const id = typeof row.id === "string" ? row.id : "";
+  const action =
+    typeof row.action === "string" && row.action.trim()
+      ? row.action.trim()
+      : "unknown";
+  const rawEmail =
+    typeof row.actor_email === "string" && row.actor_email.trim()
+      ? row.actor_email.trim().toLowerCase()
+      : null;
+  const rawActorId = row.actor_user_id ?? row.actor_id ?? null;
+  let actorUserId =
+    typeof rawActorId === "string" && rawActorId.trim()
+      ? rawActorId.trim()
+      : null;
+
+  if (!actorUserId && rawEmail) {
+    if (session?.authenticated && session.userId && session.email === rawEmail) {
+      actorUserId = session.userId;
+    } else if (userIdByEmail?.has(rawEmail)) {
+      actorUserId = userIdByEmail.get(rawEmail) ?? null;
+    }
+  }
+
+  const rawResourceId = row.resource_id ?? row.target ?? null;
+  const resourceId =
+    typeof rawResourceId === "string" && rawResourceId.trim()
+      ? rawResourceId.trim()
+      : null;
+
+  const outcome =
+    typeof row.outcome === "string" && row.outcome.trim()
+      ? row.outcome.trim()
+      : null;
+
+  const createdAt =
+    typeof row.created_at === "string" && row.created_at
+      ? row.created_at
+      : new Date(0).toISOString();
+
+  return {
+    id,
+    actor_user_id: actorUserId,
+    actor_email: rawEmail,
+    action,
+    resource_id: resourceId,
+    outcome,
+    created_at: createdAt,
+  };
+}
+
 export async function readSession(signal?: AbortSignal): Promise<Session> {
   const response = await fetch("/api/session", {
     cache: "no-store",
+    credentials: "same-origin",
     signal,
   });
+  let payload: unknown = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    const base =
+      payload && typeof payload === "object" && !Array.isArray(payload)
+        ? (payload as Record<string, unknown>)
+        : {};
+    return normalizeSessionPayload({
+      ...base,
+      authenticated: false,
+      expired: response.status === 401 ? true : Boolean(base.expired),
+    });
+  }
+
   if (!response.ok) {
     throw new ApiError("ไม่สามารถอ่านข้อมูลเซสชันปัจจุบันได้", response.status);
   }
-  return response.json();
+
+  return normalizeSessionPayload(payload);
 }
 
 export function buildModelRegistryMetadataFilename(

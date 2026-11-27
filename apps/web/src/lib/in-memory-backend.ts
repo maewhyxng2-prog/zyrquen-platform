@@ -15,7 +15,7 @@ import {
 type StoredUser = {
   id: string;
   email: string;
-  passwordHash: string;
+  passwordHash: string | null;
   role: "admin" | "user";
   isActive: boolean;
   emailVerified: boolean;
@@ -25,6 +25,36 @@ type StoredUser = {
 type StoredToken = {
   userId: string;
   expiresAt: number;
+};
+
+type StoredEmailVerificationToken = {
+  tokenHash: string;
+  userId: string;
+  email: string;
+  expiresAt: number;
+};
+
+type StoredOAuthState = {
+  state: string;
+  provider: "github" | "google";
+  intent: "login" | "link";
+  userId: string | null;
+  redirectUri: string;
+  codeVerifier: string;
+  origin: string;
+  expiresAt: number;
+};
+
+type StoredOAuthIdentity = {
+  id: string;
+  userId: string;
+  provider: "github" | "google";
+  providerUserId: string;
+  providerEmail: string | null;
+  emailVerified: boolean;
+  displayName: string | null;
+  avatarUrl: string | null;
+  linkedAt: string;
 };
 
 type StoredMessage = {
@@ -147,6 +177,9 @@ type InMemoryStore = {
   usersById: Map<string, StoredUser>;
   userIdByEmail: Map<string, string>;
   tokens: Map<string, StoredToken>;
+  emailVerificationTokens: Map<string, StoredEmailVerificationToken>;
+  oauthStates: Map<string, StoredOAuthState>;
+  oauthIdentities: StoredOAuthIdentity[];
   conversations: Map<string, StoredConversation>;
   usageRecords: StoredUsageRecord[];
   apiKeys: Map<string, StoredApiKey>;
@@ -272,13 +305,168 @@ function hashPassword(password: string): string {
   return `${salt}:${derived}`;
 }
 
-function verifyPassword(password: string, storedHash: string): boolean {
+function verifyPassword(password: string, storedHash: string | null): boolean {
+  if (!storedHash) return false;
   const [salt, expectedHex] = storedHash.split(":");
   if (!salt || !expectedHex) return false;
   const derived = scryptSync(password, salt, 32);
   const expected = Buffer.from(expectedHex, "hex");
   if (derived.length !== expected.length) return false;
   return timingSafeEqual(derived, expected);
+}
+
+function allowTestOAuthEndpoints(): boolean {
+  return (
+    (process.env.NODE_ENV === "test" || Boolean(process.env.VITEST)) &&
+    process.env.ZYRQUEN_OAUTH_ALLOW_TEST_ENDPOINTS === "1"
+  );
+}
+
+type OAuthProvider = "github" | "google";
+
+function getOAuthProviderConfig(provider: OAuthProvider, origin: string) {
+  const cleanOrigin = (origin || "http://localhost:3000").replace(/\/+$/, "");
+  const callbackUrl = `${cleanOrigin}/api/backend/auth/oauth/${provider}/callback`;
+  const useTest = allowTestOAuthEndpoints();
+
+  if (provider === "github") {
+    const clientId = (process.env.GITHUB_OAUTH_CLIENT_ID || "").trim();
+    const clientSecret = (process.env.GITHUB_OAUTH_CLIENT_SECRET || "").trim();
+    return {
+      provider,
+      name: "GitHub",
+      configured: Boolean(clientId && clientSecret),
+      clientId,
+      clientSecret,
+      scopes: ["read:user", "user:email"],
+      callbackUrl,
+      authorizeUrl:
+        (useTest && process.env.ZYRQUEN_GITHUB_AUTH_URL) ||
+        "https://github.com/login/oauth/authorize",
+      tokenUrl:
+        (useTest && process.env.ZYRQUEN_GITHUB_TOKEN_URL) ||
+        "https://github.com/login/oauth/access_token",
+      userUrl:
+        (useTest && process.env.ZYRQUEN_GITHUB_USER_URL) ||
+        "https://api.github.com/user",
+      emailsUrl:
+        (useTest && process.env.ZYRQUEN_GITHUB_EMAILS_URL) ||
+        "https://api.github.com/user/emails",
+    };
+  }
+
+  const clientId = (process.env.GOOGLE_OAUTH_CLIENT_ID || "").trim();
+  const clientSecret = (process.env.GOOGLE_OAUTH_CLIENT_SECRET || "").trim();
+  return {
+    provider,
+    name: "Google",
+    configured: Boolean(clientId && clientSecret),
+    clientId,
+    clientSecret,
+    scopes: ["openid", "email", "profile"],
+    callbackUrl,
+    authorizeUrl:
+      (useTest && process.env.ZYRQUEN_GOOGLE_AUTH_URL) ||
+      "https://accounts.google.com/o/oauth2/v2/auth",
+    tokenUrl:
+      (useTest && process.env.ZYRQUEN_GOOGLE_TOKEN_URL) ||
+      "https://oauth2.googleapis.com/token",
+    userInfoUrl:
+      (useTest && process.env.ZYRQUEN_GOOGLE_USERINFO_URL) ||
+      "https://openidconnect.googleapis.com/v1/userinfo",
+  };
+}
+
+function issueEmailVerificationToken(
+  store: InMemoryStore,
+  user: StoredUser,
+): string {
+  const now = Date.now();
+  for (const [hash, entry] of store.emailVerificationTokens.entries()) {
+    if (entry.userId === user.id || entry.expiresAt <= now) {
+      store.emailVerificationTokens.delete(hash);
+    }
+  }
+  const rawToken = randomBytes(32).toString("base64url");
+  const tokenHash = createHash("sha256").update(rawToken, "utf8").digest("hex");
+  store.emailVerificationTokens.set(tokenHash, {
+    tokenHash,
+    userId: user.id,
+    email: user.email,
+    expiresAt: now + 24 * 60 * 60 * 1000,
+  });
+  return rawToken;
+}
+
+async function sendVerificationEmailIfConfigured(params: {
+  to: string;
+  rawToken: string;
+  origin?: string;
+}): Promise<{
+  required: boolean;
+  emailSent: boolean;
+  deliveryReason: string | null;
+}> {
+  const apiKey = (process.env.RESEND_API_KEY || "").trim();
+  const from = (process.env.EMAIL_FROM || "").trim();
+  if (!apiKey || !from) {
+    return {
+      required: true,
+      emailSent: false,
+      deliveryReason: "EMAIL_PROVIDER_NOT_CONFIGURED",
+    };
+  }
+  const cleanOrigin = (params.origin || "http://localhost:3000").replace(/\/+$/, "");
+  const verifyUrl = `${cleanOrigin}/login?verify_token=${encodeURIComponent(params.rawToken)}`;
+  try {
+    const resp = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from,
+        to: [params.to],
+        subject: "ยืนยันอีเมลสำหรับบัญชี ZYRQUEN ของคุณ",
+        text: `กรุณาคลิกลิงก์ด้านล่างเพื่อยืนยันอีเมลสำหรับบัญชี ZYRQUEN ของคุณ (ลิงก์มีอายุ 24 ชั่วโมง):\n${verifyUrl}\n`,
+        html: `<p>กรุณาคลิกลิงก์ด้านล่างเพื่อยืนยันอีเมลสำหรับบัญชี ZYRQUEN ของคุณ (ลิงก์มีอายุ 24 ชั่วโมง):</p><p><a href="${verifyUrl}">Verify Email</a></p>`,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) {
+      return {
+        required: true,
+        emailSent: false,
+        deliveryReason: `EMAIL_PROVIDER_HTTP_${resp.status}`,
+      };
+    }
+    return {
+      required: true,
+      emailSent: true,
+      deliveryReason: null,
+    };
+  } catch {
+    return {
+      required: true,
+      emailSent: false,
+      deliveryReason: "EMAIL_SEND_FAILED",
+    };
+  }
+}
+
+export function getInMemoryVerificationTokenForTesting(
+  email: string,
+): string | null {
+  if (process.env.NODE_ENV !== "test" && !process.env.VITEST) {
+    return null;
+  }
+  const store = getStore();
+  const userId = store.userIdByEmail.get(email.trim().toLowerCase());
+  if (!userId) return null;
+  const user = store.usersById.get(userId);
+  if (!user) return null;
+  return issueEmailVerificationToken(store, user);
 }
 
 function createInitialStore(): InMemoryStore {
@@ -422,6 +610,9 @@ function createInitialStore(): InMemoryStore {
     usersById: new Map([[demoUserId, demoUser]]),
     userIdByEmail: new Map([[demoUser.email, demoUserId]]),
     tokens: new Map(),
+    emailVerificationTokens: new Map(),
+    oauthStates: new Map(),
+    oauthIdentities: [],
     conversations: new Map(),
     usageRecords: [],
     apiKeys: new Map(),
@@ -822,11 +1013,17 @@ export async function handleInMemoryBackendRequest(options: {
   searchParams?: URLSearchParams;
   authorizationHeader: string | null;
   rawBody?: string;
+  origin?: string;
 }): Promise<InMemoryResponse> {
   const method = options.method.toUpperCase();
   const path = options.path.replace(/^\/+/, "");
   const store = getStore();
   const nativeHealth = getInMemoryNativeHealth();
+  const requestOrigin = (
+    options.origin ||
+    options.searchParams?.get("origin") ||
+    "http://localhost:3000"
+  ).replace(/\/+$/, "");
 
   if (method === "GET" && path === "") {
     return {
@@ -889,6 +1086,12 @@ export async function handleInMemoryBackendRequest(options: {
     };
     store.usersById.set(id, user);
     store.userIdByEmail.set(email, id);
+    const rawVerifyToken = issueEmailVerificationToken(store, user);
+    const verification = await sendVerificationEmailIfConfigured({
+      to: user.email,
+      rawToken: rawVerifyToken,
+      origin: requestOrigin,
+    });
     store.auditLogs.unshift({
       id: randomUUID(),
       actor_user_id: id,
@@ -905,21 +1108,65 @@ export async function handleInMemoryBackendRequest(options: {
         is_active: user.isActive,
         email_verified: user.emailVerified,
         created_at: user.createdAt,
-        verification: {
-          emailSent: false,
-          deliveryReason: "EMAIL_PROVIDER_NOT_CONFIGURED",
+        verification,
+      },
+    };
+  }
+
+  if (method === "POST" && path === "auth/verify-email") {
+    const body = parseJsonBody(options.rawBody);
+    const rawToken = typeof body.token === "string" ? body.token.trim() : "";
+    if (!rawToken || rawToken.length < 16 || rawToken.length > 512) {
+      return { status: 400, body: { detail: "โทเคนยืนยันอีเมลไม่ถูกต้อง" } };
+    }
+    const tokenHash = createHash("sha256").update(rawToken, "utf8").digest("hex");
+    const entry = store.emailVerificationTokens.get(tokenHash);
+    if (!entry || entry.expiresAt <= Date.now()) {
+      if (entry) store.emailVerificationTokens.delete(tokenHash);
+      return {
+        status: 400,
+        body: { detail: "ลิงก์ยืนยันอีเมลไม่ถูกต้องหรือหมดอายุแล้ว" },
+      };
+    }
+    store.emailVerificationTokens.delete(tokenHash);
+    const user = store.usersById.get(entry.userId);
+    if (!user || !user.isActive) {
+      return { status: 404, body: { detail: "ไม่พบบัญชีผู้ใช้" } };
+    }
+    user.emailVerified = true;
+    store.auditLogs.unshift({
+      id: randomUUID(),
+      actor_user_id: user.id,
+      action: "auth.email_verified",
+      resource_id: user.id,
+      created_at: new Date().toISOString(),
+    });
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        email_verified: true,
+        user: {
+          id: user.id,
+          email: user.email,
+          role: user.role,
+          is_active: user.isActive,
+          email_verified: user.emailVerified,
+          created_at: user.createdAt,
         },
       },
     };
   }
 
   if (method === "GET" && path === "auth/providers") {
+    const googleCfg = getOAuthProviderConfig("google", requestOrigin);
+    const githubCfg = getOAuthProviderConfig("github", requestOrigin);
     return {
       status: 200,
       body: {
         providers: {
-          google: { configured: false },
-          github: { configured: false },
+          google: { configured: googleCfg.configured, name: googleCfg.name },
+          github: { configured: githubCfg.configured, name: githubCfg.name },
         },
       },
     };
@@ -927,14 +1174,521 @@ export async function handleInMemoryBackendRequest(options: {
 
   const oauthUrlMatch = path.match(/^auth\/oauth\/(google|github)\/url$/i);
   if (method === "GET" && oauthUrlMatch) {
-    const provider = oauthUrlMatch[1].toLowerCase();
+    const provider = oauthUrlMatch[1].toLowerCase() as OAuthProvider;
+    const intent =
+      options.searchParams?.get("intent") === "link" ? "link" : "login";
+    let linkUserId: string | null = null;
+    if (intent === "link") {
+      const caller = authenticateInferenceCaller(options.authorizationHeader);
+      if (!caller || caller.apiKeyId !== null) {
+        return {
+          status: 401,
+          body: { detail: "กรุณาเข้าสู่ระบบก่อนเชื่อมต่อบัญชีภายนอก" },
+        };
+      }
+      linkUserId = caller.user.id;
+    }
+
+    const cfg = getOAuthProviderConfig(provider, requestOrigin);
+    if (!cfg.configured) {
+      return {
+        status: 503,
+        body: {
+          code: "OAUTH_NOT_CONFIGURED",
+          provider,
+          callbackUrl: cfg.callbackUrl,
+          detail: `ยังไม่ได้ตั้งค่าการเข้าสู่ระบบผ่าน ${cfg.name} OAuth 2.0 ใน Backend นี้`,
+        },
+      };
+    }
+
+    const now = Date.now();
+    for (const [k, v] of store.oauthStates.entries()) {
+      if (v.expiresAt <= now) store.oauthStates.delete(k);
+    }
+
+    const state = randomBytes(24).toString("base64url");
+    const codeVerifier = randomBytes(32).toString("base64url");
+    const codeChallenge = createHash("sha256")
+      .update(codeVerifier, "ascii")
+      .digest("base64url");
+
+    store.oauthStates.set(state, {
+      state,
+      provider,
+      intent,
+      userId: linkUserId,
+      redirectUri: cfg.callbackUrl,
+      codeVerifier,
+      origin: requestOrigin,
+      expiresAt: now + 10 * 60 * 1000,
+    });
+
+    const params = new URLSearchParams({
+      client_id: cfg.clientId,
+      redirect_uri: cfg.callbackUrl,
+      response_type: "code",
+      scope: cfg.scopes.join(" "),
+      state,
+      code_challenge: codeChallenge,
+      code_challenge_method: "S256",
+    });
+    if (provider === "google") {
+      params.set("prompt", "select_account");
+    }
+
     return {
-      status: 503,
+      status: 200,
       body: {
-        code: "OAUTH_NOT_CONFIGURED",
-        detail: `ยังไม่ได้ตั้งค่าการเข้าสู่ระบบผ่าน ${provider === "github" ? "GitHub" : "Google"} OAuth 2.0 ใน Backend นี้`,
+        url: `${cfg.authorizeUrl}?${params.toString()}`,
+        provider,
+        callbackUrl: cfg.callbackUrl,
       },
     };
+  }
+
+  const oauthCallbackMatch = path.match(
+    /^auth\/oauth\/(google|github)\/callback$/i,
+  );
+  if (method === "GET" && oauthCallbackMatch) {
+    const provider = oauthCallbackMatch[1].toLowerCase() as OAuthProvider;
+    const providerErr =
+      options.searchParams?.get("error_description") ||
+      options.searchParams?.get("error");
+    if (providerErr) {
+      return {
+        status: 400,
+        body: {
+          ok: false,
+          provider,
+          error: providerErr,
+          detail: providerErr,
+        },
+      };
+    }
+
+    const rawState = options.searchParams?.get("state")?.trim() || "";
+    const stateEntry = rawState ? store.oauthStates.get(rawState) : undefined;
+    if (rawState) store.oauthStates.delete(rawState);
+
+    if (
+      !stateEntry ||
+      stateEntry.provider !== provider ||
+      stateEntry.expiresAt <= Date.now()
+    ) {
+      return {
+        status: 400,
+        body: {
+          ok: false,
+          provider,
+          detail: "OAuth state ไม่ถูกต้องหรือหมดอายุ กรุณาลองใหม่อีกครั้ง",
+        },
+      };
+    }
+
+    const code = options.searchParams?.get("code")?.trim() || "";
+    if (!code) {
+      return {
+        status: 400,
+        body: {
+          ok: false,
+          provider,
+          detail: "ไม่ได้รับ Authorization Code จากผู้ให้บริการ",
+        },
+      };
+    }
+
+    const cfg = getOAuthProviderConfig(provider, stateEntry.origin);
+    if (!cfg.configured) {
+      return {
+        status: 503,
+        body: {
+          ok: false,
+          provider,
+          code: "OAUTH_NOT_CONFIGURED",
+          detail: `ยังไม่ได้ตั้งค่า ${cfg.name} OAuth 2.0 ใน Backend นี้`,
+        },
+      };
+    }
+
+    try {
+      let providerUserId = "";
+      let providerEmail = "";
+      let providerEmailVerified = false;
+      let providerDisplayName: string | null = null;
+      let providerAvatarUrl: string | null = null;
+
+      if (provider === "github") {
+        const tokenResp = await fetch(cfg.tokenUrl, {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({
+            client_id: cfg.clientId,
+            client_secret: cfg.clientSecret,
+            code,
+            redirect_uri: stateEntry.redirectUri,
+            code_verifier: stateEntry.codeVerifier,
+          }).toString(),
+          signal: AbortSignal.timeout(12_000),
+        });
+        const tokenJson = (await tokenResp.json().catch(() => ({}))) as {
+          access_token?: string;
+          error_description?: string;
+          error?: string;
+        };
+        if (!tokenResp.ok || !tokenJson.access_token) {
+          return {
+            status: 400,
+            body: {
+              ok: false,
+              provider,
+              detail:
+                tokenJson.error_description ||
+                tokenJson.error ||
+                "GitHub token exchange failed",
+            },
+          };
+        }
+        const ghHeaders = {
+          Authorization: `Bearer ${tokenJson.access_token}`,
+          Accept: "application/vnd.github+json",
+          "User-Agent": "ZYRQUEN-Platform",
+        };
+        const [userResp, emailsResp] = await Promise.all([
+          fetch(cfg.userUrl!, { headers: ghHeaders, signal: AbortSignal.timeout(10_000) }),
+          fetch(cfg.emailsUrl!, { headers: ghHeaders, signal: AbortSignal.timeout(10_000) }),
+        ]);
+        if (!userResp.ok) {
+          return {
+            status: 502,
+            body: {
+              ok: false,
+              provider,
+              detail: `GitHub user lookup failed (${userResp.status})`,
+            },
+          };
+        }
+        const ghUser = (await userResp.json()) as {
+          id?: number | string;
+          login?: string;
+          name?: string;
+          email?: string;
+          avatar_url?: string;
+        };
+        providerUserId = ghUser.id !== undefined ? String(ghUser.id) : "";
+        providerDisplayName =
+          String(ghUser.name || ghUser.login || "").trim() || null;
+        providerAvatarUrl = String(ghUser.avatar_url || "").trim() || null;
+
+        if (emailsResp.ok) {
+          const emails = (await emailsResp.json().catch(() => [])) as Array<{
+            email?: string;
+            primary?: boolean;
+            verified?: boolean;
+          }>;
+          const preferred =
+            emails.find((e) => e.primary && e.verified) ||
+            emails.find((e) => e.verified) ||
+            emails.find((e) => e.primary) ||
+            emails[0];
+          if (preferred?.email) {
+            providerEmail = String(preferred.email).trim().toLowerCase();
+            providerEmailVerified = Boolean(preferred.verified);
+          }
+        }
+        if (!providerEmail && ghUser.email) {
+          providerEmail = String(ghUser.email).trim().toLowerCase();
+          providerEmailVerified = false;
+        }
+      } else {
+        const tokenResp = await fetch(cfg.tokenUrl, {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({
+            client_id: cfg.clientId,
+            client_secret: cfg.clientSecret,
+            code,
+            redirect_uri: stateEntry.redirectUri,
+            code_verifier: stateEntry.codeVerifier,
+            grant_type: "authorization_code",
+          }).toString(),
+          signal: AbortSignal.timeout(12_000),
+        });
+        const tokenJson = (await tokenResp.json().catch(() => ({}))) as {
+          access_token?: string;
+          error_description?: string;
+          error?: string;
+        };
+        if (!tokenResp.ok || !tokenJson.access_token) {
+          return {
+            status: 400,
+            body: {
+              ok: false,
+              provider,
+              detail:
+                tokenJson.error_description ||
+                tokenJson.error ||
+                "Google token exchange failed",
+            },
+          };
+        }
+        const infoResp = await fetch(cfg.userInfoUrl!, {
+          headers: {
+            Authorization: `Bearer ${tokenJson.access_token}`,
+            Accept: "application/json",
+          },
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!infoResp.ok) {
+          return {
+            status: 502,
+            body: {
+              ok: false,
+              provider,
+              detail: `Google userinfo lookup failed (${infoResp.status})`,
+            },
+          };
+        }
+        const gUser = (await infoResp.json()) as {
+          sub?: string;
+          email?: string;
+          email_verified?: boolean;
+          name?: string;
+          picture?: string;
+        };
+        providerUserId = String(gUser.sub || "").trim();
+        providerEmail = String(gUser.email || "").trim().toLowerCase();
+        providerEmailVerified = Boolean(gUser.email_verified);
+        providerDisplayName = String(gUser.name || "").trim() || null;
+        providerAvatarUrl = String(gUser.picture || "").trim() || null;
+      }
+
+      if (!providerUserId) {
+        return {
+          status: 502,
+          body: {
+            ok: false,
+            provider,
+            detail: "ผู้ให้บริการ OAuth ไม่ได้ส่งรหัสบัญชีผู้ใช้กลับมา",
+          },
+        };
+      }
+
+      const nowIso = new Date().toISOString();
+
+      if (stateEntry.intent === "link" && stateEntry.userId) {
+        const targetUser = store.usersById.get(stateEntry.userId);
+        if (!targetUser || !targetUser.isActive) {
+          return {
+            status: 403,
+            body: { ok: false, provider, detail: "ไม่พบบัญชีผู้ใช้หรือบัญชีถูกปิดใช้งาน" },
+          };
+        }
+        const existingConflict = store.oauthIdentities.find(
+          (i) =>
+            i.provider === provider &&
+            i.providerUserId === providerUserId &&
+            i.userId !== targetUser.id,
+        );
+        if (existingConflict) {
+          return {
+            status: 409,
+            body: {
+              ok: false,
+              provider,
+              code: "IDENTITY_ALREADY_LINKED",
+              detail: `บัญชี ${cfg.name} นี้ถูกเชื่อมต่อกับบัญชี ZYRQUEN อื่นแล้ว`,
+            },
+          };
+        }
+        let identity = store.oauthIdentities.find(
+          (i) => i.provider === provider && i.userId === targetUser.id,
+        );
+        if (identity) {
+          identity.providerUserId = providerUserId;
+          identity.providerEmail = providerEmail || null;
+          identity.emailVerified = providerEmailVerified;
+          identity.displayName = providerDisplayName;
+          identity.avatarUrl = providerAvatarUrl;
+          identity.linkedAt = nowIso;
+        } else {
+          identity = {
+            id: randomUUID(),
+            userId: targetUser.id,
+            provider,
+            providerUserId,
+            providerEmail: providerEmail || null,
+            emailVerified: providerEmailVerified,
+            displayName: providerDisplayName,
+            avatarUrl: providerAvatarUrl,
+            linkedAt: nowIso,
+          };
+          store.oauthIdentities.push(identity);
+        }
+        if (
+          providerEmailVerified &&
+          providerEmail &&
+          providerEmail === targetUser.email
+        ) {
+          targetUser.emailVerified = true;
+        }
+        store.auditLogs.unshift({
+          id: randomUUID(),
+          actor_user_id: targetUser.id,
+          action: "auth.identity_linked",
+          resource_id: `${provider}:${providerUserId}`,
+          created_at: nowIso,
+        });
+        return {
+          status: 200,
+          body: {
+            ok: true,
+            intent: "link",
+            provider,
+            identity: {
+              id: identity.id,
+              provider: identity.provider,
+              provider_user_id: identity.providerUserId,
+              provider_email: identity.providerEmail,
+              email_verified: identity.emailVerified,
+              display_name: identity.displayName,
+              avatar_url: identity.avatarUrl,
+              linked_at: identity.linkedAt,
+            },
+          },
+        };
+      }
+
+      let identity = store.oauthIdentities.find(
+        (i) => i.provider === provider && i.providerUserId === providerUserId,
+      );
+      let user: StoredUser | undefined = identity
+        ? store.usersById.get(identity.userId)
+        : undefined;
+
+      if (!user) {
+        if (!providerEmail) {
+          return {
+            status: 403,
+            body: {
+              ok: false,
+              provider,
+              detail: `บัญชี ${cfg.name} นี้ไม่ได้เปิดเผยอีเมล กรุณาอนุญาตสิทธิ์การเข้าถึงอีเมล`,
+            },
+          };
+        }
+        const existingUserId = store.userIdByEmail.get(providerEmail);
+        if (existingUserId) {
+          if (!providerEmailVerified) {
+            return {
+              status: 403,
+              body: {
+                ok: false,
+                provider,
+                detail: `อีเมล ${providerEmail} จาก ${cfg.name} ยังไม่ได้รับการยืนยัน จึงไม่สามารถเชื่อมกับบัญชีที่มีอยู่โดยอัตโนมัติได้`,
+              },
+            };
+          }
+          user = store.usersById.get(existingUserId);
+          if (user) {
+            user.emailVerified = true;
+          }
+        } else {
+          const newUserId = randomUUID();
+          user = {
+            id: newUserId,
+            email: providerEmail,
+            passwordHash: null,
+            role: "user",
+            isActive: true,
+            emailVerified: providerEmailVerified,
+            createdAt: nowIso,
+          };
+          store.usersById.set(newUserId, user);
+          store.userIdByEmail.set(providerEmail, newUserId);
+          store.auditLogs.unshift({
+            id: randomUUID(),
+            actor_user_id: newUserId,
+            action: "user.registered_oauth",
+            resource_id: `${provider}:${providerUserId}`,
+            created_at: nowIso,
+          });
+        }
+
+        if (user && !identity) {
+          identity = {
+            id: randomUUID(),
+            userId: user.id,
+            provider,
+            providerUserId,
+            providerEmail,
+            emailVerified: providerEmailVerified,
+            displayName: providerDisplayName,
+            avatarUrl: providerAvatarUrl,
+            linkedAt: nowIso,
+          };
+          store.oauthIdentities.push(identity);
+        }
+      }
+
+      if (!user || !user.isActive) {
+        return {
+          status: 403,
+          body: { ok: false, provider, detail: "Account disabled" },
+        };
+      }
+
+      const token = randomBytes(32).toString("hex");
+      store.tokens.set(token, {
+        userId: user.id,
+        expiresAt: Date.now() + 30 * 60 * 1000,
+      });
+      store.auditLogs.unshift({
+        id: randomUUID(),
+        actor_user_id: user.id,
+        action: "auth.oauth_login",
+        resource_id: `${provider}:${providerUserId}`,
+        created_at: nowIso,
+      });
+
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          intent: "login",
+          provider,
+          access_token: token,
+          token_type: "bearer",
+          email: user.email,
+          user: {
+            id: user.id,
+            email: user.email,
+            role: user.role,
+            is_active: user.isActive,
+            email_verified: user.emailVerified,
+            created_at: user.createdAt,
+          },
+        },
+      };
+    } catch (reason) {
+      return {
+        status: 500,
+        body: {
+          ok: false,
+          provider,
+          detail:
+            reason instanceof Error
+              ? reason.message
+              : "OAuth authentication failed",
+        },
+      };
+    }
   }
 
   if (method === "POST" && path === "auth/login") {
@@ -989,16 +1743,91 @@ export async function handleInMemoryBackendRequest(options: {
     };
   }
 
+  if (method === "GET" && path === "auth/identities") {
+    const identities = store.oauthIdentities
+      .filter((i) => i.userId === currentUser.id)
+      .map((i) => ({
+        id: i.id,
+        provider: i.provider,
+        provider_user_id: i.providerUserId,
+        provider_email: i.providerEmail,
+        email_verified: i.emailVerified,
+        display_name: i.displayName,
+        avatar_url: i.avatarUrl,
+        linked_at: i.linkedAt,
+      }));
+    return { status: 200, body: { identities } };
+  }
+
+  const unlinkMatch = path.match(/^auth\/identities\/(google|github)$/i);
+  if (method === "DELETE" && unlinkMatch) {
+    const provider = unlinkMatch[1].toLowerCase() as OAuthProvider;
+    const userIdentities = store.oauthIdentities.filter(
+      (i) => i.userId === currentUser.id,
+    );
+    const targetIdx = store.oauthIdentities.findIndex(
+      (i) => i.userId === currentUser.id && i.provider === provider,
+    );
+    if (targetIdx === -1) {
+      return { status: 404, body: { detail: "ไม่พบการเชื่อมต่อบัญชีภายนอกนี้" } };
+    }
+    if (!currentUser.passwordHash && userIdentities.length <= 1) {
+      return {
+        status: 409,
+        body: {
+          detail:
+            "ไม่สามารถยกเลิกการเชื่อมต่อวิธีเข้าสู่ระบบสุดท้ายได้ กรุณาเชื่อมบัญชีอื่นก่อน",
+        },
+      };
+    }
+    const [removed] = store.oauthIdentities.splice(targetIdx, 1);
+    store.auditLogs.unshift({
+      id: randomUUID(),
+      actor_user_id: currentUser.id,
+      action: "auth.identity_unlinked",
+      resource_id: `${provider}:${removed.providerUserId}`,
+      created_at: new Date().toISOString(),
+    });
+    return { status: 200, body: { ok: true, provider } };
+  }
+
   if (method === "POST" && path === "auth/verification/resend") {
+    if (currentUser.emailVerified) {
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          alreadyVerified: true,
+          email_verified: true,
+          emailSent: false,
+          deliveryReason: null,
+          detail: "อีเมลนี้ได้รับการยืนยันแล้ว",
+        },
+      };
+    }
+    const rawVerifyToken = issueEmailVerificationToken(store, currentUser);
+    const verification = await sendVerificationEmailIfConfigured({
+      to: currentUser.email,
+      rawToken: rawVerifyToken,
+      origin: requestOrigin,
+    });
+    store.auditLogs.unshift({
+      id: randomUUID(),
+      actor_user_id: currentUser.id,
+      action: "auth.verification_resend",
+      resource_id: currentUser.id,
+      created_at: new Date().toISOString(),
+    });
     return {
       status: 200,
       body: {
         ok: true,
+        alreadyVerified: false,
         email_verified: currentUser.emailVerified,
-        emailSent: false,
-        deliveryReason: "EMAIL_PROVIDER_NOT_CONFIGURED",
-        detail: currentUser.emailVerified
-          ? "อีเมลนี้ได้รับการยืนยันแล้ว"
+        emailSent: verification.emailSent,
+        deliveryReason: verification.deliveryReason,
+        detail: verification.emailSent
+          ? "ส่งลิงก์ยืนยันอีเมลแล้ว กรุณาตรวจสอบกล่องจดหมายของคุณ"
           : "ไม่สามารถส่งอีเมลยืนยันอัตโนมัติได้ในโหมด Sandbox (ยังไม่ได้ตั้งค่า RESEND_API_KEY)",
       },
     };

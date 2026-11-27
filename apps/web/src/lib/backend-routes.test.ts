@@ -47,6 +47,16 @@ describe("backend proxy route allowlist", () => {
     expect(isAllowedBackendRoute("POST", "auth/login")).toBe(true);
     expect(isAllowedBackendRoute("POST", "auth/register")).toBe(true);
     expect(isAllowedBackendRoute("POST", "auth/logout")).toBe(true);
+    expect(isAllowedBackendRoute("POST", "auth/verify-email")).toBe(true);
+    expect(isAllowedBackendRoute("POST", "auth/verification/resend")).toBe(true);
+    expect(isAllowedBackendRoute("GET", "auth/providers")).toBe(true);
+    expect(isAllowedBackendRoute("GET", "auth/identities")).toBe(true);
+    expect(isAllowedBackendRoute("DELETE", "auth/identities/github")).toBe(true);
+    expect(isAllowedBackendRoute("DELETE", "auth/identities/google")).toBe(true);
+    expect(isAllowedBackendRoute("GET", "auth/oauth/github/url")).toBe(true);
+    expect(isAllowedBackendRoute("GET", "auth/oauth/google/url")).toBe(true);
+    expect(isAllowedBackendRoute("GET", "auth/oauth/github/callback")).toBe(true);
+    expect(isAllowedBackendRoute("GET", "auth/oauth/google/callback")).toBe(true);
     expect(isAllowedBackendRoute("POST", "v1/native-ai/infer")).toBe(true);
     expect(isAllowedBackendRoute("POST", "v1/native-ai/infer/stream")).toBe(true);
     expect(isAllowedBackendRoute("GET", "conversations")).toBe(true);
@@ -150,6 +160,10 @@ describe("backend proxy route allowlist", () => {
     ).toBe(false);
     expect(isAllowedBackendRoute("POST", "admin/overview")).toBe(false);
     expect(isAllowedBackendRoute("DELETE", "auth/login")).toBe(false);
+    expect(isAllowedBackendRoute("GET", "auth/verify-email")).toBe(false);
+    expect(isAllowedBackendRoute("POST", "auth/oauth/github/callback")).toBe(false);
+    expect(isAllowedBackendRoute("GET", "auth/oauth/gitlab/url")).toBe(false);
+    expect(isAllowedBackendRoute("DELETE", "auth/identities/gitlab")).toBe(false);
     expect(isAllowedBackendRoute("POST", "health")).toBe(false);
     expect(isAllowedBackendRoute("POST", "auth/me")).toBe(false);
     expect(isAllowedBackendRoute("GET", "auth/logout")).toBe(false);

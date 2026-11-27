@@ -107,44 +107,51 @@ export default function DeveloperApiKeysPage() {
   const [bulkRevoking, setBulkRevoking] = useState(false);
 
   useEffect(() => {
+    let active = true;
+    const resetOwnerScopedState = (nextLoading: boolean) => {
+      setApiKeys([]);
+      setApiKeysOwnerId(null);
+      setApiKeysLoading(nextLoading);
+      setNewApiKey("");
+      setNewApiKeyLabel("");
+      setNewApiKeyOwnerId(null);
+      setApiKeysNotice("");
+      setRotateDrafts({});
+      setApiKeyUsage(null);
+      setSelectedUsageKeyId(null);
+      setApiKeyUsageOwnerId(null);
+      setApiKeyUsageError("");
+      setSelectedKeyIds([]);
+      setBulkConfirmOpen(false);
+    };
+
     const refreshSession = () => {
       readSession()
         .then((current) => {
-          if (sessionRef.current?.userId !== current.userId) {
-            setApiKeys([]);
-            setApiKeysOwnerId(null);
-            setApiKeysLoading(true);
-            setNewApiKey("");
-            setNewApiKeyLabel("");
-            setNewApiKeyOwnerId(null);
-            setApiKeysNotice("");
-            setRotateDrafts({});
-            setApiKeyUsage(null);
-            setSelectedUsageKeyId(null);
-            setApiKeyUsageOwnerId(null);
-            setApiKeyUsageError("");
-            setSelectedKeyIds([]);
-            setBulkConfirmOpen(false);
+          if (!active) return;
+          const prevUserId = sessionRef.current?.authenticated
+            ? sessionRef.current.userId
+            : null;
+          const nextUserId = current.authenticated ? current.userId : null;
+          if (prevUserId !== nextUserId) {
+            resetOwnerScopedState(Boolean(nextUserId));
+          } else if (!current.authenticated) {
+            setApiKeysLoading(false);
           }
           sessionRef.current = current;
           setSession(current);
           setSessionReady(true);
         })
         .catch(() => {
-          setApiKeys([]);
-          setApiKeysOwnerId(null);
-          setApiKeysLoading(true);
-          setNewApiKey("");
-          setNewApiKeyLabel("");
-          setNewApiKeyOwnerId(null);
-          setApiKeysNotice("");
-          setRotateDrafts({});
-          setApiKeyUsage(null);
-          setSelectedUsageKeyId(null);
-          setApiKeyUsageOwnerId(null);
-          const unavailableSession = {
+          if (!active) return;
+          resetOwnerScopedState(false);
+          const unavailableSession: Session = {
             authenticated: false,
             email: null,
+            userId: null,
+            role: null,
+            verified: false,
+            emailVerified: false,
             error: "ไม่สามารถตรวจสอบสถานะเซสชันปัจจุบันได้",
           };
           sessionRef.current = unavailableSession;
@@ -154,25 +161,28 @@ export default function DeveloperApiKeysPage() {
     };
     refreshSession();
     window.addEventListener("zyrquen:session-change", refreshSession);
-    return () =>
+    return () => {
+      active = false;
       window.removeEventListener("zyrquen:session-change", refreshSession);
+    };
   }, []);
 
   useEffect(() => {
-    if (sessionReady && !session?.authenticated) {
+    if (sessionReady && (!session?.authenticated || !session.userId)) {
       router.replace("/login");
     }
-  }, [sessionReady, session, router]);
+  }, [sessionReady, session?.authenticated, session?.userId, router]);
 
   useEffect(() => {
-    if (!sessionReady || !session?.authenticated) {
+    if (!sessionReady || !session?.authenticated || !session.userId) {
       return;
     }
     const ownerId = session.userId;
-    if (!ownerId) return;
     let active = true;
     const isCurrentOwner = () =>
-      active && sessionRef.current?.userId === ownerId;
+      active &&
+      Boolean(sessionRef.current?.authenticated) &&
+      sessionRef.current?.userId === ownerId;
 
     void listApiKeys(ownerId)
       .then((keys) => {
@@ -226,7 +236,7 @@ export default function DeveloperApiKeysPage() {
     return () => {
       active = false;
     };
-  }, [sessionReady, session?.authenticated, session?.userId]);
+  }, [sessionReady, session?.authenticated, session?.userId, session?.role]);
 
   async function submitApiKey(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -512,7 +522,7 @@ export default function DeveloperApiKeysPage() {
     }
   }
 
-  if (!sessionReady || !session?.authenticated) {
+  if (!sessionReady || !session?.authenticated || !session.userId) {
     return (
       <div className="page-stack">
         <PageHeader
@@ -577,7 +587,10 @@ export default function DeveloperApiKeysPage() {
         <div className="panel-heading">
           <div>
             <div className="eyebrow">การเข้าถึง API</div>
-            <h2>จัดการคีย์ประจำบัญชี ({session.email || "เข้าสู่ระบบแล้ว"})</h2>
+            <h2>
+              จัดการคีย์ประจำบัญชี ({session.email || "เข้าสู่ระบบแล้ว"} ·{" "}
+              {session.role || "user"})
+            </h2>
           </div>
           <span className="metric-icon metric-icon-cyan">
             <Icon name="key" />

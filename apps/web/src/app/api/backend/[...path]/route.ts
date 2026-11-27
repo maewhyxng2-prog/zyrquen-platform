@@ -96,6 +96,90 @@ function respondFromLogin(
   return response;
 }
 
+function resolveClientOrigin(request: NextRequest): string {
+  const host =
+    request.headers.get("x-forwarded-host")?.split(",")[0]?.trim() ||
+    request.headers.get("host")?.trim();
+  const proto =
+    request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() ||
+    request.nextUrl.protocol.replace(/:$/, "");
+  if (host && proto) {
+    return `${proto}://${host}`;
+  }
+  return request.nextUrl.origin;
+}
+
+function respondFromOAuthCallback(
+  request: NextRequest,
+  provider: string,
+  status: number,
+  payload: Record<string, unknown>,
+  contentType: string | null,
+): NextResponse {
+  const clientOrigin = resolveClientOrigin(request);
+  const accept = (request.headers.get("accept") || "").toLowerCase();
+  const prefersJson =
+    accept.includes("application/json") && !accept.includes("text/html");
+
+  const accessToken =
+    typeof payload.access_token === "string" && payload.access_token
+      ? payload.access_token
+      : null;
+  const intent = payload.intent === "link" ? "link" : "login";
+  const userObj =
+    payload.user && typeof payload.user === "object"
+      ? (payload.user as Record<string, unknown>)
+      : null;
+  const rawEmail =
+    typeof payload.email === "string"
+      ? payload.email
+      : typeof userObj?.email === "string"
+        ? userObj.email
+        : null;
+  const normalizedEmail = rawEmail ? rawEmail.trim().toLowerCase() : null;
+
+  const isSuccess = status >= 200 && status < 300;
+  let response: NextResponse;
+
+  if (!prefersJson) {
+    if (isSuccess) {
+      const targetPath =
+        intent === "link"
+          ? `/settings?oauth_linked=${encodeURIComponent(provider)}`
+          : "/workspace";
+      response = NextResponse.redirect(new URL(targetPath, clientOrigin), 302);
+    } else {
+      const errorMessage =
+        (typeof payload.detail === "string" && payload.detail.trim()) ||
+        (typeof payload.error === "string" && payload.error.trim()) ||
+        `การเข้าสู่ระบบด้วย ${provider === "github" ? "GitHub" : "Google"} ไม่สำเร็จ`;
+      const targetPath =
+        intent === "link"
+          ? `/settings?oauth_error=${encodeURIComponent(errorMessage)}`
+          : `/login?oauth_error=${encodeURIComponent(errorMessage)}`;
+      response = NextResponse.redirect(new URL(targetPath, clientOrigin), 302);
+    }
+  } else {
+    response = NextResponse.json(payload, {
+      status,
+      headers: {
+        "cache-control": "no-store",
+        ...(contentType ? { "content-type": contentType } : {}),
+      },
+    });
+  }
+
+  if (isSuccess && intent === "login" && accessToken) {
+    const cookieOpts = buildSessionCookieOptions(request);
+    response.cookies.set(ACCESS_COOKIE, accessToken, cookieOpts);
+    if (normalizedEmail) {
+      response.cookies.set(EMAIL_COOKIE, normalizedEmail, cookieOpts);
+    }
+  }
+  response.headers.set("cache-control", "no-store");
+  return response;
+}
+
 function buildInMemoryHttpResponse(
   request: NextRequest,
   path: string,
@@ -110,6 +194,19 @@ function buildInMemoryHttpResponse(
       request,
       (inMemory.body ?? {}) as { access_token?: unknown },
       body,
+    );
+  }
+
+  const oauthCbMatch = path.match(/^auth\/oauth\/(google|github)\/callback$/i);
+  if (oauthCbMatch && method === "GET") {
+    return respondFromOAuthCallback(
+      request,
+      oauthCbMatch[1].toLowerCase(),
+      inMemory.status,
+      (inMemory.body && typeof inMemory.body === "object"
+        ? inMemory.body
+        : {}) as Record<string, unknown>,
+      "application/json",
     );
   }
 
@@ -338,7 +435,16 @@ async function proxy(request: NextRequest, context: RouteContext) {
   }
 
   let upstream: Response | null = null;
-  const search = request.nextUrl.search;
+  const clientOrigin = resolveClientOrigin(request);
+  const effectiveParams = new URLSearchParams(request.nextUrl.searchParams);
+  if (
+    /^auth\/oauth\/(google|github)\/url$/i.test(path) &&
+    !effectiveParams.get("origin")
+  ) {
+    effectiveParams.set("origin", clientOrigin);
+  }
+  const searchStr = effectiveParams.toString();
+  const search = searchStr ? `?${searchStr}` : "";
   const upstreamUrl = baseUrl
     ? path
       ? `${baseUrl}/${path}${search}`
@@ -382,9 +488,10 @@ async function proxy(request: NextRequest, context: RouteContext) {
     const inMemory = await handleInMemoryBackendRequest({
       method,
       path,
-      searchParams: request.nextUrl.searchParams,
+      searchParams: effectiveParams,
       authorizationHeader: headers.get("Authorization"),
       rawBody: body,
+      origin: clientOrigin,
     });
     return buildInMemoryHttpResponse(
       request,
@@ -412,6 +519,23 @@ async function proxy(request: NextRequest, context: RouteContext) {
       );
     }
     return respondFromLogin(request, result, body);
+  }
+
+  const upstreamOAuthCbMatch = path.match(
+    /^auth\/oauth\/(google|github)\/callback$/i,
+  );
+  if (upstreamOAuthCbMatch && method === "GET") {
+    const payload = (await upstream.clone().json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
+    return respondFromOAuthCallback(
+      request,
+      upstreamOAuthCbMatch[1].toLowerCase(),
+      upstream.status,
+      payload,
+      upstream.headers.get("content-type"),
+    );
   }
 
   const responseHeaders = new Headers();

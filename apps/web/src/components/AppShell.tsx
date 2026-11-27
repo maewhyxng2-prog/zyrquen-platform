@@ -8,6 +8,7 @@ import {
   PlatformHealthProvider,
   usePlatformHealth,
 } from "@/hooks/usePlatformHealth";
+import { readSession } from "@/lib/api";
 import type { Session } from "@/lib/types";
 import { Icon, type IconName } from "./Icon";
 import { StatusBadge } from "./StatusBadge";
@@ -140,17 +141,22 @@ function AppShellInner({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    let active = true;
     const refreshSession = () => {
-      fetch("/api/session", { cache: "no-store" })
-        .then((response) => (response.ok ? response.json() : null))
-        .then((data: Session | null) => setSession(data))
-        .catch(() => setSession(null));
+      readSession()
+        .then((data) => {
+          if (active) setSession(data);
+        })
+        .catch(() => {
+          if (active) setSession(null);
+        });
     };
 
     refreshSession();
     window.addEventListener("zyrquen:session-change", refreshSession);
 
     return () => {
+      active = false;
       window.removeEventListener("zyrquen:session-change", refreshSession);
     };
   }, []);
@@ -199,8 +205,10 @@ function AppShellInner({ children }: { children: ReactNode }) {
       setSession({
         authenticated: false,
         email: null,
+        userId: null,
         role: null,
-        verified: true,
+        verified: false,
+        emailVerified: false,
       });
       window.dispatchEvent(new Event("zyrquen:session-change"));
 
