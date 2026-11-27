@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { DeveloperNav } from "@/components/DeveloperNav";
 import { Icon } from "@/components/Icon";
+import { MetricHelpTooltip } from "@/components/MetricHelpTooltip";
 import { PageHeader } from "@/components/PageHeader";
 import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -227,6 +228,9 @@ export default function AdminPage() {
     setLoading(true);
     setError("");
     await fetchAdminData();
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new Event("zyrquen:approvals-change"));
+    }
   }, [fetchAdminData]);
 
   const overviewModelVersion = overview?.native_ai.model_version?.trim() || null;
@@ -485,7 +489,13 @@ export default function AdminPage() {
                   <span className="metric-icon">
                     <Icon name="user" />
                   </span>
-                  <span className="metric-label">บัญชีผู้ใช้ทั้งหมด</span>
+                  <div className="metric-label-group">
+                    <span className="metric-label">บัญชีผู้ใช้ทั้งหมด</span>
+                    <MetricHelpTooltip
+                      description="จำนวนบัญชีผู้ใช้ทั้งหมดที่ลงทะเบียนอยู่ในฐานข้อมูล Backend รวมทั้งบัญชีที่เปิดใช้งานอยู่และที่ถูกปิดใช้งาน"
+                      label="บัญชีผู้ใช้ทั้งหมด"
+                    />
+                  </div>
                 </div>
                 <div className="metric-value tabular-nums">
                   {overview.users.toLocaleString("th-TH")}
@@ -501,7 +511,13 @@ export default function AdminPage() {
                   <span className="metric-icon metric-icon-cyan">
                     <Icon name="zap" />
                   </span>
-                  <span className="metric-label">INFERENCE สำเร็จ</span>
+                  <div className="metric-label-group">
+                    <span className="metric-label">INFERENCE สำเร็จ</span>
+                    <MetricHelpTooltip
+                      description="จำนวนคำขอประมวลผล (Inference Requests) ที่รันไทม์ Native AI ประมวลผลเสร็จสมบูรณ์โดยไม่เกิดข้อผิดพลาด"
+                      label="INFERENCE สำเร็จ"
+                    />
+                  </div>
                 </div>
                 <div className="metric-value tabular-nums">
                   {overview.successful_inference_requests.toLocaleString("th-TH")}
@@ -517,7 +533,13 @@ export default function AdminPage() {
                   <span className="metric-icon metric-icon-blue">
                     <Icon name="database" />
                   </span>
-                  <span className="metric-label">TOTAL TOKENS</span>
+                  <div className="metric-label-group">
+                    <span className="metric-label">TOTAL TOKENS</span>
+                    <MetricHelpTooltip
+                      description="ผลรวมสะสมของ Input Tokens (ข้อความขาเข้า) และ Output Tokens (ข้อความที่โมเดลสร้าง) ที่ถูกประมวลผลทั้งหมดในระบบ"
+                      label="TOTAL TOKENS"
+                    />
+                  </div>
                 </div>
                 <div className="metric-value tabular-nums">
                   {overview.total_tokens.toLocaleString("th-TH")}
@@ -537,7 +559,13 @@ export default function AdminPage() {
                   <span className="metric-icon metric-icon-violet">
                     <Icon name="key" />
                   </span>
-                  <span className="metric-label">API KEY ที่ใช้งานได้</span>
+                  <div className="metric-label-group">
+                    <span className="metric-label">API KEY ที่ใช้งานได้</span>
+                    <MetricHelpTooltip
+                      description="จำนวน API Key ที่เปิดใช้งานอยู่และยังไม่ถูกเพิกถอน พร้อมสัดส่วนนโยบายโควตา (Quota Policy) ที่เปิดใช้เทียบกับที่กำหนดไว้"
+                      label="API KEY ที่ใช้งานได้"
+                    />
+                  </div>
                 </div>
                 <div className="metric-value tabular-nums">
                   {overview.active_api_keys.toLocaleString("th-TH")}

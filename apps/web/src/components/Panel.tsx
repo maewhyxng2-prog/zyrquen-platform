@@ -1,11 +1,16 @@
-import type { ReactNode } from "react";
+import type { HTMLAttributes, ReactNode } from "react";
 
 export function Panel({
   children,
   className = "",
+  ...rest
 }: {
   children: ReactNode;
   className?: string;
-}) {
-  return <section className={`panel ${className}`}>{children}</section>;
+} & HTMLAttributes<HTMLElement>) {
+  return (
+    <section className={`panel ${className}`} {...rest}>
+      {children}
+    </section>
+  );
 }

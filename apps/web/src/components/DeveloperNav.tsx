@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
-import { readSession } from "@/lib/api";
+import { useCallback, useEffect, useState } from "react";
+import { apiRequest, readSession } from "@/lib/api";
 import type { Session } from "@/lib/types";
 import { Icon, type IconName } from "./Icon";
 
@@ -21,20 +21,79 @@ const developerTabs: {
   { href: "/admin", label: "ผู้ดูแลระบบ", icon: "shield", adminOnly: true },
 ];
 
+type ApprovalSummary = {
+  id?: string;
+  status?: string;
+};
+
 export function DeveloperNav() {
   const pathname = usePathname();
   const [session, setSession] = useState<Session | null>(null);
+  const [pendingApprovals, setPendingApprovals] = useState<number | null>(null);
+
+  const loadPendingApprovals = useCallback(async (isAdminUser: boolean) => {
+    if (!isAdminUser) {
+      setPendingApprovals(null);
+      return;
+    }
+    try {
+      const response = await apiRequest<{ items?: ApprovalSummary[] }>(
+        "v1/workflows/approvals?status=pending&limit=100",
+      );
+      const items = Array.isArray(response.items) ? response.items : [];
+      const pendingCount = items.filter(
+        (item) => (item.status ?? "pending").toLowerCase() === "pending",
+      ).length;
+      setPendingApprovals(pendingCount);
+    } catch {
+      setPendingApprovals(null);
+    }
+  }, []);
 
   useEffect(() => {
-    const syncSession = () => {
-      readSession()
-        .then(setSession)
-        .catch(() => setSession(null));
+    let active = true;
+
+    const syncSessionAndApprovals = async () => {
+      try {
+        const nextSession = await readSession();
+        if (!active) return;
+        setSession(nextSession);
+        const admin = Boolean(
+          nextSession.authenticated && nextSession.role === "admin",
+        );
+        await loadPendingApprovals(admin);
+      } catch {
+        if (!active) return;
+        setSession(null);
+        setPendingApprovals(null);
+      }
     };
-    syncSession();
-    window.addEventListener("zyrquen:session-change", syncSession);
-    return () => window.removeEventListener("zyrquen:session-change", syncSession);
-  }, []);
+
+    const handleApprovalsChange = () => {
+      if (!active) return;
+      const admin = Boolean(session?.authenticated && session?.role === "admin");
+      if (admin) {
+        void loadPendingApprovals(true);
+      } else {
+        void syncSessionAndApprovals();
+      }
+    };
+
+    void syncSessionAndApprovals();
+    window.addEventListener("zyrquen:session-change", syncSessionAndApprovals);
+    window.addEventListener("zyrquen:approvals-change", handleApprovalsChange);
+    return () => {
+      active = false;
+      window.removeEventListener(
+        "zyrquen:session-change",
+        syncSessionAndApprovals,
+      );
+      window.removeEventListener(
+        "zyrquen:approvals-change",
+        handleApprovalsChange,
+      );
+    };
+  }, [loadPendingApprovals, session?.authenticated, session?.role]);
 
   const isAdmin = Boolean(session?.authenticated && session?.role === "admin");
 
@@ -60,6 +119,35 @@ export function DeveloperNav() {
             </Link>
           );
         })}
+
+      {isAdmin ? (
+        <Link
+          aria-label={
+            pendingApprovals === null
+              ? "Tier-2 Approval workflows awaiting review"
+              : `Tier-2 Approval workflows awaiting review: ${pendingApprovals}`
+          }
+          className={`developer-subnav-bell${
+            pendingApprovals && pendingApprovals > 0
+              ? " developer-subnav-bell-pending"
+              : ""
+          }`}
+          href="/developer/console#tier2-approvals"
+          title={
+            pendingApprovals === null
+              ? "Tier-2 Approval workflows awaiting review"
+              : `Tier-2 Approval workflows awaiting review: ${pendingApprovals}`
+          }
+        >
+          <Icon name="bell" size={15} />
+          <span className="developer-subnav-bell-label">Tier-2 Approval</span>
+          {pendingApprovals !== null ? (
+            <span className="developer-subnav-bell-badge tabular-nums">
+              {pendingApprovals}
+            </span>
+          ) : null}
+        </Link>
+      ) : null}
     </nav>
   );
 }

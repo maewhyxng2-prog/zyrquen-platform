@@ -5643,3 +5643,115 @@ code {
     transition-duration: 0.01ms !important;
   }
 }
+
+.metric-label-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.metric-help-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.metric-help-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    color 160ms var(--ease-out),
+    background 160ms var(--ease-out),
+    border-color 160ms var(--ease-out);
+}
+
+.metric-help-trigger:hover,
+.metric-help-trigger:focus-visible {
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+  color: var(--cyan);
+}
+
+.metric-help-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  width: 248px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-elevated);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  padding: 10px 12px;
+  text-align: left;
+  white-space: normal;
+}
+
+.developer-subnav-bell {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  color: var(--text-secondary);
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition:
+    background 160ms var(--ease-out),
+    border-color 160ms var(--ease-out),
+    color 160ms var(--ease-out);
+}
+
+.developer-subnav-bell:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.developer-subnav-bell-pending {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: var(--amber-dim);
+  color: var(--amber-soft);
+}
+
+.developer-subnav-bell-badge {
+  display: inline-flex;
+  min-width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--surface-inset);
+  border: 1px solid var(--line-strong);
+  padding: 0 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.developer-subnav-bell-pending .developer-subnav-bell-badge {
+  background: var(--amber);
+  border-color: var(--amber-soft);
+  color: var(--bg-midnight);
+}

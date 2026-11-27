@@ -37,6 +37,7 @@ import type {
   ThreadCleanupVerification,
 } from '../types';
 import { CopyButton } from './CopyButton';
+import { MetricHelpTooltip } from './MetricHelpTooltip';
 
 interface AdminStabilityPanelProps {
   adminData: AdminOverview | null;
@@ -254,9 +255,15 @@ export function AdminStabilityPanel({
       {/* KPI Summary Cards */}
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-4">
-          <div className="flex items-center justify-between text-xs text-[var(--color-text-secondary)]">
-            <span>การใช้งาน JS Heap (PerformanceMonitor)</span>
-            <HardDrive className="h-3.5 w-3.5 text-[var(--color-accent)]" />
+          <div className="flex items-center justify-between gap-2 text-xs text-[var(--color-text-secondary)]">
+            <div className="flex items-center gap-1.5">
+              <span>การใช้งาน JS Heap (PerformanceMonitor)</span>
+              <MetricHelpTooltip
+                label="การใช้งาน JS Heap"
+                description="วัดหน่วยความจำ JavaScript Heap ที่ใช้งานจริงในเบราว์เซอร์และขนาดบัฟเฟอร์สตรีมมิ่ง เพื่อตรวจสอบแนวโน้มการใช้หน่วยความจำ"
+              />
+            </div>
+            <HardDrive className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent)]" />
           </div>
           {latestSample?.heapSupported && latestSample.usedJSHeapMB !== null ? (
             <>
@@ -283,12 +290,18 @@ export function AdminStabilityPanel({
         </div>
 
         <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-4">
-          <div className="flex items-center justify-between text-xs text-[var(--color-text-secondary)]">
-            <span>สถานะหน่วยความจำ &amp; Thread Cleanup</span>
+          <div className="flex items-center justify-between gap-2 text-xs text-[var(--color-text-secondary)]">
+            <div className="flex items-center gap-1.5">
+              <span>สถานะหน่วยความจำ &amp; Thread Cleanup</span>
+              <MetricHelpTooltip
+                label="สถานะหน่วยความจำ & Thread Cleanup"
+                description="ตรวจจับสัญญาณ Memory Leak หรือคำขอสลับเธรดที่ค้างอยู่หลังยกเลิก เพื่อยืนยันว่าไม่มีงานค้างในพื้นหลัง"
+              />
+            </div>
             {latestSample?.leakWarning || cleanupVerification?.clean === false ? (
-              <AlertTriangle className="h-3.5 w-3.5 text-[var(--color-warning)]" />
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-[var(--color-warning)]" />
             ) : (
-              <ShieldCheck className="h-3.5 w-3.5 text-[var(--color-success)]" />
+              <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-[var(--color-success)]" />
             )}
           </div>
           <p
@@ -311,9 +324,15 @@ export function AdminStabilityPanel({
         </div>
 
         <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-4">
-          <div className="flex items-center justify-between text-xs text-[var(--color-text-secondary)]">
-            <span>เวลาแฝงประมวลผล (เฉลี่ย / สูงสุด)</span>
-            <Clock className="h-3.5 w-3.5 text-[var(--color-accent)]" />
+          <div className="flex items-center justify-between gap-2 text-xs text-[var(--color-text-secondary)]">
+            <div className="flex items-center gap-1.5">
+              <span>เวลาแฝงประมวลผล (เฉลี่ย / สูงสุด)</span>
+              <MetricHelpTooltip
+                label="เวลาแฝงประมวลผล"
+                description="ค่าเฉลี่ยและค่าสูงสุดของระยะเวลาประมวลผลต่อคำขอ (หน่วยมิลลิวินาที) ทั้งจาก Native Core และฝั่ง Client Stream"
+              />
+            </div>
+            <Clock className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent)]" />
           </div>
           <p className="mt-2 font-mono text-xl font-bold text-[var(--color-text)] tabular-nums">
             {latencySummary.avgMs} ms
@@ -324,9 +343,15 @@ export function AdminStabilityPanel({
         </div>
 
         <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-4">
-          <div className="flex items-center justify-between text-xs text-[var(--color-text-secondary)]">
-            <span>คอขวดสูงสุดใน Reasoning Trace</span>
-            <Cpu className="h-3.5 w-3.5 text-[var(--color-warning)]" />
+          <div className="flex items-center justify-between gap-2 text-xs text-[var(--color-text-secondary)]">
+            <div className="flex items-center gap-1.5">
+              <span>คอขวดสูงสุดใน Reasoning Trace</span>
+              <MetricHelpTooltip
+                label="คอขวดสูงสุดใน Reasoning Trace"
+                description="ขั้นตอนย่อยในกระบวนการให้เหตุผล (Reasoning Trace) ที่ใช้เวลาประมวลผลสูงสุด ช่วยชี้เป้าจุดที่ควรปรับปรุงประสิทธิภาพ"
+              />
+            </div>
+            <Cpu className="h-3.5 w-3.5 shrink-0 text-[var(--color-warning)]" />
           </div>
           {slowestTask ? (
             <>

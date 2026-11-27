@@ -2,6 +2,7 @@ import React, { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
+  Bell,
   Check,
   CheckCircle2,
   Code2,
@@ -30,6 +31,7 @@ import { serializeTableToTsv } from '../lib/clipboard';
 import { useZyrquenTheme } from '../lib/theme';
 import { MODEL_VARIANTS } from '../types';
 import { CopyButton } from './CopyButton';
+import { MetricHelpTooltip } from './MetricHelpTooltip';
 import { ModelRegistryModal, type ModelRegistryModalTab } from './ModelRegistryModal';
 import { ToolRegistry } from './ToolRegistry';
 
@@ -2549,39 +2551,87 @@ export function SettingsView({
       {/* TAB 3: ผู้ดูแลระบบ */}
       {activeTab === 'admin' && user.role === 'admin' && (
         <div className="space-y-6">
-          <div
-            role="tablist"
-            aria-label="หมวดหมู่ผู้ดูแลระบบ"
-            className="inline-flex flex-wrap gap-1 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-1"
-          >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={adminSubTab === 'governance'}
-              onClick={() => setAdminSubTab('governance')}
-              className={`flex min-h-[38px] items-center gap-2 rounded-lg px-3.5 text-xs font-medium transition-colors whitespace-nowrap ${
-                adminSubTab === 'governance'
-                  ? 'bg-[var(--zyrquen-violet)] text-white'
-                  : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text)]'
-              }`}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div
+              role="tablist"
+              aria-label="หมวดหมู่ผู้ดูแลระบบ"
+              className="inline-flex flex-wrap gap-1 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-1"
             >
-              <Shield className="h-3.5 w-3.5" />
-              <span>ธรรมาภิบาล &amp; Approval Gate</span>
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={adminSubTab === 'stability'}
-              onClick={() => setAdminSubTab('stability')}
-              className={`flex min-h-[38px] items-center gap-2 rounded-lg px-3.5 text-xs font-medium transition-colors whitespace-nowrap ${
-                adminSubTab === 'stability'
-                  ? 'bg-[var(--color-primary)] text-white'
-                  : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text)]'
-              }`}
-            >
-              <Activity className="h-3.5 w-3.5" />
-              <span>ความเสถียรเนทีฟ (PerformanceMonitor)</span>
-            </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={adminSubTab === 'governance'}
+                onClick={() => setAdminSubTab('governance')}
+                className={`flex min-h-[38px] items-center gap-2 rounded-lg px-3.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                  adminSubTab === 'governance'
+                    ? 'bg-[var(--zyrquen-violet)] text-white'
+                    : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text)]'
+                }`}
+              >
+                <Shield className="h-3.5 w-3.5" />
+                <span>ธรรมาภิบาล &amp; Approval Gate</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={adminSubTab === 'stability'}
+                onClick={() => setAdminSubTab('stability')}
+                className={`flex min-h-[38px] items-center gap-2 rounded-lg px-3.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                  adminSubTab === 'stability'
+                    ? 'bg-[var(--color-primary)] text-white'
+                    : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text)]'
+                }`}
+              >
+                <Activity className="h-3.5 w-3.5" />
+                <span>ความเสถียรเนทีฟ (PerformanceMonitor)</span>
+              </button>
+            </div>
+
+            {(() => {
+              const pendingTier2Count = adminData ? adminData.pending_runs.length : null;
+              return (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAdminSubTab('governance');
+                    window.requestAnimationFrame(() => {
+                      document
+                        .getElementById('tier2-approval-queue')
+                        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    });
+                  }}
+                  aria-label={
+                    pendingTier2Count === null
+                      ? 'Tier-2 Approval workflows awaiting review'
+                      : `Tier-2 Approval workflows awaiting review: ${pendingTier2Count}`
+                  }
+                  title={
+                    pendingTier2Count === null
+                      ? 'Tier-2 Approval workflows awaiting review'
+                      : `Tier-2 Approval workflows awaiting review: ${pendingTier2Count}`
+                  }
+                  className={`inline-flex min-h-[38px] items-center gap-2 rounded-xl border px-3 text-xs font-semibold transition-colors whitespace-nowrap ${
+                    pendingTier2Count && pendingTier2Count > 0
+                      ? 'border-[var(--color-warning)]/45 bg-[var(--color-warning-bg)] text-[var(--color-warning)] hover:opacity-90'
+                      : 'border-[var(--color-border)] bg-[var(--color-surface-raised)] text-[var(--color-text-secondary)] hover:border-[var(--color-accent)] hover:text-[var(--color-text)]'
+                  }`}
+                >
+                  <Bell className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  <span>Tier-2 Approval</span>
+                  {pendingTier2Count !== null && (
+                    <span
+                      className={`inline-flex min-w-[20px] items-center justify-center rounded-full px-1.5 py-0.5 font-mono text-[11px] font-bold tabular-nums ${
+                        pendingTier2Count > 0
+                          ? 'bg-[var(--color-warning)] text-black'
+                          : 'border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)]'
+                      }`}
+                    >
+                      {pendingTier2Count}
+                    </span>
+                  )}
+                </button>
+              );
+            })()}
           </div>
 
           {loading && !adminData ? (
@@ -2690,17 +2740,35 @@ export function SettingsView({
                     {sys && (
                       <div className="mt-4 grid gap-2 text-xs sm:grid-cols-3 tabular-nums">
                         <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
-                          <p className="text-[11px] text-[var(--color-text-secondary)]">CPU ภายใน (ไม่ถือว่าพร้อมฝึก)</p>
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-[11px] text-[var(--color-text-secondary)]">CPU ภายใน (ไม่ถือว่าพร้อมฝึก)</p>
+                            <MetricHelpTooltip
+                              label="CPU ภายใน"
+                              description="จำนวนคอร์ CPU และค่าโหลดเฉลี่ย 1 นาทีของเครื่องโฮสต์ ใช้ประเมินกำลังประมวลผลเบื้องต้น แต่ไม่ถือว่าพร้อมฝึกจนกว่าจะผ่าน Data และ Approval Gate"
+                            />
+                          </div>
                           <p className="mt-0.5 font-mono text-[var(--color-text)]">{sys.cpu_count} คอร์ · load {sys.load_1m}</p>
                         </div>
                         <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
-                          <p className="text-[11px] text-[var(--color-text-secondary)]">RAM ว่าง / ทั้งหมด</p>
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-[11px] text-[var(--color-text-secondary)]">RAM ว่าง / ทั้งหมด</p>
+                            <MetricHelpTooltip
+                              label="RAM ว่าง / ทั้งหมด"
+                              description="ปริมาณหน่วยความจำ (RAM) ที่เหลือใช้งานได้จริงเทียบกับ RAM ทั้งหมดของเซิร์ฟเวอร์ เพื่อป้องกันปัญหา OOM ระหว่างรันเวิร์กโฟลว์"
+                            />
+                          </div>
                           <p className="mt-0.5 font-mono text-[var(--color-text)]">
                             {Math.round(sys.mem_available_mb).toLocaleString()} / {Math.round(sys.mem_total_mb).toLocaleString()} MB
                           </p>
                         </div>
                         <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
-                          <p className="text-[11px] text-[var(--color-text-secondary)]">พื้นที่จัดเก็บว่าง</p>
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-[11px] text-[var(--color-text-secondary)]">พื้นที่จัดเก็บว่าง</p>
+                            <MetricHelpTooltip
+                              label="พื้นที่จัดเก็บว่าง"
+                              description="พื้นที่ดิสก์ที่เหลืออยู่สำหรับเก็บชุดข้อมูล Checkpoint และ Audit Logs ของระบบ"
+                            />
+                          </div>
                           <p className="mt-0.5 font-mono text-[var(--color-text)]">
                             {sys.disk_free_gb} / {sys.disk_total_gb} GB
                           </p>
@@ -2710,33 +2778,51 @@ export function SettingsView({
 
                     <div className="mt-4 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-3">
                       <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
-                        <div className="flex items-center justify-between">
+                        <div className="flex items-center justify-between gap-2">
                           <span className="text-[var(--color-text)]">1. ชุดข้อมูลจริง (≥5 รายการ, ไร้ Leakage)</span>
-                          <span className={`font-mono font-semibold ${cleanDatasets > 0 ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'}`}>
-                            {cleanDatasets > 0 ? 'PASS' : 'BLOCKED'}
-                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <MetricHelpTooltip
+                              label="ชุดข้อมูลจริง (Clean Datasets)"
+                              description="ตรวจสอบว่ามีชุดข้อมูลจริงอย่างน้อย 5 รายการที่ไม่ซ้ำกัน และผ่านการตรวจ Data Leakage ระหว่างชุด Train / Val / Test แล้ว"
+                            />
+                            <span className={`font-mono font-semibold ${cleanDatasets > 0 ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'}`}>
+                              {cleanDatasets > 0 ? 'PASS' : 'BLOCKED'}
+                            </span>
+                          </div>
                         </div>
                         <p className="mt-1 font-mono text-[11px] text-[var(--color-text-secondary)] tabular-nums">
                           ผ่านเกณฑ์ {cleanDatasets} / {datasetsTotal} ชุด
                         </p>
                       </div>
                       <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
-                        <div className="flex items-center justify-between">
+                        <div className="flex items-center justify-between gap-2">
                           <span className="text-[var(--color-text)]">2. ความรู้ที่ยืนยันแล้ว (KG ≥ 5)</span>
-                          <span className={`font-mono font-semibold ${verifiedTriples >= 5 ? 'text-[var(--color-success)]' : 'text-[var(--color-warning)]'}`}>
-                            {verifiedTriples >= 5 ? 'PASS' : 'PARTIAL'}
-                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <MetricHelpTooltip
+                              label="ความรู้ที่ยืนยันแล้ว (Verified Triples)"
+                              description="จำนวนความสัมพันธ์ใน Knowledge Graph ที่ผ่านการตรวจสอบและอนุมัติแล้ว ต้องมีอย่างน้อย 5 รายการเพื่อใช้เป็นฐานความรู้"
+                            />
+                            <span className={`font-mono font-semibold ${verifiedTriples >= 5 ? 'text-[var(--color-success)]' : 'text-[var(--color-warning)]'}`}>
+                              {verifiedTriples >= 5 ? 'PASS' : 'PARTIAL'}
+                            </span>
+                          </div>
                         </div>
                         <p className="mt-1 font-mono text-[11px] text-[var(--color-text-secondary)] tabular-nums">
                           ยืนยันแล้ว {verifiedTriples} / {tr?.triples_total ?? 0} รายการ
                         </p>
                       </div>
                       <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
-                        <div className="flex items-center justify-between">
+                        <div className="flex items-center justify-between gap-2">
                           <span className="text-[var(--color-text)]">3. Random-Init + Approval Gate</span>
-                          <span className={`font-mono font-semibold ${checkpointsTotal > 0 ? 'text-[var(--color-success)]' : pendingApprovals > 0 ? 'text-[var(--color-warning)]' : 'text-[var(--color-text-muted)]'}`}>
-                            {checkpointsTotal > 0 ? 'VERIFIED' : pendingApprovals > 0 ? 'PENDING' : 'NOT_RUN'}
-                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <MetricHelpTooltip
+                              label="Random-Init + Approval Gate"
+                              description="สรุปจำนวนการทดลองโมเดลเนทีฟ คำขอ Tier-2 ที่รออนุมัติ และจำนวน Checkpoint ที่ผ่านการบันทึกอย่างปลอดภัยแล้ว"
+                            />
+                            <span className={`font-mono font-semibold ${checkpointsTotal > 0 ? 'text-[var(--color-success)]' : pendingApprovals > 0 ? 'text-[var(--color-warning)]' : 'text-[var(--color-text-muted)]'}`}>
+                              {checkpointsTotal > 0 ? 'VERIFIED' : pendingApprovals > 0 ? 'PENDING' : 'NOT_RUN'}
+                            </span>
+                          </div>
                         </div>
                         <p className="mt-1 font-mono text-[11px] text-[var(--color-text-secondary)] tabular-nums">
                           ทดลอง {experimentsTotal} · รออนุมัติ {pendingApprovals} · Ckpt {checkpointsTotal} (Neural {neuralCheckpoints})
@@ -2852,7 +2938,10 @@ export function SettingsView({
               })()}
 
               <div className="grid gap-5 lg:grid-cols-2">
-                <section className="rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-5 sm:p-6">
+                <section
+                  id="tier2-approval-queue"
+                  className="rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-5 sm:p-6"
+                >
                   <h3 className="text-base font-semibold text-[var(--color-text)]">
                     คิวรออนุมัติเวิร์กโฟลว์ (Approval Gate)
                   </h3>

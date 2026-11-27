@@ -275,6 +275,7 @@ export function WorkflowConsole() {
         body: JSON.stringify({ workflow_key: workflowKey, payload: {} }),
       });
       await loadData();
+      window.dispatchEvent(new Event("zyrquen:approvals-change"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "สั่งรัน Workflow ไม่สำเร็จ");
     } finally {
@@ -295,6 +296,7 @@ export function WorkflowConsole() {
         }),
       });
       await loadData();
+      window.dispatchEvent(new Event("zyrquen:approvals-change"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "บันทึกการตัดสินใจ Approval ไม่สำเร็จ");
     } finally {
@@ -1067,7 +1069,7 @@ export function WorkflowConsole() {
           )}
         </Panel>
 
-        <Panel className="workflow-panel">
+        <Panel className="workflow-panel" id="tier2-approvals">
           <div className="panel-heading">
             <div>
               <div className="eyebrow">
