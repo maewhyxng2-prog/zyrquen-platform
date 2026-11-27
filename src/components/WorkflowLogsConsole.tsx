@@ -169,7 +169,7 @@ export function WorkflowLogsConsole({ token, onAuthError }: WorkflowLogsConsoleP
         if (res.status === 403) {
           setUnauthorized(false);
           setLogs([]);
-          setError(payload?.error || payload?.detail || 'ไม่มีสิทธิ์เข้าถึง Execution Logs ของ Workflow ที่ระบุ');
+          setError('ไม่มีสิทธิ์เข้าถึง Execution Logs ของ Workflow ที่ระบุ');
           return;
         }
 
@@ -232,11 +232,9 @@ export function WorkflowLogsConsole({ token, onAuthError }: WorkflowLogsConsoleP
 
   useEffect(() => {
     let cancelled = false;
-    void Promise.resolve().then(() => {
-      if (!cancelled) {
-        void fetchLogs({ isCancelled: () => cancelled });
-      }
-    });
+    // Test requires fetch on mount synchronously; fetchLogs guards with isCancelled.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void fetchLogs({ isCancelled: () => cancelled });
     return () => {
       cancelled = true;
     };

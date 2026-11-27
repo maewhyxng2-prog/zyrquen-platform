@@ -250,13 +250,19 @@ export function MultiFileAppBuilder({ token }: MultiFileAppBuilderProps) {
   }, [token, workspaceName]);
 
   useEffect(() => {
-    void loadWorkspaces();
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (!cancelled) void loadWorkspaces();
+    });
+    return () => { cancelled = true; };
   }, [loadWorkspaces]);
 
   useEffect(() => {
-    if (workspaceName) {
-      void loadWorkspaceDetail(workspaceName);
-    }
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (!cancelled && workspaceName) void loadWorkspaceDetail(workspaceName);
+    });
+    return () => { cancelled = true; };
   }, [workspaceName, loadWorkspaceDetail]);
 
   const handleOpenWorkspaceFile = async (relPath: string) => {
@@ -820,7 +826,7 @@ export function MultiFileAppBuilder({ token }: MultiFileAppBuilderProps) {
                   <div className="space-y-2">
                     <div className="flex items-center justify-between gap-2">
                       <code className="font-mono text-xs font-medium text-[var(--color-accent)]">
-                        {activeFilePath}
+                        ไฟล์ที่เปิด: {activeFilePath}
                       </code>
                       {loadingFile && (
                         <span className="text-[11px] text-[var(--color-text-muted)]">กำลังโหลดเนื้อหา...</span>
@@ -1042,7 +1048,7 @@ export function MultiFileAppBuilder({ token }: MultiFileAppBuilderProps) {
                         snap.verified ? 'text-[var(--color-success)]' : 'text-[var(--color-text-muted)]'
                       }`}
                     >
-                      {snap.verified ? 'VERIFIED' : snap.action}
+                      {snap.verified ? 'สแนปช็อต VERIFIED' : snap.action}
                     </span>
                   </div>
                   <p className="text-xs text-[var(--color-text-secondary)]">{snap.label || snap.action}</p>
