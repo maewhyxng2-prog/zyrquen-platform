@@ -925,12 +925,21 @@ export function runFallbackDbBridge(action: string, payload: AnyRecord = {}): An
     const traces = store.reasoningTraces
       .filter((t) => isAdmin || !uid || t.user_id === uid)
       .slice(0, 30);
+    const runs = store.workflowRuns
+      .filter((r) => isAdmin || (Boolean(uid) && r.triggered_by === uid))
+      .slice(0, 30);
     return {
       ok: true,
       groups: WORKFLOW_GROUPS,
-      runs: store.workflowRuns.slice(0, 30),
+      runs,
       reasoning_traces: traces,
     };
+  }
+
+  if (action === 'workflow_get_run') {
+    const runId = String(payload.run_id || '').trim();
+    const run = store.workflowRuns.find((r) => r.id === runId) ?? null;
+    return { ok: true, run };
   }
 
   if (action === 'reasoning_traces_list') {

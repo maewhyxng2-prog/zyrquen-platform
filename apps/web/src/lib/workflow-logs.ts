@@ -102,6 +102,23 @@ export function formatWorkflowLogTime(timestamp: string | null | undefined): str
   });
 }
 
+export const SAFE_WORKFLOW_RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+export function isValidWorkflowRunId(runId: string | null | undefined): boolean {
+  if (typeof runId !== "string") return false;
+  const trimmed = runId.trim();
+  return trimmed.length > 0 && SAFE_WORKFLOW_RUN_ID_RE.test(trimmed);
+}
+
+export function filterWorkflowRunsByOwnership<
+  T extends { requested_by_user_id?: string | null },
+>(runs: T[], caller: { id: string; role: string }): T[] {
+  if (caller.role === "admin") {
+    return runs;
+  }
+  return runs.filter((r) => r.requested_by_user_id === caller.id);
+}
+
 export function deriveLogsFromRuns(
   runs: WorkflowRunItem[],
   options: {

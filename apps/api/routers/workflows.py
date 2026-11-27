@@ -180,22 +180,27 @@ def list_workflow_runs(
     status_filter: str | None = Query(default=None, alias="status"),
     workflow_key: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     engine = get_workflow_engine()
     runs = engine.store.list_runs(status=status_filter, workflow_key=workflow_key, limit=limit)
+    if current_user.role != "admin":
+        user_id = str(current_user.id)
+        runs = [r for r in runs if r.get("requested_by_user_id") == user_id]
     return {"items": redact_dict(runs)}
 
 
 @router.get("/v1/workflows/runs/{run_id}")
 def get_workflow_run(
     run_id: str,
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     engine = get_workflow_engine()
     run = engine.store.get_run(run_id)
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow run not found")
+    if current_user.role != "admin" and run.get("requested_by_user_id") != str(current_user.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     return redact_dict(run)
 
 
@@ -290,6 +295,7 @@ _ACTIVE_ORCHESTRATION_STATUSES = {
     "WAITING_APPROVAL",
     "WAITING_RESOURCE",
 }
+_SAFE_WORKFLOW_LOG_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 def _log_level_for_status(status_value: str | None, decision_value: str | None = None) -> str:
@@ -306,41 +312,68 @@ def list_workflow_execution_logs(
     run_id: str | None = Query(default=None),
     active_only: bool = Query(default=True),
     limit: int = Query(default=100, ge=1, le=500),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     """Return structured execution logs for active (or filtered) workflow orchestration jobs."""
     from apps.core.workflow.models import utc_now_iso
 
-    engine = get_workflow_engine()
-    all_runs = engine.store.list_runs(limit=100)
-    active_runs = [r for r in all_runs if r.get("status") in _ACTIVE_ORCHESTRATION_STATUSES]
+    normalized_run_id = run_id.strip() if isinstance(run_id, str) and run_id.strip() else None
+    if normalized_run_id and not _SAFE_WORKFLOW_LOG_RUN_ID_RE.match(normalized_run_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid workflow run_id identifier.",
+        )
 
-    if run_id:
-        target_runs = [r for r in all_runs if r.get("id") == run_id]
+    engine = get_workflow_engine()
+    is_admin = current_user.role == "admin"
+    current_uid = str(current_user.id)
+
+    all_runs = engine.store.list_runs(limit=100)
+    accessible_runs = (
+        all_runs
+        if is_admin
+        else [r for r in all_runs if r.get("requested_by_user_id") == current_uid]
+    )
+    active_runs = [r for r in accessible_runs if r.get("status") in _ACTIVE_ORCHESTRATION_STATUSES]
+
+    if normalized_run_id:
+        requested_run = engine.store.get_run(normalized_run_id)
+        if requested_run is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Workflow run not found",
+            )
+        if not is_admin and requested_run.get("requested_by_user_id") != current_uid:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Forbidden",
+            )
+        target_runs = [requested_run]
+        run_by_id = {str(requested_run.get("id")): requested_run}
     elif active_only:
         target_runs = active_runs
+        run_by_id = {str(r.get("id")): r for r in accessible_runs if r.get("id")}
     else:
-        target_runs = all_runs[:25]
+        target_runs = accessible_runs[:25]
+        run_by_id = {str(r.get("id")): r for r in accessible_runs if r.get("id")}
 
-    run_by_id = {str(r.get("id")): r for r in all_runs if r.get("id")}
     target_run_ids = {str(r.get("id")) for r in target_runs if r.get("id")}
-
     entries: list[dict[str, object]] = []
 
-    if run_id:
-        raw_audits = engine.store.list_audit_logs(run_id=run_id, limit=limit)
+    if target_run_ids:
+        if normalized_run_id:
+            raw_audits = engine.store.list_audit_logs(run_id=normalized_run_id, limit=limit)
+        else:
+            raw_audits = engine.store.list_audit_logs(limit=min(500, limit * 3))
     else:
-        raw_audits = engine.store.list_audit_logs(limit=min(500, limit * 3))
+        raw_audits = []
 
     for audit in raw_audits:
         audit_run_id = audit.get("run_id")
-        if target_run_ids:
-            if str(audit_run_id or "") not in target_run_ids:
-                continue
-        elif active_only:
+        if not audit_run_id or str(audit_run_id) not in target_run_ids:
             continue
 
-        run_obj = run_by_id.get(str(audit_run_id or ""), {})
+        run_obj = run_by_id.get(str(audit_run_id), {})
         details = audit.get("details") if isinstance(audit.get("details"), dict) else {}
         decision = str(audit.get("decision") or "")
         event_type = str(audit.get("event_type") or "workflow.event")

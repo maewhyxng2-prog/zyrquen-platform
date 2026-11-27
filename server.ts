@@ -1079,28 +1079,57 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
     res.json(data);
   });
 
-  app.get('/api/workflows/logs', requireAuth, async (req: AuthedRequest, res: Response) => {
+  type WorkflowLogRunRecord = {
+    id: string;
+    group_id?: string;
+    status?: string;
+    triggered_by?: string | null;
+    summary?: string | null;
+    stages_json?: string | null;
+    created_at?: string | null;
+    updated_at?: string | null;
+  };
+
+  const handleWorkflowLogs = async (req: AuthedRequest, res: Response) => {
     const activeOnly = String(req.query.active_only ?? 'true').toLowerCase() !== 'false';
     const runIdFilter = String(req.query.run_id ?? '').trim() || null;
+    if (runIdFilter && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(runIdFilter)) {
+      res.status(400).json({ error: 'Invalid workflow run_id identifier.' });
+      return;
+    }
     const rawLimit = Number(req.query.limit ?? 100);
     const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(500, Math.round(rawLimit))) : 100;
+    const isAdmin = req.user!.role === 'admin';
+    const currentUid = req.user!.id;
+
+    let explicitRun: WorkflowLogRunRecord | null = null;
+    if (runIdFilter) {
+      const lookup = await runPythonScript<{
+        ok: boolean;
+        run?: WorkflowLogRunRecord | null;
+      }>('db_bridge.py', {
+        action: 'workflow_get_run',
+        payload: { run_id: runIdFilter },
+      });
+      explicitRun = lookup.run ?? null;
+      if (!explicitRun) {
+        res.status(404).json({ error: 'Workflow run not found' });
+        return;
+      }
+      if (!isAdmin && explicitRun.triggered_by !== currentUid) {
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+    }
 
     const data = await runPythonScript<{
       ok: boolean;
-      runs?: Array<{
-        id: string;
-        group_id?: string;
-        status?: string;
-        summary?: string | null;
-        stages_json?: string | null;
-        created_at?: string | null;
-        updated_at?: string | null;
-      }>;
+      runs?: WorkflowLogRunRecord[];
     }>('db_bridge.py', {
       action: 'workflows_list',
       payload: {
-        user_id: req.user!.id,
-        is_admin: req.user!.role === 'admin',
+        user_id: currentUid,
+        is_admin: isAdmin,
       },
     });
 
@@ -1120,10 +1149,12 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
       return 'INFO';
     };
 
-    const runs = Array.isArray(data.runs) ? data.runs : [];
+    const runs = (Array.isArray(data.runs) ? data.runs : []).filter(
+      (r) => isAdmin || r.triggered_by === currentUid
+    );
     const activeRuns = runs.filter((r) => activeStatuses.has(String(r.status || '').toUpperCase()));
-    const targetRuns = runIdFilter
-      ? runs.filter((r) => r.id === runIdFilter)
+    const targetRuns = explicitRun
+      ? [explicitRun]
       : activeOnly
         ? activeRuns
         : runs.slice(0, 25);
@@ -1141,7 +1172,7 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
         level: levelFor(status),
         event_type: `workflow.${status.toLowerCase()}`,
         status,
-        actor_id: 'orchestrator',
+        actor_id: r.triggered_by || 'orchestrator',
         message: r.summary || `Workflow ${workflowKey} is ${status}`,
         details: null,
         timestamp: ts,
@@ -1152,7 +1183,7 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
           const stages = JSON.parse(r.stages_json) as Array<Record<string, unknown>>;
           if (Array.isArray(stages)) {
             stages.forEach((stage, idx) => {
-              const stepKey = String(stage.name || stage.step_key || `stage_${idx + 1}`);
+              const stepKey = String(stage.name || stage.step_key || stage.stage || `stage_${idx + 1}`);
               const stepStatus = String(stage.status || status);
               items.push({
                 id: `step:${r.id}:${stepKey}:${stepStatus}:${idx}`,
@@ -1162,7 +1193,7 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
                 level: levelFor(stepStatus),
                 event_type: `step.${stepStatus.toLowerCase()}`,
                 status: stepStatus,
-                actor_id: 'orchestrator',
+                actor_id: r.triggered_by || 'orchestrator',
                 message: String(stage.detail || stage.summary || `${stepKey}: ${stepStatus}`),
                 details: null,
                 timestamp: String(stage.updated_at || stage.finished_at || stage.started_at || ts || ''),
@@ -1188,7 +1219,10 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
       active_only: activeOnly,
       polled_at: new Date().toISOString(),
     });
-  });
+  };
+
+  app.get('/api/workflows/logs', requireAuth, handleWorkflowLogs);
+  app.get('/api/v1/workflows/logs', requireAuth, handleWorkflowLogs);
 
   app.post('/api/workflows/:groupId/run', requireAuth, async (req: AuthedRequest, res: Response) => {
     const datasetId = req.body?.datasetId ? String(req.body.datasetId) : null;

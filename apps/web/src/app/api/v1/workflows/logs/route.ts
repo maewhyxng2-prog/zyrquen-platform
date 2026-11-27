@@ -9,7 +9,11 @@ import {
   handleInMemoryBackendRequest,
   shouldUseInMemoryBackend,
 } from "@/lib/in-memory-backend";
-import { deriveLogsFromRuns } from "@/lib/workflow-logs";
+import {
+  buildWorkflowLogsQuery,
+  deriveLogsFromRuns,
+  isValidWorkflowRunId,
+} from "@/lib/workflow-logs";
 import type { WorkflowRunItem } from "@/lib/workflow-metrics";
 
 function clearCookiesOnUnauthorized(
@@ -47,7 +51,31 @@ export async function GET(request: NextRequest) {
 
   const cookieStore = await cookies();
   const accessToken = cookieStore.get(ACCESS_COOKIE)?.value;
-  const authorizationHeader = accessToken ? `Bearer ${accessToken}` : null;
+  if (!accessToken) {
+    return NextResponse.json(
+      { detail: "Not authenticated" },
+      { status: 401, headers: { "cache-control": "no-store" } },
+    );
+  }
+  const authorizationHeader = `Bearer ${accessToken}`;
+
+  const rawRunId = request.nextUrl.searchParams.get("run_id")?.trim() ?? "";
+  if (rawRunId && !isValidWorkflowRunId(rawRunId)) {
+    return NextResponse.json(
+      { detail: "Invalid workflow run_id format" },
+      { status: 400, headers: { "cache-control": "no-store" } },
+    );
+  }
+  const activeOnly = request.nextUrl.searchParams.get("active_only") !== "false";
+  const parsedLimit = Number(request.nextUrl.searchParams.get("limit") ?? 100);
+  const clampedLimit = Number.isFinite(parsedLimit)
+    ? Math.max(1, Math.min(500, Math.round(parsedLimit)))
+    : 100;
+  const sanitizedQuery = buildWorkflowLogsQuery({
+    activeOnly,
+    runId: rawRunId || undefined,
+    limit: clampedLimit,
+  });
 
   let useInMemory = await shouldUseInMemoryBackend(
     baseUrl,
@@ -56,16 +84,13 @@ export async function GET(request: NextRequest) {
   );
 
   if (!useInMemory) {
-    const search = request.nextUrl.search;
     const headers: Record<string, string> = {
       Accept: "application/json",
+      Authorization: authorizationHeader,
     };
-    if (authorizationHeader) {
-      headers.Authorization = authorizationHeader;
-    }
 
     try {
-      const upstream = await fetch(`${baseUrl}/v1/workflows/logs${search}`, {
+      const upstream = await fetch(`${baseUrl}/v1/workflows/logs?${sanitizedQuery}`, {
         method: "GET",
         headers,
         cache: "no-store",
@@ -76,6 +101,48 @@ export async function GET(request: NextRequest) {
       });
 
       if (upstream.status === 404) {
+        if (rawRunId) {
+          const singleRunRes = await fetch(
+            `${baseUrl}/v1/workflows/runs/${encodeURIComponent(rawRunId)}`,
+            {
+              method: "GET",
+              headers,
+              cache: "no-store",
+              signal: AbortSignal.any([
+                request.signal,
+                AbortSignal.timeout(hasExplicitUrl ? 20_000 : 300),
+              ]),
+            },
+          );
+          if (singleRunRes.ok) {
+            const singleRun = (await singleRunRes.json()) as WorkflowRunItem;
+            const derived = deriveLogsFromRuns([singleRun], {
+              activeOnly: false,
+              runId: rawRunId,
+              limit: clampedLimit,
+            });
+            return NextResponse.json(derived, {
+              status: 200,
+              headers: { "cache-control": "no-store" },
+            });
+          }
+          const singleBody = await singleRunRes.text();
+          const singleResp = new NextResponse(singleBody, {
+            status: singleRunRes.status,
+            headers: {
+              "content-type":
+                singleRunRes.headers.get("content-type") || "application/json",
+              "cache-control": "no-store",
+            },
+          });
+          return clearCookiesOnUnauthorized(
+            request,
+            singleResp,
+            singleRunRes.status,
+            true,
+          );
+        }
+
         const runsRes = await fetch(`${baseUrl}/v1/workflows/runs?limit=100`, {
           method: "GET",
           headers,
@@ -87,13 +154,10 @@ export async function GET(request: NextRequest) {
         });
         if (runsRes.ok) {
           const runsPayload = (await runsRes.json()) as { items?: WorkflowRunItem[] };
-          const activeOnly = request.nextUrl.searchParams.get("active_only") !== "false";
-          const runId = request.nextUrl.searchParams.get("run_id");
-          const rawLimit = Number(request.nextUrl.searchParams.get("limit") ?? 100);
           const derived = deriveLogsFromRuns(runsPayload.items ?? [], {
             activeOnly,
-            runId,
-            limit: Number.isFinite(rawLimit) ? rawLimit : 100,
+            runId: null,
+            limit: clampedLimit,
           });
           return NextResponse.json(derived, {
             status: 200,
@@ -108,7 +172,7 @@ export async function GET(request: NextRequest) {
             "cache-control": "no-store",
           },
         });
-        return clearCookiesOnUnauthorized(request, fallbackResp, runsRes.status, Boolean(accessToken));
+        return clearCookiesOnUnauthorized(request, fallbackResp, runsRes.status, true);
       }
 
       const upstreamBody = await upstream.text();
@@ -119,7 +183,7 @@ export async function GET(request: NextRequest) {
           "cache-control": "no-store",
         },
       });
-      return clearCookiesOnUnauthorized(request, response, upstream.status, Boolean(accessToken));
+      return clearCookiesOnUnauthorized(request, response, upstream.status, true);
     } catch {
       if (!isProduction && !hasExplicitUrl) {
         useInMemory = true;
@@ -137,15 +201,16 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  const sanitizedSearchParams = new URLSearchParams(sanitizedQuery);
   const inMemory = await handleInMemoryBackendRequest({
     method: "GET",
     path: "v1/workflows/logs",
-    searchParams: request.nextUrl.searchParams,
+    searchParams: sanitizedSearchParams,
     authorizationHeader,
   });
   const response = NextResponse.json(inMemory.body, {
     status: inMemory.status,
     headers: { "cache-control": "no-store" },
   });
-  return clearCookiesOnUnauthorized(request, response, inMemory.status, Boolean(accessToken));
+  return clearCookiesOnUnauthorized(request, response, inMemory.status, true);
 }

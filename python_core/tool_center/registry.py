@@ -174,6 +174,9 @@ class ToolCenterRegistry:
     def get_spec(self, capability_id: str) -> CapabilitySpec | None:
         return self._capabilities.get(capability_id)
 
+    def get_capability(self, capability_id: str) -> CapabilityHandle:
+        return self.resolve(capability_id)
+
     def list_capability_ids(self) -> list[str]:
         return list(self._capabilities.keys())
 

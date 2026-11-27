@@ -104,6 +104,12 @@ export function WorkflowLogsPanel() {
           return;
         }
 
+        if (response.status === 403) {
+          setLogs([]);
+          setError("ไม่มีสิทธิ์เข้าถึง Execution Logs ของ Workflow ที่ระบุ");
+          return;
+        }
+
         const payload = (await response.json().catch(() => null)) as
           | (WorkflowLogsResponse & { detail?: string; error?: string })
           | null;
@@ -287,6 +293,11 @@ export function WorkflowLogsPanel() {
                 ? `ทุก Active Jobs (${activeRuns.length})`
                 : "ทุก Job ในขอบเขตที่เลือก"}
             </option>
+            {selectedRunId && !activeRuns.some((r) => r.id === selectedRunId) ? (
+              <option value={selectedRunId}>
+                Selected run ({selectedRunId.slice(0, 8)}) · finished/inactive
+              </option>
+            ) : null}
             {activeRuns.map((run) => (
               <option key={run.id} value={run.id}>
                 {run.workflow_key} · {run.status} ({run.id.slice(0, 8)})

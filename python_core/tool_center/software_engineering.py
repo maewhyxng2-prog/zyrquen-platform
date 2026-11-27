@@ -26,7 +26,7 @@ from typing import Any
 from apps.core.intelligence.static_validation import PythonSyntaxValidator
 
 from .resource_manager import get_resource_manager
-from .sandbox import run_workspace_unittest
+from .sandbox import inspect_sandbox_code_policy, run_workspace_unittest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -260,6 +260,87 @@ def _diagnose_failure(stderr: str, workspace_root: Path) -> dict[str, Any]:
                             "patch": {rel: fixed},
                             "detail": f"Function '{fn_name}' in {rel} returned '{expr}' instead of '{expected_expr}'.",
                         }
+
+    # 3. Check for missing package __init__.py on ModuleNotFoundError / ImportError
+    m_mod = re.search(r"(?:ModuleNotFoundError|ImportError):\s*No module named ['\"]([A-Za-z_][A-Za-z0-9_.]*)['\"]", err)
+    if m_mod:
+        top_pkg = m_mod.group(1).split(".")[0]
+        pkg_dir = workspace_root / top_pkg
+        init_file = pkg_dir / "__init__.py"
+        if (
+            pkg_dir.is_dir()
+            and not init_file.exists()
+            and any(pkg_dir.glob("*.py"))
+        ):
+            rel_init = f"{top_pkg}/__init__.py"
+            return {
+                "root_cause": "missing_package_init",
+                "target_file": rel_init,
+                "repairable": True,
+                "patch": {rel_init: f'"""Package initializer for {top_pkg}."""\n'},
+                "detail": f"Missing package marker '{rel_init}' for local workspace package '{top_pkg}'.",
+            }
+
+    # 4. Check for missing safe standard library import on NameError
+    safe_stdlib_imports = {
+        "json",
+        "math",
+        "re",
+        "hashlib",
+        "statistics",
+        "argparse",
+        "datetime",
+        "uuid",
+        "collections",
+    }
+    m_name = re.search(r"NameError:\s*name ['\"]([A-Za-z_][A-Za-z0-9_]*)['\"] is not defined", err)
+    if m_name:
+        missing_sym = m_name.group(1)
+        if missing_sym in safe_stdlib_imports:
+            # Prioritize files mentioned in traceback before scanning remaining impl files
+            ordered_files = list(impl_files)
+            tb_files = re.findall(r'File "([^"]+)"', err)
+            if tb_files:
+                ordered_files.sort(
+                    key=lambda p: 0 if any(p.name in tb or str(p.relative_to(workspace_root)) in tb for tb in tb_files) else 1
+                )
+            for pyf in ordered_files:
+                src = pyf.read_text(encoding="utf-8", errors="replace")
+                if not re.search(rf"\b{re.escape(missing_sym)}\s*\.", src):
+                    continue
+                if re.search(rf"^\s*(?:import|from)\s+{re.escape(missing_sym)}\b", src, re.MULTILINE):
+                    continue
+                lines = src.splitlines(keepends=True)
+                insert_idx = 0
+                try:
+                    tree = ast.parse(src)
+                    if (
+                        tree.body
+                        and isinstance(tree.body[0], ast.Expr)
+                        and isinstance(tree.body[0].value, ast.Constant)
+                        and isinstance(tree.body[0].value.value, str)
+                    ):
+                        insert_idx = max(insert_idx, int(getattr(tree.body[0], "end_lineno", 1)))
+                    for stmt in tree.body:
+                        if isinstance(stmt, ast.ImportFrom) and stmt.module == "__future__":
+                            insert_idx = max(insert_idx, int(getattr(stmt, "end_lineno", insert_idx + 1)))
+                except SyntaxError:
+                    pass
+                import_line = f"import {missing_sym}\n"
+                candidate_lines = lines[:insert_idx] + [import_line] + lines[insert_idx:]
+                candidate = "".join(candidate_lines)
+                if (
+                    validator.validate(candidate).get("status") == "valid"
+                    and inspect_sandbox_code_policy(candidate).get("ok")
+                ):
+                    rel = str(pyf.relative_to(workspace_root))
+                    return {
+                        "root_cause": "missing_safe_stdlib_import",
+                        "target_file": rel,
+                        "repairable": True,
+                        "patch": {rel: candidate},
+                        "detail": f"Added missing safe stdlib import 'import {missing_sym}' in {rel}.",
+                    }
 
     return {
         "root_cause": "unclassified_runtime_failure",

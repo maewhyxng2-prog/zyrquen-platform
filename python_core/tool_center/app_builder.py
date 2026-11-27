@@ -199,11 +199,12 @@ def manage_workspace_history(
     action: str = "list",
     snapshot_id: str | None = None,
     base_snapshot_id: str | None = None,
+    file_path: str | None = None,
     label: str = "",
 ) -> dict[str, Any]:
     """
-    Manage persistent snapshots, unified diffs, and rollback for a sandbox workspace.
-    Actions: snapshot | list | diff | rollback
+    Manage persistent snapshots, unified diffs, file inspection, and rollback for a sandbox workspace.
+    Actions: snapshot | list | diff | rollback | read_file
     """
     ws = Path(workspace_root).resolve()
     ws.mkdir(parents=True, exist_ok=True)
@@ -414,6 +415,76 @@ def manage_workspace_history(
                 "diffs": diffs,
             },
             "summary": f"ย้อนกลับ workspace '{ws.name}' ไปยัง '{target_snap_id}' (คืนค่า {len(restored_files)} ไฟล์, ลบ {len(removed_files)} ไฟล์)",
+            "external_models_used": False,
+        }
+
+    if act == "read_file":
+        clean_rel = str(file_path or "").strip().lstrip("/")
+        if (
+            not clean_rel
+            or ".." in Path(clean_rel).parts
+            or any(part in IGNORED_WORKSPACE_PARTS for part in Path(clean_rel).parts)
+        ):
+            return {
+                "ok": False,
+                "status": "BLOCKED",
+                "error": f"Forbidden or invalid workspace file_path '{file_path}'.",
+                "output": {},
+                "external_models_used": False,
+            }
+        if snapshot_id:
+            snap_files = _load_snapshot_files(ws, snapshot_id)
+            if snap_files is None:
+                return {
+                    "ok": False,
+                    "status": "FAILED",
+                    "error": f"Snapshot '{snapshot_id}' not found on disk.",
+                    "output": {},
+                    "external_models_used": False,
+                }
+            if clean_rel not in snap_files:
+                return {
+                    "ok": False,
+                    "status": "FAILED",
+                    "error": f"File '{clean_rel}' not found in snapshot '{snapshot_id}'.",
+                    "output": {},
+                    "external_models_used": False,
+                }
+            content = snap_files[clean_rel]
+            source_ref = snapshot_id
+        else:
+            target_p = _safe_confined_path(ws, clean_rel)
+            if target_p is None:
+                return {
+                    "ok": False,
+                    "status": "BLOCKED",
+                    "error": f"Path '{file_path}' escapes workspace root.",
+                    "output": {},
+                    "external_models_used": False,
+                }
+            if not target_p.is_file():
+                return {
+                    "ok": False,
+                    "status": "FAILED",
+                    "error": f"File '{clean_rel}' does not exist in workspace '{ws.name}'.",
+                    "output": {},
+                    "external_models_used": False,
+                }
+            content = target_p.read_text(encoding="utf-8", errors="replace")
+            source_ref = "working_tree"
+        return {
+            "ok": True,
+            "status": "COMPLETED",
+            "output": {
+                "action": "read_file",
+                "workspace": ws.name,
+                "file_path": clean_rel,
+                "source": source_ref,
+                "content": content,
+                "sha256": _sha256_text(content),
+                "bytes": len(content.encode("utf-8")),
+            },
+            "summary": f"อ่านไฟล์ '{clean_rel}' ({source_ref}) ใน workspace '{ws.name}' สำเร็จ",
             "external_models_used": False,
         }
 
@@ -996,6 +1067,8 @@ def build_and_verify_app(
     app_name: str = "zyrquen_app",
     blueprint: str = "auto",
     files: dict[str, str] | None = None,
+    patches: dict[str, list[dict[str, Any]]] | None = None,
+    delete_files: list[str] | None = None,
     mode: str = "upsert",
     auto_repair: bool = True,
     max_repair_rounds: int = 2,
@@ -1004,7 +1077,7 @@ def build_and_verify_app(
     """
     End-to-end Multi-File Persistent App Builder & Verifier:
       1. Inspects existing workspace files & saves pre-edit baseline snapshot if non-empty
-      2. Prepares multi-file changes (`files` spec or deterministic blueprint synthesis)
+      2. Prepares multi-file changes (`files` full specs, partial `patches`, `delete_files`, or blueprint synthesis)
       3. Applies changes atomically via `WorkspaceTransaction` with unified diffs
       4. Runs `run_real_project_build` (compileall + AST/policy lint + unittest)
       5. If tests fail and `auto_repair=True`, executes bounded Diagnose -> Patch -> Rebuild/Retest loop
@@ -1041,13 +1114,31 @@ def build_and_verify_app(
         else:
             pre_snapshot_id = ledger["snapshots"][-1]["snapshot_id"]
 
-    # 1. Plan & Resolve Multi-file Edits
+    # 1. Plan & Resolve Multi-file Edits (files / patches / delete_files / blueprint)
     chosen_blueprint = blueprint
+    planned_edits: dict[str, str] = {}
+    planned_deletes: list[str] = []
+
+    def _validate_rel(rel_raw: Any) -> str | None:
+        clean = str(rel_raw or "").strip().lstrip("/")
+        if (
+            not clean
+            or ".." in Path(clean).parts
+            or any(part in IGNORED_WORKSPACE_PARTS for part in Path(clean).parts)
+        ):
+            return None
+        return clean
+
+    has_explicit_changes = bool(
+        (isinstance(files, dict) and files)
+        or (isinstance(patches, dict) and patches)
+        or (isinstance(delete_files, list) and delete_files)
+    )
+
     if isinstance(files, dict) and files:
-        planned_edits: dict[str, str] = {}
         for rel_raw, content in files.items():
-            clean_rel = str(rel_raw or "").strip().lstrip("/")
-            if not clean_rel or ".." in Path(clean_rel).parts or clean_rel.startswith(HISTORY_DIRNAME):
+            clean_rel = _validate_rel(rel_raw)
+            if clean_rel is None:
                 return {
                     "ok": False,
                     "status": "BLOCKED",
@@ -1057,7 +1148,88 @@ def build_and_verify_app(
                 }
             planned_edits[clean_rel] = str(content)
         chosen_blueprint = "custom_multifile"
-    else:
+
+    if isinstance(patches, dict) and patches:
+        for rel_raw, rep_list in patches.items():
+            clean_rel = _validate_rel(rel_raw)
+            if clean_rel is None:
+                return {
+                    "ok": False,
+                    "status": "BLOCKED",
+                    "error": f"Forbidden workspace path '{rel_raw}'.",
+                    "output": {},
+                    "external_models_used": False,
+                }
+            if not isinstance(rep_list, list) or not rep_list:
+                return {
+                    "ok": False,
+                    "status": "FAILED",
+                    "error": f"Patch entries for '{clean_rel}' must be a non-empty list.",
+                    "output": {},
+                    "external_models_used": False,
+                }
+            if clean_rel in planned_edits:
+                current_text = planned_edits[clean_rel]
+            else:
+                target_p = _safe_confined_path(ws, clean_rel)
+                if target_p is None or not target_p.is_file():
+                    return {
+                        "ok": False,
+                        "status": "FAILED",
+                        "error": f"Cannot apply patch to missing file '{clean_rel}'.",
+                        "output": {},
+                        "external_models_used": False,
+                    }
+                current_text = target_p.read_text(encoding="utf-8", errors="replace")
+            for rep in rep_list:
+                if not isinstance(rep, dict) or not isinstance(rep.get("old"), str) or not isinstance(rep.get("new"), str):
+                    return {
+                        "ok": False,
+                        "status": "FAILED",
+                        "error": f"Invalid patch replacement item for '{clean_rel}'.",
+                        "output": {},
+                        "external_models_used": False,
+                    }
+                old_snippet = rep["old"]
+                if not old_snippet or old_snippet not in current_text:
+                    return {
+                        "ok": False,
+                        "status": "FAILED",
+                        "error": f"Patch target snippet not found in '{clean_rel}'.",
+                        "output": {},
+                        "external_models_used": False,
+                    }
+                current_text = current_text.replace(old_snippet, rep["new"], 1)
+            planned_edits[clean_rel] = current_text
+        if chosen_blueprint == blueprint:
+            chosen_blueprint = "incremental_patch"
+
+    if isinstance(delete_files, list) and delete_files:
+        for rel_raw in delete_files:
+            clean_rel = _validate_rel(rel_raw)
+            if clean_rel is None:
+                return {
+                    "ok": False,
+                    "status": "BLOCKED",
+                    "error": f"Forbidden workspace path '{rel_raw}'.",
+                    "output": {},
+                    "external_models_used": False,
+                }
+            if clean_rel in planned_edits:
+                return {
+                    "ok": False,
+                    "status": "FAILED",
+                    "error": f"File '{clean_rel}' cannot be both edited and deleted in one operation.",
+                    "output": {},
+                    "external_models_used": False,
+                }
+            target_del = _safe_confined_path(ws, clean_rel)
+            if target_del is not None and target_del.is_file() and clean_rel not in planned_deletes:
+                planned_deletes.append(clean_rel)
+        if chosen_blueprint == blueprint:
+            chosen_blueprint = "incremental_patch"
+
+    if not has_explicit_changes:
         chosen_blueprint, planned_edits = synthesize_multifile_app_files(
             app_name=app_name,
             goal=goal,
@@ -1069,28 +1241,52 @@ def build_and_verify_app(
         "status": "COMPLETED",
         "blueprint": chosen_blueprint,
         "planned_files": sorted(planned_edits.keys()),
+        "planned_deletes": sorted(planned_deletes),
         "existing_files": existing_files,
     })
 
-    # If mode == "replace", remove obsolete existing files outside planned_edits inside transaction
+    # If mode == "replace" or delete_files specified, remove target files inside atomic transaction
     tx = WorkspaceTransaction(ws)
+    to_remove: list[str] = list(planned_deletes)
     if str(mode or "upsert").strip().lower() == "replace" and existing_files:
         for old_rel in existing_files:
-            if old_rel not in planned_edits:
-                target_old = _safe_confined_path(ws, old_rel)
-                if target_old and target_old.is_file():
-                    tx._snapshots[old_rel] = target_old.read_bytes()
-                    tx.diffs[old_rel] = compute_unified_diff(old_rel, target_old.read_text(encoding="utf-8", errors="replace"), "")
-                    target_old.unlink()
-                    tx.changed_files.append(old_rel)
+            if old_rel not in planned_edits and old_rel not in to_remove:
+                to_remove.append(old_rel)
+
+    for old_rel in to_remove:
+        target_old = _safe_confined_path(ws, old_rel)
+        if target_old and target_old.is_file():
+            tx._snapshots[old_rel] = target_old.read_bytes()
+            tx.diffs[old_rel] = compute_unified_diff(old_rel, target_old.read_text(encoding="utf-8", errors="replace"), "")
+            target_old.unlink()
+            if old_rel not in tx.changed_files:
+                tx.changed_files.append(old_rel)
 
     # 2. Apply Multi-file Transaction
-    apply_res = tx.apply_edits(planned_edits)
-    if not apply_res.get("ok"):
+    if planned_edits:
+        apply_res = tx.apply_edits(planned_edits)
+        if not apply_res.get("ok"):
+            return {
+                "ok": False,
+                "status": apply_res.get("status", "FAILED"),
+                "error": apply_res.get("error"),
+                "output": {
+                    "workspace": ws.name,
+                    "verified": False,
+                    "build_passed": False,
+                    "lint_passed": False,
+                    "tests_passed": False,
+                    "tests_run": 0,
+                    "files": _list_project_files(ws),
+                    "snapshot_id": pre_snapshot_id,
+                },
+                "external_models_used": False,
+            }
+    elif not tx.changed_files:
         return {
             "ok": False,
-            "status": apply_res.get("status", "FAILED"),
-            "error": apply_res.get("error"),
+            "status": "FAILED",
+            "error": "No file edits, patches, or deletions took effect.",
             "output": {
                 "workspace": ws.name,
                 "verified": False,

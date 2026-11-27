@@ -1376,14 +1376,18 @@ def _handle_app_builder(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[st
         return {"ok": False, "status": "BLOCKED", "error": ws_err or "Invalid workspace.", "output": {}}
     goal = str(payload.get("goal") or "").strip()
     files = payload.get("files") if isinstance(payload.get("files"), dict) else None
-    if not goal and not files:
-        return {"ok": False, "status": "FAILED", "error": "Provide either 'goal' or multi-file 'files' specification.", "output": {}}
+    patches = payload.get("patches") if isinstance(payload.get("patches"), dict) else None
+    delete_files = payload.get("delete_files") if isinstance(payload.get("delete_files"), list) else None
+    if not goal and not files and not patches and not delete_files:
+        return {"ok": False, "status": "FAILED", "error": "Provide 'goal', 'files', 'patches', or 'delete_files'.", "output": {}}
     return build_and_verify_app(
         ws,
         goal=goal or "Multi-file app update",
         app_name=str(payload.get("app_name") or ws.name or "zyrquen_app"),
         blueprint=str(payload.get("blueprint") or "auto"),
         files=files,
+        patches=patches,
+        delete_files=delete_files,
         mode=str(payload.get("mode") or "upsert"),
         auto_repair=bool(payload.get("auto_repair", True)),
         max_repair_rounds=int(payload.get("max_repair_rounds") or 2),
@@ -1392,7 +1396,7 @@ def _handle_app_builder(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[st
 
 
 def _handle_workspace_history(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    """Manage persistent workspace snapshots, unified diffs, and rollback across sessions."""
+    """Manage persistent workspace snapshots, unified diffs, file inspection, and rollback across sessions."""
     ws, ws_err = _resolve_sandbox_workspace(ctx, payload.get("workspace"))
     if ws_err or ws is None:
         return {"ok": False, "status": "BLOCKED", "error": ws_err or "Invalid workspace.", "output": {}}
@@ -1401,6 +1405,7 @@ def _handle_workspace_history(payload: dict[str, Any], ctx: dict[str, Any]) -> d
         action=str(payload.get("action") or "list"),
         snapshot_id=str(payload.get("snapshot_id")) if payload.get("snapshot_id") else None,
         base_snapshot_id=str(payload.get("base_snapshot_id")) if payload.get("base_snapshot_id") else None,
+        file_path=str(payload.get("file_path")) if payload.get("file_path") else None,
         label=str(payload.get("label") or ""),
     )
 
@@ -1911,6 +1916,8 @@ def register_development_toolkit(registry: Any) -> None:
                         "app_name": {"type": "string"},
                         "blueprint": {"type": "string", "enum": ["auto", "python_cli_app", "python_service_app", "python_data_app"]},
                         "files": {"type": "object"},
+                        "patches": {"type": "object"},
+                        "delete_files": {"type": "array"},
                         "mode": {"type": "string", "enum": ["upsert", "replace"]},
                         "auto_repair": {"type": "boolean"},
                         "max_repair_rounds": {"type": "integer"},
@@ -1985,9 +1992,10 @@ def register_development_toolkit(registry: Any) -> None:
                     "required": ["workspace", "action"],
                     "properties": {
                         "workspace": {"type": "string"},
-                        "action": {"type": "string", "enum": ["snapshot", "list", "diff", "rollback"]},
+                        "action": {"type": "string", "enum": ["snapshot", "list", "diff", "rollback", "read_file"]},
                         "snapshot_id": {"type": "string"},
                         "base_snapshot_id": {"type": "string"},
+                        "file_path": {"type": "string"},
                         "label": {"type": "string"},
                     },
                 },

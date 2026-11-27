@@ -6,7 +6,9 @@ import type {
   WorkflowExecutionLogItem,
 } from "./types";
 import {
+  filterWorkflowRunsByOwnership,
   isActiveOrchestrationStatus,
+  isValidWorkflowRunId,
   logLevelForStatus,
 } from "./workflow-logs";
 
@@ -1491,10 +1493,11 @@ export async function handleInMemoryBackendRequest(options: {
   if (path === "v1/workflows/runs") {
     if (method === "GET") {
       const limit = Number(options.searchParams?.get("limit") ?? 50);
+      const accessibleRuns = filterWorkflowRunsByOwnership(store.workflowRuns, currentUser);
       return {
         status: 200,
         body: {
-          items: store.workflowRuns.slice(0, Number.isFinite(limit) ? limit : 50),
+          items: accessibleRuns.slice(0, Number.isFinite(limit) ? limit : 50),
         },
       };
     }
@@ -1680,6 +1683,9 @@ export async function handleInMemoryBackendRequest(options: {
   if (method === "GET" && workflowRunMatch) {
     const run = store.workflowRuns.find((r) => r.id === workflowRunMatch[1]);
     if (!run) return { status: 404, body: { detail: "Workflow run not found" } };
+    if (currentUser.role !== "admin" && run.requested_by_user_id !== currentUser.id) {
+      return { status: 403, body: { detail: "Forbidden" } };
+    }
     return { status: 200, body: run };
   }
 
@@ -1687,12 +1693,18 @@ export async function handleInMemoryBackendRequest(options: {
   if (method === "POST" && workflowCancelMatch) {
     const run = store.workflowRuns.find((r) => r.id === workflowCancelMatch[1]);
     if (!run) return { status: 404, body: { detail: "Workflow run not found" } };
+    if (currentUser.role !== "admin" && run.requested_by_user_id !== currentUser.id) {
+      return { status: 403, body: { detail: "Forbidden" } };
+    }
     run.status = "CANCELLED";
     run.finished_at = new Date().toISOString();
     return { status: 200, body: run };
   }
 
   if (method === "GET" && path === "v1/workflows/approvals") {
+    if (currentUser.role !== "admin") {
+      return { status: 403, body: { detail: "Admin privileges required" } };
+    }
     return { status: 200, body: { items: store.workflowApprovals } };
   }
 
@@ -1700,6 +1712,9 @@ export async function handleInMemoryBackendRequest(options: {
     /^v1\/workflows\/approvals\/([^/]+)\/decision$/i,
   );
   if (method === "POST" && approvalDecisionMatch) {
+    if (currentUser.role !== "admin") {
+      return { status: 403, body: { detail: "Admin privileges required" } };
+    }
     const approval = store.workflowApprovals.find(
       (a) => a.id === approvalDecisionMatch[1],
     );
@@ -1764,11 +1779,17 @@ export async function handleInMemoryBackendRequest(options: {
   }
 
   if (method === "GET" && path === "v1/workflows/audit-logs") {
+    if (currentUser.role !== "admin") {
+      return { status: 403, body: { detail: "Admin privileges required" } };
+    }
     return { status: 200, body: { items: store.auditLogs } };
   }
 
   if (method === "GET" && path === "v1/workflows/logs") {
     const runIdFilter = options.searchParams?.get("run_id")?.trim() || null;
+    if (runIdFilter && !isValidWorkflowRunId(runIdFilter)) {
+      return { status: 400, body: { detail: "Invalid workflow run_id identifier." } };
+    }
     const activeOnlyParam = options.searchParams?.get("active_only");
     const activeOnly = activeOnlyParam !== "false";
     const rawLimit = Number(options.searchParams?.get("limit") ?? 100);
@@ -1776,23 +1797,39 @@ export async function handleInMemoryBackendRequest(options: {
       ? Math.max(1, Math.min(500, Math.round(rawLimit)))
       : 100;
 
-    const activeRuns = store.workflowRuns.filter((r) =>
+    const accessibleRuns = filterWorkflowRunsByOwnership(store.workflowRuns, currentUser);
+    const activeRuns = accessibleRuns.filter((r) =>
       isActiveOrchestrationStatus(r.status),
     );
-    const targetRuns = runIdFilter
-      ? store.workflowRuns.filter((r) => r.id === runIdFilter)
-      : activeOnly
-        ? activeRuns
-        : store.workflowRuns.slice(0, 25);
 
-    const runById = new Map(store.workflowRuns.map((r) => [r.id, r]));
+    let targetRuns: WorkflowRunRecord[];
+    if (runIdFilter) {
+      const requestedRun = store.workflowRuns.find((r) => r.id === runIdFilter);
+      if (!requestedRun) {
+        return { status: 404, body: { detail: "Workflow run not found" } };
+      }
+      if (
+        currentUser.role !== "admin" &&
+        requestedRun.requested_by_user_id !== currentUser.id
+      ) {
+        return { status: 403, body: { detail: "Forbidden" } };
+      }
+      targetRuns = [requestedRun];
+    } else if (activeOnly) {
+      targetRuns = activeRuns;
+    } else {
+      targetRuns = accessibleRuns.slice(0, 25);
+    }
+
+    const runById = new Map(targetRuns.map((r) => [r.id, r]));
     const targetRunIds = new Set(targetRuns.map((r) => r.id));
     const entries: WorkflowExecutionLogItem[] = [];
 
-    for (const audit of store.auditLogs) {
-      if (!audit.resource_id || !targetRunIds.has(audit.resource_id)) {
-        continue;
-      }
+    if (targetRunIds.size > 0) {
+      for (const audit of store.auditLogs) {
+        if (!audit.resource_id || !targetRunIds.has(audit.resource_id)) {
+          continue;
+        }
       const runObj = runById.get(audit.resource_id);
       entries.push({
         id: `audit:${audit.id}`,
@@ -1806,7 +1843,8 @@ export async function handleInMemoryBackendRequest(options: {
         message: `${audit.action} on run ${audit.resource_id}`,
         details: null,
         timestamp: audit.created_at,
-      });
+        });
+      }
     }
 
     for (const runObj of targetRuns) {

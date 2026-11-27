@@ -1007,14 +1007,25 @@ def handle_action(action: str, payload: dict) -> dict:
         return {"ok": cur.rowcount > 0}
 
     if action == "workflows_list":
-        runs = [
-            dict(r)
-            for r in conn.execute("SELECT * FROM workflow_runs ORDER BY created_at DESC LIMIT 30").fetchall()
-        ]
+        uid = str(payload.get("user_id") or "").strip()
+        is_admin = bool(payload.get("is_admin", False))
+        if is_admin:
+            runs = [
+                dict(r)
+                for r in conn.execute("SELECT * FROM workflow_runs ORDER BY created_at DESC LIMIT 30").fetchall()
+            ]
+        else:
+            runs = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM workflow_runs WHERE triggered_by=? ORDER BY created_at DESC LIMIT 30",
+                    (uid,),
+                ).fetchall()
+            ]
         reasoning_traces = _query_reasoning_traces(
             conn,
             user_id=payload.get("user_id"),
-            is_admin=bool(payload.get("is_admin", False)),
+            is_admin=is_admin,
             limit=30,
         )
         conn.close()
@@ -1024,6 +1035,12 @@ def handle_action(action: str, payload: dict) -> dict:
             "runs": runs,
             "reasoning_traces": reasoning_traces,
         }
+
+    if action == "workflow_get_run":
+        run_id = str(payload.get("run_id") or "").strip()
+        row = conn.execute("SELECT * FROM workflow_runs WHERE id=?", (run_id,)).fetchone()
+        conn.close()
+        return {"ok": True, "run": row_to_dict(row) if row else None}
 
     if action == "reasoning_traces_list":
         traces = _query_reasoning_traces(

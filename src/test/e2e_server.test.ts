@@ -1378,6 +1378,237 @@ describe('Isolated 6-Step Non-Skippable Native Training Pipeline Gate E2E', () =
     expect(codeEvalJson.external_models_used).toBe(false);
     expect(['VERIFIED', 'PARTIAL', 'NOT_RUN']).toContain(codeEvalJson.status);
   }, 120_000);
+
+  it('Enforces auth/ownership isolation on /api/v1/workflows/logs and executes Multi-file App Builder + Real Build Runner over HTTP', async () => {
+    const adminLoginRes = await fetch(`${gateBaseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'gate-admin@zyrquen.local',
+        password: 'StrongPassword123!',
+      }),
+    });
+    expect(adminLoginRes.status).toBe(200);
+    const { token: adminToken } = (await adminLoginRes.json()) as { token: string };
+    const adminHeaders = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${adminToken}`,
+    };
+
+    const userLoginRes = await fetch(`${gateBaseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'regular-user@zyrquen.local',
+        password: 'RegularPassword123!',
+      }),
+    });
+    expect(userLoginRes.status).toBe(200);
+    const { token: userToken } = (await userLoginRes.json()) as { token: string };
+    const userHeaders = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${userToken}`,
+    };
+
+    // 1. Workflow Execution Logs (/api/v1/workflows/logs) Auth & Ownership Isolation
+    const unauthLogsRes = await fetch(`${gateBaseUrl}/api/v1/workflows/logs`);
+    expect(unauthLogsRes.status).toBe(401);
+
+    const badRunIdRes = await fetch(`${gateBaseUrl}/api/v1/workflows/logs?run_id=../escape`, {
+      headers: adminHeaders,
+    });
+    expect(badRunIdRes.status).toBe(400);
+
+    const missingRunIdRes = await fetch(`${gateBaseUrl}/api/v1/workflows/logs?run_id=missing-run-id`, {
+      headers: adminHeaders,
+    });
+    expect(missingRunIdRes.status).toBe(404);
+
+    // Trigger an admin-owned workflow run and a regular-user-owned workflow run
+    const adminWfRes = await fetch(`${gateBaseUrl}/api/workflows/system_ops/run`, {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({}),
+    });
+    expect(adminWfRes.status).toBe(201);
+    const adminWfJson = (await adminWfRes.json()) as { ok: boolean; run: { id: string } };
+    expect(adminWfJson.ok).toBe(true);
+
+    const userWfRes = await fetch(`${gateBaseUrl}/api/workflows/system_ops/run`, {
+      method: 'POST',
+      headers: userHeaders,
+      body: JSON.stringify({}),
+    });
+    expect(userWfRes.status).toBe(201);
+    const userWfJson = (await userWfRes.json()) as { ok: boolean; run: { id: string } };
+    expect(userWfJson.ok).toBe(true);
+
+    // Non-admin querying admin's run_id MUST be rejected with 403
+    const crossRunRes = await fetch(
+      `${gateBaseUrl}/api/v1/workflows/logs?run_id=${encodeURIComponent(adminWfJson.run.id)}&active_only=false`,
+      { headers: userHeaders }
+    );
+    expect(crossRunRes.status).toBe(403);
+
+    // Non-admin listing logs sees ONLY their own runs, never admin's run
+    const userLogsRes = await fetch(`${gateBaseUrl}/api/v1/workflows/logs?active_only=false`, {
+      headers: userHeaders,
+    });
+    expect(userLogsRes.status).toBe(200);
+    const userLogsJson = (await userLogsRes.json()) as {
+      items: Array<{ run_id: string }>;
+    };
+    expect(userLogsJson.items.some((item) => item.run_id === userWfJson.run.id)).toBe(true);
+    expect(userLogsJson.items.some((item) => item.run_id === adminWfJson.run.id)).toBe(false);
+
+    // 2. Multi-file Persistent App Builder + Real Build Runner + Workspace History over HTTP
+    const wsName = 'e2e_http_app';
+    const buildAppRes = await fetch(`${gateBaseUrl}/api/tool-center/execute`, {
+      method: 'POST',
+      headers: userHeaders,
+      body: JSON.stringify({
+        capabilityId: 'development.app_builder',
+        input: {
+          workspace: wsName,
+          goal: 'Build multi-file task tracker CLI',
+          app_name: 'tracker_cli',
+          blueprint: 'python_cli_app',
+        },
+      }),
+    });
+    expect(buildAppRes.status).toBe(201);
+    const buildAppJson = (await buildAppRes.json()) as {
+      ok: boolean;
+      qa: { verdict: string };
+      output: {
+        verified: boolean;
+        build_passed: boolean;
+        lint_passed: boolean;
+        tests_passed: boolean;
+        tests_run: number;
+        snapshot_id: string;
+        files: string[];
+      };
+    };
+    expect(buildAppJson.ok).toBe(true);
+    expect(buildAppJson.qa.verdict).toBe('SUCCESS');
+    expect(buildAppJson.output.verified).toBe(true);
+    expect(buildAppJson.output.build_passed).toBe(true);
+    expect(buildAppJson.output.lint_passed).toBe(true);
+    expect(buildAppJson.output.tests_passed).toBe(true);
+    expect(buildAppJson.output.tests_run).toBeGreaterThanOrEqual(3);
+    expect(buildAppJson.output.files).toContain('tracker_cli/engine.py');
+
+    // Incremental partial multi-file patch + real verification
+    const patchAppRes = await fetch(`${gateBaseUrl}/api/tool-center/execute`, {
+      method: 'POST',
+      headers: userHeaders,
+      body: JSON.stringify({
+        capabilityId: 'development.app_builder',
+        input: {
+          workspace: wsName,
+          goal: 'Update README and add version note in manifest',
+          patches: {
+            'README.md': [{ old: 'Entrypoint', new: 'Main Entrypoint' }],
+          },
+        },
+      }),
+    });
+    expect(patchAppRes.status).toBe(201);
+    const patchAppJson = (await patchAppRes.json()) as {
+      ok: boolean;
+      output: { verified: boolean; snapshot_id: string; diffs: Record<string, string> };
+    };
+    expect(patchAppJson.ok).toBe(true);
+    expect(patchAppJson.output.verified).toBe(true);
+    expect(patchAppJson.output.snapshot_id).not.toBe(buildAppJson.output.snapshot_id);
+    expect(patchAppJson.output.diffs['README.md']).toContain('+');
+
+    // Workspace history read_file + traversal/internal blocking
+    const readFileRes = await fetch(`${gateBaseUrl}/api/tool-center/execute`, {
+      method: 'POST',
+      headers: userHeaders,
+      body: JSON.stringify({
+        capabilityId: 'development.workspace_history',
+        input: { workspace: wsName, action: 'read_file', file_path: 'README.md' },
+      }),
+    });
+    expect(readFileRes.status).toBe(201);
+    const readFileJson = (await readFileRes.json()) as {
+      ok: boolean;
+      output: { content: string };
+    };
+    expect(readFileJson.ok).toBe(true);
+    expect(readFileJson.output.content).toContain('Main Entrypoint');
+
+    const blockedReadRes = await fetch(`${gateBaseUrl}/api/tool-center/execute`, {
+      method: 'POST',
+      headers: userHeaders,
+      body: JSON.stringify({
+        capabilityId: 'development.workspace_history',
+        input: { workspace: wsName, action: 'read_file', file_path: '.zyrquen_history/history.json' },
+      }),
+    });
+    expect(blockedReadRes.status).toBe(403);
+
+    // Independent Real Build Runner confirms workspace passes compileall + lint + unittest
+    const runnerRes = await fetch(`${gateBaseUrl}/api/tool-center/execute`, {
+      method: 'POST',
+      headers: userHeaders,
+      body: JSON.stringify({
+        capabilityId: 'development.real_build_runner',
+        input: { workspace: wsName, run_lint: true, run_tests: true },
+      }),
+    });
+    expect(runnerRes.status).toBe(201);
+    const runnerJson = (await runnerRes.json()) as {
+      ok: boolean;
+      output: { verified: boolean; build_passed: boolean; lint_passed: boolean; tests_passed: boolean };
+    };
+    expect(runnerJson.ok).toBe(true);
+    expect(runnerJson.output.verified).toBe(true);
+
+    // Rollback to initial snapshot reverts README change cleanly
+    const rollbackRes = await fetch(`${gateBaseUrl}/api/tool-center/execute`, {
+      method: 'POST',
+      headers: userHeaders,
+      body: JSON.stringify({
+        capabilityId: 'development.workspace_history',
+        input: {
+          workspace: wsName,
+          action: 'rollback',
+          snapshot_id: buildAppJson.output.snapshot_id,
+        },
+      }),
+    });
+    expect(rollbackRes.status).toBe(201);
+
+    // External LLM import is strictly blocked and rolled back
+    const badLlmRes = await fetch(`${gateBaseUrl}/api/tool-center/execute`, {
+      method: 'POST',
+      headers: userHeaders,
+      body: JSON.stringify({
+        capabilityId: 'development.app_builder',
+        input: {
+          workspace: 'e2e_blocked_llm',
+          goal: 'Attempt forbidden external import',
+          files: {
+            'bad.py': 'from openai import OpenAI\n',
+            'test_bad.py': 'import unittest\nclass T(unittest.TestCase):\n    def test_ok(self):\n        self.assertTrue(True)\n',
+          },
+        },
+      }),
+    });
+    expect(badLlmRes.status).toBe(400);
+    const badLlmJson = (await badLlmRes.json()) as {
+      ok: boolean;
+      output: { verified: boolean; lint_passed: boolean; rolled_back: boolean };
+    };
+    expect(badLlmJson.ok).toBe(false);
+    expect(badLlmJson.output.verified).toBe(false);
+    expect(badLlmJson.output.lint_passed).toBe(false);
+    expect(badLlmJson.output.rolled_back).toBe(true);
+  }, 60_000);
 });
 
 

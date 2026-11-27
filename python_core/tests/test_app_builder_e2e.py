@@ -296,6 +296,160 @@ class AppBuilderAndBuildRunnerE2ETests(unittest.TestCase):
         self.assertIn("development.app_builder", goal_res["orchestration"]["capabilities_executed"])
         self.assertIn("development.real_build_runner", goal_res["orchestration"]["capabilities_executed"])
 
+    def test_6_incremental_patches_delete_files_and_regression_rollback(self) -> None:
+        ws_name = "patch_delete_ws"
+        init_res = self.registry.execute(
+            "development.app_builder",
+            {
+                "workspace": ws_name,
+                "goal": "Create initial multi-file package with extra obsolete file",
+                "files": {
+                    "calc/__init__.py": "",
+                    "calc/ops.py": "def scale(x, factor=2):\n    return x * factor\n",
+                    "obsolete.txt": "remove me safely",
+                    "tests/__init__.py": "",
+                    "tests/test_ops.py": (
+                        "import unittest\n"
+                        "from calc.ops import scale\n\n"
+                        "class TestOps(unittest.TestCase):\n"
+                        "    def test_scale(self):\n"
+                        "        self.assertEqual(scale(4), 8)\n"
+                    ),
+                },
+            },
+            user_role="user",
+            conn=self.conn,
+            data_dir=self.data_dir,
+        )
+        self.assertTrue(init_res["ok"], init_res)
+        ws = self.data_dir / "sandbox_workspaces" / ws_name
+        self.assertTrue((ws / "obsolete.txt").is_file())
+
+        # Partial multi-file patches + safe delete_files
+        patched = self.registry.execute(
+            "development.app_builder",
+            {
+                "workspace": ws_name,
+                "goal": "Update default factor to 3 via patches and remove obsolete.txt",
+                "patches": {
+                    "calc/ops.py": [{"old": "factor=2", "new": "factor=3"}],
+                    "tests/test_ops.py": [{"old": "scale(4), 8", "new": "scale(4), 12"}],
+                },
+                "delete_files": ["obsolete.txt"],
+            },
+            user_role="user",
+            conn=self.conn,
+            data_dir=self.data_dir,
+        )
+        self.assertTrue(patched["ok"], patched)
+        self.assertTrue(patched["output"]["verified"])
+        self.assertFalse((ws / "obsolete.txt").exists())
+        self.assertIn("calc/ops.py", patched["output"]["diffs"])
+        self.assertIn("obsolete.txt", patched["output"]["diffs"])
+
+        # Deleting critical module file fails tests -> rollback MUST restore calc/ops.py
+        bad_delete = self.registry.execute(
+            "development.app_builder",
+            {
+                "workspace": ws_name,
+                "goal": "Delete critical ops module",
+                "delete_files": ["calc/ops.py"],
+                "auto_repair": False,
+                "rollback_on_failure": True,
+            },
+            user_role="user",
+            conn=self.conn,
+            data_dir=self.data_dir,
+        )
+        self.assertFalse(bad_delete["ok"])
+        self.assertTrue(bad_delete["output"]["rolled_back"])
+        self.assertTrue((ws / "calc" / "ops.py").is_file())
+
+    def test_7_repair_loop_recovers_syntax_and_stdlib_import(self) -> None:
+        ws = self.data_dir / "sandbox_workspaces" / "auto_import_ws"
+        repaired = build_and_verify_app(
+            ws,
+            goal="Recover missing colon syntax error and missing math import across repair rounds",
+            files={
+                "pkg/__init__.py": "",
+                "pkg/geo.py": (
+                    '"""Geometry helpers."""\n\n'
+                    "def hypotenuse(a: float, b: float) -> float\n"
+                    "    return round(math.sqrt(a * a + b * b), 4)\n"
+                ),
+                "tests/__init__.py": "",
+                "tests/test_geo.py": (
+                    "import unittest\n"
+                    "from pkg.geo import hypotenuse\n\n"
+                    "class TestGeo(unittest.TestCase):\n"
+                    "    def test_hypotenuse(self):\n"
+                    "        self.assertEqual(hypotenuse(3, 4), 5.0)\n"
+                ),
+            },
+            auto_repair=True,
+            max_repair_rounds=3,
+        )
+        self.assertTrue(repaired["ok"], repaired)
+        self.assertTrue(repaired["output"]["verified"])
+        self.assertEqual(repaired["output"]["repair_rounds_used"], 2)
+        geo_src = (ws / "pkg" / "geo.py").read_text(encoding="utf-8")
+        self.assertIn("def hypotenuse(a: float, b: float) -> float:", geo_src)
+        self.assertIn("import math", geo_src)
+
+    def test_8_workspace_history_read_file_and_confinement(self) -> None:
+        ws_name = "history_read_ws"
+        created = self.registry.execute(
+            "development.app_builder",
+            {
+                "workspace": ws_name,
+                "goal": "Create app to inspect persisted files",
+                "app_name": "hist_app",
+                "blueprint": "python_cli_app",
+            },
+            user_role="user",
+            conn=self.conn,
+            data_dir=self.data_dir,
+        )
+        self.assertTrue(created["ok"], created)
+        snap_id = created["output"]["snapshot_id"]
+
+        read_wt = self.registry.execute(
+            "development.workspace_history",
+            {"workspace": ws_name, "action": "read_file", "file_path": "manifest.json"},
+            user_role="user",
+            conn=self.conn,
+            data_dir=self.data_dir,
+        )
+        self.assertTrue(read_wt["ok"], read_wt)
+        self.assertEqual(read_wt["output"]["source"], "working_tree")
+        self.assertIn("hist_app", read_wt["output"]["content"])
+
+        read_snap = self.registry.execute(
+            "development.workspace_history",
+            {
+                "workspace": ws_name,
+                "action": "read_file",
+                "snapshot_id": snap_id,
+                "file_path": "hist_app/engine.py",
+            },
+            user_role="user",
+            conn=self.conn,
+            data_dir=self.data_dir,
+        )
+        self.assertTrue(read_snap["ok"], read_snap)
+        self.assertEqual(read_snap["output"]["source"], snap_id)
+        self.assertIn("TaskRegistry", read_snap["output"]["content"])
+
+        blocked_history = self.registry.execute(
+            "development.workspace_history",
+            {"workspace": ws_name, "action": "read_file", "file_path": ".zyrquen_history/history.json"},
+            user_role="user",
+            conn=self.conn,
+            data_dir=self.data_dir,
+        )
+        self.assertFalse(blocked_history["ok"])
+        self.assertEqual(blocked_history["status"], "BLOCKED")
+
 
 if __name__ == "__main__":
     unittest.main()
