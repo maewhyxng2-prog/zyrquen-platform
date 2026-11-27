@@ -741,19 +741,30 @@ def handle_action(action: str, payload: dict) -> dict:
         if role not in ("admin", "user"):
             conn.close()
             return {"ok": False, "error": "Invalid role"}
-        password_hash = str(payload["password_hash"])
+        password_hash = str(payload.get("password_hash") or "")
+        email_verified = 1 if payload.get("email_verified") else 0
+        email_verified_at = now_iso() if email_verified else None
+        avatar_url = str(payload.get("avatar_url") or "").strip() or None
         try:
             with conn:
                 conn.execute(
-                    "INSERT INTO users (id, email, display_name, role, password_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    (uid, email, display_name, role, password_hash, now_iso()),
+                    """
+                    INSERT INTO users (id, email, display_name, role, password_hash, email_verified, email_verified_at, avatar_url, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (uid, email, display_name, role, password_hash, email_verified, email_verified_at, avatar_url, now_iso()),
                 )
-            user = row_to_dict(
-                conn.execute(
-                    "SELECT id, email, display_name, role, created_at FROM users WHERE id=?",
-                    (uid,),
-                ).fetchone()
-            )
+            raw_user = conn.execute(
+                "SELECT id, email, display_name, role, password_hash, email_verified, email_verified_at, avatar_url, created_at FROM users WHERE id=?",
+                (uid,),
+            ).fetchone()
+            user = None
+            if raw_user is not None:
+                d = dict(raw_user)
+                pw = str(d.pop("password_hash", "") or "")
+                d["email_verified"] = bool(d.get("email_verified"))
+                d["has_password"] = ":" in pw
+                user = d
             conn.close()
             return {"ok": True, "user": user}
         except Exception as exc:
@@ -763,19 +774,405 @@ def handle_action(action: str, payload: dict) -> dict:
     if action == "auth_find_by_email":
         email = str(payload["email"]).strip().lower()
         user = row_to_dict(conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone())
+        if user is not None:
+            user["email_verified"] = bool(user.get("email_verified"))
+            user["has_password"] = ":" in str(user.get("password_hash") or "")
         conn.close()
         return {"ok": True, "user": user}
 
     if action == "auth_find_by_id":
         uid = str(payload["user_id"])
-        user = row_to_dict(
-            conn.execute(
-                "SELECT id, email, display_name, role, created_at FROM users WHERE id=?",
-                (uid,),
-            ).fetchone()
-        )
+        raw_user = conn.execute(
+            "SELECT id, email, display_name, role, password_hash, email_verified, email_verified_at, avatar_url, created_at FROM users WHERE id=?",
+            (uid,),
+        ).fetchone()
+        user = None
+        if raw_user is not None:
+            d = dict(raw_user)
+            pw = str(d.pop("password_hash", "") or "")
+            d["email_verified"] = bool(d.get("email_verified"))
+            d["has_password"] = ":" in pw
+            user = d
         conn.close()
         return {"ok": True, "user": user}
+
+    if action == "auth_oauth_login_or_register":
+        provider = str(payload.get("provider") or "").strip().lower()
+        provider_user_id = str(payload.get("provider_user_id") or "").strip()
+        email = str(payload.get("email") or "").strip().lower()
+        email_verified = bool(payload.get("email_verified"))
+        display_name = str(payload.get("display_name") or "").strip()[:80]
+        avatar_url = str(payload.get("avatar_url") or "").strip()[:512] or None
+
+        if provider not in ("google", "github") or not provider_user_id:
+            conn.close()
+            return {"ok": False, "error_code": "INVALID_PROVIDER", "error": "Invalid OAuth provider payload"}
+
+        ts = now_iso()
+
+        def _sanitize_row(u_row) -> dict:
+            d = dict(u_row)
+            pw = str(d.pop("password_hash", "") or "")
+            d["email_verified"] = bool(d.get("email_verified"))
+            d["has_password"] = ":" in pw
+            return d
+
+        existing_ident = conn.execute(
+            "SELECT * FROM user_identities WHERE provider=? AND provider_user_id=?",
+            (provider, provider_user_id),
+        ).fetchone()
+        if existing_ident is not None:
+            uid = str(existing_ident["user_id"])
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE user_identities
+                    SET provider_email=?, email_verified=?, display_name=?, avatar_url=?, updated_at=?
+                    WHERE id=?
+                    """,
+                    (
+                        email or existing_ident["provider_email"],
+                        1 if email_verified else int(existing_ident["email_verified"] or 0),
+                        display_name or existing_ident["display_name"],
+                        avatar_url or existing_ident["avatar_url"],
+                        ts,
+                        existing_ident["id"],
+                    ),
+                )
+                if avatar_url:
+                    conn.execute(
+                        "UPDATE users SET avatar_url=COALESCE(avatar_url, ?) WHERE id=?",
+                        (avatar_url, uid),
+                    )
+            u_row = conn.execute(
+                "SELECT id, email, display_name, role, password_hash, email_verified, email_verified_at, avatar_url, created_at FROM users WHERE id=?",
+                (uid,),
+            ).fetchone()
+            conn.close()
+            if u_row is None:
+                return {"ok": False, "error": "Linked user account missing"}
+            return {"ok": True, "action": "login_existing_identity", "user": _sanitize_row(u_row)}
+
+        if not email or "@" not in email or not email_verified:
+            conn.close()
+            return {
+                "ok": False,
+                "error_code": "VERIFIED_EMAIL_REQUIRED",
+                "error": "บัญชีภายนอกต้องมีอีเมลที่ยืนยันแล้วจึงจะสมัครหรือเข้าสู่ระบบอัตโนมัติได้",
+            }
+
+        existing_user = conn.execute("SELECT * FROM users WHERE lower(email)=lower(?)", (email,)).fetchone()
+        if existing_user is not None:
+            if not bool(existing_user["email_verified"]):
+                conn.close()
+                return {
+                    "ok": False,
+                    "error_code": "ACCOUNT_LINK_CONFIRMATION_REQUIRED",
+                    "error": "พบอีเมลนี้ในระบบที่ยังไม่ยืนยันอีเมล กรุณาเข้าสู่ระบบด้วยอีเมลและยืนยันตัวตนก่อนเชื่อมบัญชีภายนอกเพื่อความปลอดภัย",
+                }
+            # Check user doesn't already have a different provider account linked
+            conflict = conn.execute(
+                "SELECT id FROM user_identities WHERE user_id=? AND provider=?",
+                (existing_user["id"], provider),
+            ).fetchone()
+            if conflict is not None:
+                conn.close()
+                return {
+                    "ok": False,
+                    "error_code": "PROVIDER_ALREADY_LINKED",
+                    "error": f"บัญชี ZYRQUEN นี้เชื่อมกับบัญชี {provider} อื่นอยู่แล้ว",
+                }
+            ident_id = str(uuid.uuid4())
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO user_identities (id, user_id, provider, provider_user_id, provider_email, email_verified, display_name, avatar_url, linked_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                    """,
+                    (ident_id, existing_user["id"], provider, provider_user_id, email, display_name or existing_user["display_name"], avatar_url, ts, ts),
+                )
+                if avatar_url and not existing_user["avatar_url"]:
+                    conn.execute("UPDATE users SET avatar_url=? WHERE id=?", (avatar_url, existing_user["id"]))
+            u_row = conn.execute(
+                "SELECT id, email, display_name, role, password_hash, email_verified, email_verified_at, avatar_url, created_at FROM users WHERE id=?",
+                (existing_user["id"],),
+            ).fetchone()
+            conn.close()
+            return {"ok": True, "action": "linked_verified_user", "user": _sanitize_row(u_row)}
+
+        uid = str(uuid.uuid4())
+        ident_id = str(uuid.uuid4())
+        final_name = display_name if len(display_name) >= 2 else email.split("@", 1)[0][:80]
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO users (id, email, display_name, role, password_hash, email_verified, email_verified_at, avatar_url, created_at)
+                VALUES (?, ?, ?, 'user', '', 1, ?, ?, ?)
+                """,
+                (uid, email, final_name, ts, avatar_url, ts),
+            )
+            conn.execute(
+                """
+                INSERT INTO user_identities (id, user_id, provider, provider_user_id, provider_email, email_verified, display_name, avatar_url, linked_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                """,
+                (ident_id, uid, provider, provider_user_id, email, final_name, avatar_url, ts, ts),
+            )
+        u_row = conn.execute(
+            "SELECT id, email, display_name, role, password_hash, email_verified, email_verified_at, avatar_url, created_at FROM users WHERE id=?",
+            (uid,),
+        ).fetchone()
+        conn.close()
+        return {"ok": True, "action": "created_oauth_user", "user": _sanitize_row(u_row)}
+
+    if action == "auth_link_identity":
+        uid = str(payload.get("user_id") or "").strip()
+        provider = str(payload.get("provider") or "").strip().lower()
+        provider_user_id = str(payload.get("provider_user_id") or "").strip()
+        email = str(payload.get("email") or "").strip().lower() or None
+        email_verified = bool(payload.get("email_verified"))
+        display_name = str(payload.get("display_name") or "").strip()[:80] or None
+        avatar_url = str(payload.get("avatar_url") or "").strip()[:512] or None
+
+        if not uid or provider not in ("google", "github") or not provider_user_id:
+            conn.close()
+            return {"ok": False, "error": "Invalid identity link payload"}
+
+        user_row = conn.execute("SELECT id, email, email_verified FROM users WHERE id=?", (uid,)).fetchone()
+        if user_row is None:
+            conn.close()
+            return {"ok": False, "error": "User not found"}
+
+        existing_ident = conn.execute(
+            "SELECT * FROM user_identities WHERE provider=? AND provider_user_id=?",
+            (provider, provider_user_id),
+        ).fetchone()
+        ts = now_iso()
+        if existing_ident is not None:
+            if str(existing_ident["user_id"]) != uid:
+                conn.close()
+                return {
+                    "ok": False,
+                    "error_code": "IDENTITY_ALREADY_LINKED_TO_OTHER",
+                    "error": "บัญชีภายนอกนี้ถูกเชื่อมกับผู้ใช้อื่นในระบบแล้ว",
+                }
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE user_identities
+                    SET provider_email=?, email_verified=?, display_name=?, avatar_url=?, updated_at=?
+                    WHERE id=?
+                    """,
+                    (
+                        email or existing_ident["provider_email"],
+                        1 if email_verified else int(existing_ident["email_verified"] or 0),
+                        display_name or existing_ident["display_name"],
+                        avatar_url or existing_ident["avatar_url"],
+                        ts,
+                        existing_ident["id"],
+                    ),
+                )
+            updated = row_to_dict(conn.execute("SELECT * FROM user_identities WHERE id=?", (existing_ident["id"],)).fetchone())
+            conn.close()
+            return {"ok": True, "already_linked": True, "identity": updated}
+
+        existing_provider = conn.execute(
+            "SELECT id FROM user_identities WHERE user_id=? AND provider=?",
+            (uid, provider),
+        ).fetchone()
+        if existing_provider is not None:
+            conn.close()
+            return {
+                "ok": False,
+                "error_code": "PROVIDER_ALREADY_LINKED",
+                "error": f"คุณได้เชื่อมต่อบัญชี {provider} ไว้แล้ว กรุณายกเลิกการเชื่อมต่อเดิมก่อนเชื่อมบัญชีใหม่",
+            }
+
+        ident_id = str(uuid.uuid4())
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO user_identities (id, user_id, provider, provider_user_id, provider_email, email_verified, display_name, avatar_url, linked_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (ident_id, uid, provider, provider_user_id, email, 1 if email_verified else 0, display_name, avatar_url, ts, ts),
+            )
+            if email and email_verified and email == str(user_row["email"]).lower() and not bool(user_row["email_verified"]):
+                conn.execute(
+                    "UPDATE users SET email_verified=1, email_verified_at=? WHERE id=?",
+                    (ts, uid),
+                )
+        ident = row_to_dict(conn.execute("SELECT * FROM user_identities WHERE id=?", (ident_id,)).fetchone())
+        conn.close()
+        return {"ok": True, "already_linked": False, "identity": ident}
+
+    if action == "auth_unlink_identity":
+        uid = str(payload.get("user_id") or "").strip()
+        provider = str(payload.get("provider") or "").strip().lower()
+        if not uid or provider not in ("google", "github"):
+            conn.close()
+            return {"ok": False, "error": "Invalid provider"}
+        user_row = conn.execute("SELECT password_hash FROM users WHERE id=?", (uid,)).fetchone()
+        if user_row is None:
+            conn.close()
+            return {"ok": False, "error": "User not found"}
+        ident = conn.execute(
+            "SELECT id FROM user_identities WHERE user_id=? AND provider=?",
+            (uid, provider),
+        ).fetchone()
+        if ident is None:
+            conn.close()
+            return {"ok": False, "error_code": "NOT_FOUND", "error": "ยังไม่ได้เชื่อมต่อผู้ให้บริการนี้"}
+        has_pw = ":" in str(user_row["password_hash"] or "")
+        other_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM user_identities WHERE user_id=? AND provider!=?",
+                (uid, provider),
+            ).fetchone()[0]
+        )
+        if not has_pw and other_count == 0:
+            conn.close()
+            return {
+                "ok": False,
+                "error_code": "LOCKOUT_PREVENTED",
+                "error": "ไม่สามารถยกเลิกการเชื่อมต่อวิธีเข้าสู่ระบบสุดท้ายได้ กรุณาตั้งรหัสผ่านหรือเชื่อมบัญชีอื่นก่อน",
+            }
+        with conn:
+            conn.execute("DELETE FROM user_identities WHERE id=?", (ident["id"],))
+        conn.close()
+        return {"ok": True, "provider": provider}
+
+    if action == "auth_list_identities":
+        uid = str(payload.get("user_id") or "").strip()
+        user_row = conn.execute(
+            "SELECT email, password_hash, email_verified, email_verified_at FROM users WHERE id=?",
+            (uid,),
+        ).fetchone()
+        if user_row is None:
+            conn.close()
+            return {"ok": False, "error": "User not found"}
+        rows = [
+            {
+                "id": r["id"],
+                "provider": r["provider"],
+                "provider_email": r["provider_email"],
+                "email_verified": bool(r["email_verified"]),
+                "display_name": r["display_name"],
+                "avatar_url": r["avatar_url"],
+                "linked_at": r["linked_at"],
+            }
+            for r in conn.execute(
+                "SELECT id, provider, provider_email, email_verified, display_name, avatar_url, linked_at FROM user_identities WHERE user_id=? ORDER BY linked_at ASC",
+                (uid,),
+            ).fetchall()
+        ]
+        conn.close()
+        return {
+            "ok": True,
+            "has_password": ":" in str(user_row["password_hash"] or ""),
+            "email_verified": bool(user_row["email_verified"]),
+            "email_verified_at": user_row["email_verified_at"],
+            "identities": rows,
+        }
+
+    if action == "auth_create_token":
+        uid = str(payload.get("user_id") or "").strip()
+        token_type = str(payload.get("token_type") or "").strip()
+        token_hash = str(payload.get("token_hash") or "").strip()
+        target_email = str(payload.get("target_email") or "").strip().lower()
+        expires_at = str(payload.get("expires_at") or "").strip()
+        if token_type not in ("email_verify", "password_reset") or not uid or not token_hash or not target_email or not expires_at:
+            conn.close()
+            return {"ok": False, "error": "Invalid auth token parameters"}
+        ts = now_iso()
+        tid = str(uuid.uuid4())
+        with conn:
+            conn.execute(
+                "UPDATE auth_tokens SET used_at=? WHERE user_id=? AND token_type=? AND used_at IS NULL",
+                (ts, uid, token_type),
+            )
+            conn.execute(
+                """
+                INSERT INTO auth_tokens (id, user_id, token_type, token_hash, target_email, expires_at, used_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+                """,
+                (tid, uid, token_type, token_hash, target_email, expires_at, ts),
+            )
+        conn.close()
+        return {"ok": True, "token_id": tid}
+
+    if action == "auth_consume_email_verify_token":
+        token_hash = str(payload.get("token_hash") or "").strip()
+        ts = now_iso()
+        row = conn.execute(
+            "SELECT * FROM auth_tokens WHERE token_hash=? AND token_type='email_verify'",
+            (token_hash,),
+        ).fetchone()
+        if row is None or row["used_at"] is not None or str(row["expires_at"]) <= ts:
+            conn.close()
+            return {"ok": False, "error": "ลิงก์ยืนยันอีเมลไม่ถูกต้องหรือหมดอายุแล้ว"}
+        uid = str(row["user_id"])
+        u_row = conn.execute(
+            "SELECT id, email, display_name, role, password_hash, email_verified, email_verified_at, avatar_url, created_at FROM users WHERE id=? AND lower(email)=lower(?)",
+            (uid, row["target_email"]),
+        ).fetchone()
+        if u_row is None:
+            conn.close()
+            return {"ok": False, "error": "ไม่พบบัญชีผู้ใช้สำหรับอีเมลนี้"}
+        with conn:
+            conn.execute("UPDATE auth_tokens SET used_at=? WHERE id=?", (ts, row["id"]))
+            conn.execute(
+                "UPDATE users SET email_verified=1, email_verified_at=COALESCE(email_verified_at, ?) WHERE id=?",
+                (ts, uid),
+            )
+        updated = conn.execute(
+            "SELECT id, email, display_name, role, password_hash, email_verified, email_verified_at, avatar_url, created_at FROM users WHERE id=?",
+            (uid,),
+        ).fetchone()
+        d = dict(updated)
+        pw = str(d.pop("password_hash", "") or "")
+        d["email_verified"] = bool(d.get("email_verified"))
+        d["has_password"] = ":" in pw
+        conn.close()
+        return {"ok": True, "user": d}
+
+    if action == "auth_consume_password_reset_token":
+        token_hash = str(payload.get("token_hash") or "").strip()
+        new_password_hash = str(payload.get("new_password_hash") or "").strip()
+        ts = now_iso()
+        row = conn.execute(
+            "SELECT * FROM auth_tokens WHERE token_hash=? AND token_type='password_reset'",
+            (token_hash,),
+        ).fetchone()
+        if row is None or row["used_at"] is not None or str(row["expires_at"]) <= ts:
+            conn.close()
+            return {"ok": False, "error": "โทเคนรีเซ็ตรหัสผ่านไม่ถูกต้องหรือหมดอายุแล้ว"}
+        uid = str(row["user_id"])
+        with conn:
+            conn.execute("UPDATE auth_tokens SET used_at=? WHERE id=?", (ts, row["id"]))
+            conn.execute("UPDATE users SET password_hash=? WHERE id=?", (new_password_hash, uid))
+        u_row = conn.execute(
+            "SELECT id, email, display_name, role, email_verified, email_verified_at, avatar_url, created_at FROM users WHERE id=?",
+            (uid,),
+        ).fetchone()
+        conn.close()
+        if u_row is None:
+            return {"ok": False, "error": "User not found"}
+        d = dict(u_row)
+        d["email_verified"] = bool(d.get("email_verified"))
+        d["has_password"] = True
+        return {"ok": True, "user": d}
+
+    if action == "auth_set_password":
+        uid = str(payload.get("user_id") or "").strip()
+        new_password_hash = str(payload.get("new_password_hash") or "").strip()
+        if not uid or ":" not in new_password_hash:
+            conn.close()
+            return {"ok": False, "error": "Invalid password payload"}
+        with conn:
+            cur = conn.execute("UPDATE users SET password_hash=? WHERE id=?", (new_password_hash, uid))
+        conn.close()
+        return {"ok": cur.rowcount > 0}
 
     if action == "home_summary":
         uid = str(payload["user_id"])
@@ -1498,6 +1895,34 @@ def handle_action(action: str, payload: dict) -> dict:
             cur = conn.execute("UPDATE api_keys SET revoked=1 WHERE id=? AND user_id=?", (kid, uid))
         conn.close()
         return {"ok": cur.rowcount > 0}
+
+    if action == "dev_key_bulk_revoke":
+        uid = str(payload.get("user_id") or "")
+        raw_ids = payload.get("key_ids") or []
+        key_ids = list(dict.fromkeys(str(k).strip() for k in raw_ids if str(k).strip()))[:100]
+        if not uid or not key_ids:
+            conn.close()
+            return {"ok": False, "error": "No key IDs provided", "revoked_ids": [], "revoked_count": 0}
+        placeholders = ",".join("?" for _ in key_ids)
+        rows = conn.execute(
+            f"SELECT id FROM api_keys WHERE user_id=? AND revoked=0 AND id IN ({placeholders})",
+            (uid, *key_ids),
+        ).fetchall()
+        revoked_ids = [str(r["id"]) for r in rows]
+        if revoked_ids:
+            rev_placeholders = ",".join("?" for _ in revoked_ids)
+            with conn:
+                conn.execute(
+                    f"UPDATE api_keys SET revoked=1 WHERE user_id=? AND revoked=0 AND id IN ({rev_placeholders})",
+                    (uid, *revoked_ids),
+                )
+        conn.close()
+        return {
+            "ok": len(revoked_ids) > 0,
+            "revoked_ids": revoked_ids,
+            "revoked_count": len(revoked_ids),
+            "skipped_count": len(key_ids) - len(revoked_ids),
+        }
 
     if action == "admin_overview":
         return _handle_admin_overview(conn)

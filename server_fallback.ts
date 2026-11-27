@@ -9,6 +9,33 @@ interface UserRow extends AnyRecord {
   display_name: string;
   role: 'admin' | 'user';
   password_hash: string;
+  email_verified: number;
+  email_verified_at: string | null;
+  avatar_url: string | null;
+  created_at: string;
+}
+
+interface UserIdentityRow extends AnyRecord {
+  id: string;
+  user_id: string;
+  provider: 'google' | 'github';
+  provider_user_id: string;
+  provider_email: string | null;
+  email_verified: number;
+  display_name: string | null;
+  avatar_url: string | null;
+  linked_at: string;
+  updated_at: string;
+}
+
+interface AuthTokenRow extends AnyRecord {
+  id: string;
+  user_id: string;
+  token_type: 'email_verify' | 'password_reset';
+  token_hash: string;
+  target_email: string;
+  expires_at: string;
+  used_at: string | null;
   created_at: string;
 }
 
@@ -196,6 +223,8 @@ const DEFAULT_TOOLKITS: AnyRecord[] = [
 
 const store = {
   users: [] as UserRow[],
+  userIdentities: [] as UserIdentityRow[],
+  authTokens: [] as AuthTokenRow[],
   conversations: [] as ConversationRow[],
   messages: [] as MessageRow[],
   triples: [] as TripleRow[],
@@ -393,6 +422,10 @@ function sanitizeUser(u: UserRow) {
     email: u.email,
     display_name: u.display_name,
     role: u.role,
+    email_verified: Boolean(u.email_verified),
+    email_verified_at: u.email_verified_at || null,
+    avatar_url: u.avatar_url || null,
+    has_password: String(u.password_hash || '').includes(':'),
     created_at: u.created_at,
   };
 }
@@ -702,13 +735,18 @@ export function runFallbackDbBridge(action: string, payload: AnyRecord = {}): An
     if (store.users.some((u) => u.email === email)) {
       return { ok: false, error: 'UNIQUE constraint failed: users.email' };
     }
+    const ts = nowIso();
+    const emailVerified = payload.email_verified ? 1 : 0;
     const user: UserRow = {
       id: crypto.randomUUID(),
       email,
       display_name: displayName,
       role,
       password_hash: String(payload.password_hash || ''),
-      created_at: nowIso(),
+      email_verified: emailVerified,
+      email_verified_at: emailVerified ? ts : null,
+      avatar_url: payload.avatar_url ? String(payload.avatar_url) : null,
+      created_at: ts,
     };
     store.users.push(user);
     return { ok: true, user: sanitizeUser(user) };
@@ -717,13 +755,295 @@ export function runFallbackDbBridge(action: string, payload: AnyRecord = {}): An
   if (action === 'auth_find_by_email') {
     const email = String(payload.email || '').trim().toLowerCase();
     const user = store.users.find((u) => u.email === email) || null;
-    return { ok: true, user };
+    return {
+      ok: true,
+      user: user
+        ? {
+            ...user,
+            email_verified: Boolean(user.email_verified),
+            has_password: String(user.password_hash || '').includes(':'),
+          }
+        : null,
+    };
   }
 
   if (action === 'auth_find_by_id') {
     const uid = String(payload.user_id || '');
     const user = store.users.find((u) => u.id === uid);
     return { ok: true, user: user ? sanitizeUser(user) : null };
+  }
+
+  if (action === 'auth_oauth_login_or_register') {
+    const provider = String(payload.provider || '').trim().toLowerCase() as 'google' | 'github';
+    const providerUserId = String(payload.provider_user_id || '').trim();
+    const email = String(payload.email || '').trim().toLowerCase();
+    const emailVerified = Boolean(payload.email_verified);
+    const displayName = String(payload.display_name || '').trim().slice(0, 80);
+    const avatarUrl = String(payload.avatar_url || '').trim().slice(0, 512) || null;
+
+    if ((provider !== 'google' && provider !== 'github') || !providerUserId) {
+      return { ok: false, error_code: 'INVALID_PROVIDER', error: 'Invalid OAuth provider payload' };
+    }
+    const ts = nowIso();
+    const existingIdent = store.userIdentities.find(
+      (i) => i.provider === provider && i.provider_user_id === providerUserId
+    );
+    if (existingIdent) {
+      existingIdent.provider_email = email || existingIdent.provider_email;
+      existingIdent.email_verified = emailVerified ? 1 : existingIdent.email_verified;
+      existingIdent.display_name = displayName || existingIdent.display_name;
+      existingIdent.avatar_url = avatarUrl || existingIdent.avatar_url;
+      existingIdent.updated_at = ts;
+      const u = store.users.find((x) => x.id === existingIdent.user_id);
+      if (!u) return { ok: false, error: 'Linked user account missing' };
+      if (avatarUrl && !u.avatar_url) u.avatar_url = avatarUrl;
+      return { ok: true, action: 'login_existing_identity', user: sanitizeUser(u) };
+    }
+
+    if (!email || !email.includes('@') || !emailVerified) {
+      return {
+        ok: false,
+        error_code: 'VERIFIED_EMAIL_REQUIRED',
+        error: 'บัญชีภายนอกต้องมีอีเมลที่ยืนยันแล้วจึงจะสมัครหรือเข้าสู่ระบบอัตโนมัติได้',
+      };
+    }
+
+    const existingUser = store.users.find((u) => u.email.toLowerCase() === email);
+    if (existingUser) {
+      if (!existingUser.email_verified) {
+        return {
+          ok: false,
+          error_code: 'ACCOUNT_LINK_CONFIRMATION_REQUIRED',
+          error: 'พบอีเมลนี้ในระบบที่ยังไม่ยืนยันอีเมล กรุณาเข้าสู่ระบบด้วยอีเมลและยืนยันตัวตนก่อนเชื่อมบัญชีภายนอกเพื่อความปลอดภัย',
+        };
+      }
+      if (store.userIdentities.some((i) => i.user_id === existingUser.id && i.provider === provider)) {
+        return {
+          ok: false,
+          error_code: 'PROVIDER_ALREADY_LINKED',
+          error: `บัญชี ZYRQUEN นี้เชื่อมกับบัญชี ${provider} อื่นอยู่แล้ว`,
+        };
+      }
+      store.userIdentities.push({
+        id: crypto.randomUUID(),
+        user_id: existingUser.id,
+        provider,
+        provider_user_id: providerUserId,
+        provider_email: email,
+        email_verified: 1,
+        display_name: displayName || existingUser.display_name,
+        avatar_url: avatarUrl,
+        linked_at: ts,
+        updated_at: ts,
+      });
+      if (avatarUrl && !existingUser.avatar_url) existingUser.avatar_url = avatarUrl;
+      return { ok: true, action: 'linked_verified_user', user: sanitizeUser(existingUser) };
+    }
+
+    const uid = crypto.randomUUID();
+    const finalName = displayName.length >= 2 ? displayName : email.split('@')[0].slice(0, 80);
+    const newUser: UserRow = {
+      id: uid,
+      email,
+      display_name: finalName,
+      role: 'user',
+      password_hash: '',
+      email_verified: 1,
+      email_verified_at: ts,
+      avatar_url: avatarUrl,
+      created_at: ts,
+    };
+    store.users.push(newUser);
+    store.userIdentities.push({
+      id: crypto.randomUUID(),
+      user_id: uid,
+      provider,
+      provider_user_id: providerUserId,
+      provider_email: email,
+      email_verified: 1,
+      display_name: finalName,
+      avatar_url: avatarUrl,
+      linked_at: ts,
+      updated_at: ts,
+    });
+    return { ok: true, action: 'created_oauth_user', user: sanitizeUser(newUser) };
+  }
+
+  if (action === 'auth_link_identity') {
+    const uid = String(payload.user_id || '').trim();
+    const provider = String(payload.provider || '').trim().toLowerCase() as 'google' | 'github';
+    const providerUserId = String(payload.provider_user_id || '').trim();
+    const email = String(payload.email || '').trim().toLowerCase() || null;
+    const emailVerified = Boolean(payload.email_verified);
+    const displayName = String(payload.display_name || '').trim().slice(0, 80) || null;
+    const avatarUrl = String(payload.avatar_url || '').trim().slice(0, 512) || null;
+    const u = store.users.find((x) => x.id === uid);
+    if (!u || (provider !== 'google' && provider !== 'github') || !providerUserId) {
+      return { ok: false, error: 'Invalid identity link payload' };
+    }
+    const ts = nowIso();
+    const existingIdent = store.userIdentities.find(
+      (i) => i.provider === provider && i.provider_user_id === providerUserId
+    );
+    if (existingIdent) {
+      if (existingIdent.user_id !== uid) {
+        return {
+          ok: false,
+          error_code: 'IDENTITY_ALREADY_LINKED_TO_OTHER',
+          error: 'บัญชีภายนอกนี้ถูกเชื่อมกับผู้ใช้อื่นในระบบแล้ว',
+        };
+      }
+      existingIdent.provider_email = email || existingIdent.provider_email;
+      existingIdent.email_verified = emailVerified ? 1 : existingIdent.email_verified;
+      existingIdent.display_name = displayName || existingIdent.display_name;
+      existingIdent.avatar_url = avatarUrl || existingIdent.avatar_url;
+      existingIdent.updated_at = ts;
+      return { ok: true, already_linked: true, identity: existingIdent };
+    }
+    if (store.userIdentities.some((i) => i.user_id === uid && i.provider === provider)) {
+      return {
+        ok: false,
+        error_code: 'PROVIDER_ALREADY_LINKED',
+        error: `คุณได้เชื่อมต่อบัญชี ${provider} ไว้แล้ว กรุณายกเลิกการเชื่อมต่อเดิมก่อนเชื่อมบัญชีใหม่`,
+      };
+    }
+    const ident: UserIdentityRow = {
+      id: crypto.randomUUID(),
+      user_id: uid,
+      provider,
+      provider_user_id: providerUserId,
+      provider_email: email,
+      email_verified: emailVerified ? 1 : 0,
+      display_name: displayName,
+      avatar_url: avatarUrl,
+      linked_at: ts,
+      updated_at: ts,
+    };
+    store.userIdentities.push(ident);
+    if (email && emailVerified && email === u.email.toLowerCase() && !u.email_verified) {
+      u.email_verified = 1;
+      u.email_verified_at = ts;
+    }
+    return { ok: true, already_linked: false, identity: ident };
+  }
+
+  if (action === 'auth_unlink_identity') {
+    const uid = String(payload.user_id || '').trim();
+    const provider = String(payload.provider || '').trim().toLowerCase();
+    const u = store.users.find((x) => x.id === uid);
+    if (!u || (provider !== 'google' && provider !== 'github')) {
+      return { ok: false, error: 'Invalid provider' };
+    }
+    const idx = store.userIdentities.findIndex((i) => i.user_id === uid && i.provider === provider);
+    if (idx === -1) {
+      return { ok: false, error_code: 'NOT_FOUND', error: 'ยังไม่ได้เชื่อมต่อผู้ให้บริการนี้' };
+    }
+    const hasPw = String(u.password_hash || '').includes(':');
+    const otherCount = store.userIdentities.filter((i) => i.user_id === uid && i.provider !== provider).length;
+    if (!hasPw && otherCount === 0) {
+      return {
+        ok: false,
+        error_code: 'LOCKOUT_PREVENTED',
+        error: 'ไม่สามารถยกเลิกการเชื่อมต่อวิธีเข้าสู่ระบบสุดท้ายได้ กรุณาตั้งรหัสผ่านหรือเชื่อมบัญชีอื่นก่อน',
+      };
+    }
+    store.userIdentities.splice(idx, 1);
+    return { ok: true, provider };
+  }
+
+  if (action === 'auth_list_identities') {
+    const uid = String(payload.user_id || '').trim();
+    const u = store.users.find((x) => x.id === uid);
+    if (!u) return { ok: false, error: 'User not found' };
+    const identities = store.userIdentities
+      .filter((i) => i.user_id === uid)
+      .map((i) => ({
+        id: i.id,
+        provider: i.provider,
+        provider_email: i.provider_email,
+        email_verified: Boolean(i.email_verified),
+        display_name: i.display_name,
+        avatar_url: i.avatar_url,
+        linked_at: i.linked_at,
+      }));
+    return {
+      ok: true,
+      has_password: String(u.password_hash || '').includes(':'),
+      email_verified: Boolean(u.email_verified),
+      email_verified_at: u.email_verified_at,
+      identities,
+    };
+  }
+
+  if (action === 'auth_create_token') {
+    const uid = String(payload.user_id || '').trim();
+    const tokenType = String(payload.token_type || '').trim() as 'email_verify' | 'password_reset';
+    const tokenHash = String(payload.token_hash || '').trim();
+    const targetEmail = String(payload.target_email || '').trim().toLowerCase();
+    const expiresAt = String(payload.expires_at || '').trim();
+    const ts = nowIso();
+    for (const t of store.authTokens) {
+      if (t.user_id === uid && t.token_type === tokenType && !t.used_at) {
+        t.used_at = ts;
+      }
+    }
+    const id = crypto.randomUUID();
+    store.authTokens.push({
+      id,
+      user_id: uid,
+      token_type: tokenType,
+      token_hash: tokenHash,
+      target_email: targetEmail,
+      expires_at: expiresAt,
+      used_at: null,
+      created_at: ts,
+    });
+    return { ok: true, token_id: id };
+  }
+
+  if (action === 'auth_consume_email_verify_token') {
+    const tokenHash = String(payload.token_hash || '').trim();
+    const ts = nowIso();
+    const row = store.authTokens.find(
+      (t) => t.token_hash === tokenHash && t.token_type === 'email_verify'
+    );
+    if (!row || row.used_at || row.expires_at <= ts) {
+      return { ok: false, error: 'ลิงก์ยืนยันอีเมลไม่ถูกต้องหรือหมดอายุแล้ว' };
+    }
+    const u = store.users.find(
+      (x) => x.id === row.user_id && x.email.toLowerCase() === row.target_email.toLowerCase()
+    );
+    if (!u) return { ok: false, error: 'ไม่พบบัญชีผู้ใช้สำหรับอีเมลนี้' };
+    row.used_at = ts;
+    u.email_verified = 1;
+    u.email_verified_at = u.email_verified_at || ts;
+    return { ok: true, user: sanitizeUser(u) };
+  }
+
+  if (action === 'auth_consume_password_reset_token') {
+    const tokenHash = String(payload.token_hash || '').trim();
+    const newHash = String(payload.new_password_hash || '').trim();
+    const ts = nowIso();
+    const row = store.authTokens.find(
+      (t) => t.token_hash === tokenHash && t.token_type === 'password_reset'
+    );
+    if (!row || row.used_at || row.expires_at <= ts) {
+      return { ok: false, error: 'โทเคนรีเซ็ตรหัสผ่านไม่ถูกต้องหรือหมดอายุแล้ว' };
+    }
+    const u = store.users.find((x) => x.id === row.user_id);
+    if (!u) return { ok: false, error: 'User not found' };
+    row.used_at = ts;
+    u.password_hash = newHash;
+    return { ok: true, user: sanitizeUser(u) };
+  }
+
+  if (action === 'auth_set_password') {
+    const uid = String(payload.user_id || '').trim();
+    const newHash = String(payload.new_password_hash || '').trim();
+    const u = store.users.find((x) => x.id === uid);
+    if (!u || !newHash.includes(':')) return { ok: false, error: 'Invalid password payload' };
+    u.password_hash = newHash;
+    return { ok: true };
   }
 
   if (action === 'home_summary') {
@@ -1049,6 +1369,29 @@ export function runFallbackDbBridge(action: string, payload: AnyRecord = {}): An
     if (!key) return { ok: false };
     key.revoked = 1;
     return { ok: true };
+  }
+
+  if (action === 'dev_key_bulk_revoke') {
+    const uid = String(payload.user_id || '');
+    const rawIds = Array.isArray(payload.key_ids) ? payload.key_ids : [];
+    const keyIds = Array.from(new Set(rawIds.map((x) => String(x || '').trim()).filter(Boolean))).slice(0, 100);
+    if (!uid || keyIds.length === 0) {
+      return { ok: false, error: 'No key IDs provided', revoked_ids: [], revoked_count: 0 };
+    }
+    const idSet = new Set(keyIds);
+    const revokedIds: string[] = [];
+    for (const k of store.apiKeys) {
+      if (k.user_id === uid && !k.revoked && idSet.has(String(k.id))) {
+        k.revoked = 1;
+        revokedIds.push(String(k.id));
+      }
+    }
+    return {
+      ok: revokedIds.length > 0,
+      revoked_ids: revokedIds,
+      revoked_count: revokedIds.length,
+      skipped_count: keyIds.length - revokedIds.length,
+    };
   }
 
   if (action === 'admin_overview' || action === 'admin_overview_summary') {

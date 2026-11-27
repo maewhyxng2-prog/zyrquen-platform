@@ -229,7 +229,38 @@ def init_db() -> None:
                 display_name TEXT NOT NULL,
                 role TEXT NOT NULL CHECK(role IN ('admin', 'user')),
                 password_hash TEXT NOT NULL,
+                email_verified INTEGER NOT NULL DEFAULT 0,
+                email_verified_at TEXT,
+                avatar_url TEXT,
                 created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS user_identities (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                provider TEXT NOT NULL CHECK(provider IN ('google', 'github')),
+                provider_user_id TEXT NOT NULL,
+                provider_email TEXT,
+                email_verified INTEGER NOT NULL DEFAULT 0,
+                display_name TEXT,
+                avatar_url TEXT,
+                linked_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(provider, provider_user_id),
+                UNIQUE(user_id, provider),
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS auth_tokens (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                token_type TEXT NOT NULL CHECK(token_type IN ('email_verify', 'password_reset')),
+                token_hash TEXT UNIQUE NOT NULL,
+                target_email TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                used_at TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
             );
 
             CREATE TABLE IF NOT EXISTS conversations (
@@ -520,6 +551,28 @@ def init_db() -> None:
         ):
             if col_name not in wf_cols:
                 conn.execute(f"ALTER TABLE workflow_runs ADD COLUMN {col_name} {col_type}")
+
+        user_cols = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(users)").fetchall()
+        }
+        if "email_verified" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0")
+        if "email_verified_at" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN email_verified_at TEXT")
+        if "avatar_url" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN avatar_url TEXT")
+
+        conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_user_identities_user
+                ON user_identities(user_id);
+            CREATE INDEX IF NOT EXISTS idx_auth_tokens_hash
+                ON auth_tokens(token_hash);
+            CREATE INDEX IF NOT EXISTS idx_auth_tokens_user_type
+                ON auth_tokens(user_id, token_type);
+            """
+        )
     conn.close()
 
 
