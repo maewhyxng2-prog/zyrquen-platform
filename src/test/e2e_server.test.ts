@@ -14,13 +14,16 @@ describe('Full-Stack Real E2E: Express + SQLite + Python Native Core (Zero Fetch
   let tmpDataDir = '';
   let prevDataDir: string | undefined;
   let prevNoAutostart: string | undefined;
+  let prevAdminPasscode: string | undefined;
 
   beforeAll(async () => {
     tmpDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zyrquen-e2e-http-'));
     prevDataDir = process.env.ZYRQUEN_DATA_DIR;
     prevNoAutostart = process.env.ZYRQUEN_NO_AUTOSTART;
+    prevAdminPasscode = process.env.ZYRQUEN_ADMIN_PASSCODE;
     process.env.ZYRQUEN_DATA_DIR = tmpDataDir;
     process.env.ZYRQUEN_NO_AUTOSTART = '1';
+    process.env.ZYRQUEN_ADMIN_PASSCODE = 'e2e-admin-passcode-only';
 
     const { createApp } = await import('../../server');
     const app = await createApp({ attachVite: false });
@@ -49,6 +52,11 @@ describe('Full-Stack Real E2E: Express + SQLite + Python Native Core (Zero Fetch
     } else {
       process.env.ZYRQUEN_NO_AUTOSTART = prevNoAutostart;
     }
+    if (prevAdminPasscode === undefined) {
+      delete process.env.ZYRQUEN_ADMIN_PASSCODE;
+    } else {
+      process.env.ZYRQUEN_ADMIN_PASSCODE = prevAdminPasscode;
+    }
     fs.rmSync(tmpDataDir, { recursive: true, force: true });
   });
 
@@ -61,16 +69,23 @@ describe('Full-Stack Real E2E: Express + SQLite + Python Native Core (Zero Fetch
     expect(healthJson.nativeCore).toBe('ready');
 
     // 2. Claim initial admin account in fresh SQLite DB
-    const setupRes = await fetch(`${baseUrl}/api/auth/claim-admin`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email: 'e2e-admin@zyrquen.local',
-        displayName: 'E2E Admin',
-        password: 'StrongPassword123!',
-      }),
-    });
-    expect(setupRes.status).toBe(201);
+    const claimAdmin = (email: string) =>
+      fetch(`${baseUrl}/api/auth/claim-admin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          displayName: 'E2E Admin',
+          password: 'StrongPassword123!',
+          passcode: 'e2e-admin-passcode-only',
+        }),
+      });
+    const claimResults = await Promise.all([
+      claimAdmin('e2e-admin-a@zyrquen.local'),
+      claimAdmin('e2e-admin-b@zyrquen.local'),
+    ]);
+    expect(claimResults.map((result) => result.status).sort()).toEqual([201, 409]);
+    const setupRes = claimResults.find((result) => result.status === 201)!;
     const setupJson = (await setupRes.json()) as { token: string; user: { role: string } };
     expect(setupJson.token).toBeTruthy();
     expect(setupJson.user.role).toBe('admin');
