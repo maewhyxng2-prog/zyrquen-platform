@@ -747,6 +747,20 @@ def handle_action(action: str, payload: dict) -> dict:
         email_verified_at = now_iso() if email_verified else None
         avatar_url = str(payload.get("avatar_url") or "").strip() or None
         try:
+            if role == "admin":
+                # Serialize first-admin claims across processes before checking state.
+                conn.execute("BEGIN IMMEDIATE")
+                admin_count = conn.execute(
+                    "SELECT COUNT(*) FROM users WHERE role='admin'"
+                ).fetchone()[0]
+                if admin_count > 0:
+                    conn.rollback()
+                    conn.close()
+                    return {
+                        "ok": False,
+                        "error_code": "ADMIN_ALREADY_CLAIMED",
+                        "error": "Administrator already claimed. Sign in instead.",
+                    }
             with conn:
                 conn.execute(
                     """
