@@ -44,15 +44,29 @@ def compute_unified_diff(path_label: str, before: str, after: str) -> str:
     return "\n".join(diff_lines)
 
 
+_RESERVED_WORKSPACE_PARTS = frozenset({".zyrquen_history", "__pycache__", ".git", ".pytest_cache"})
+
+
 def _safe_confined_path(root: Path, rel_path: str) -> Path | None:
-    clean = str(rel_path or "").strip().lstrip("/")
-    if not clean or ".." in Path(clean).parts:
+    raw = str(rel_path or "")
+    if "\x00" in raw or "\\" in raw:
+        return None
+    clean = raw.strip().lstrip("/")
+    parts = Path(clean).parts
+    if not clean or ".." in parts or any(part in _RESERVED_WORKSPACE_PARTS for part in parts):
         return None
     resolved_root = root.resolve()
+    # Check each intermediate path component for symlinks before resolving
+    cur = resolved_root
+    for part in parts:
+        cur = cur / part
+        if cur.is_symlink():
+            return None
     target = (resolved_root / clean).resolve()
     if target == resolved_root or not target.is_relative_to(resolved_root):
         return None
     return target
+
 
 
 class WorkspaceTransaction:

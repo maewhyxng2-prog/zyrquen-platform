@@ -222,6 +222,23 @@ describe("workflow-logs helpers", () => {
     const aliceToken = (aliceLogin.body as { access_token: string }).access_token;
     const aliceHeaders = `Bearer ${aliceToken}`;
 
+    // 3b. Authenticated user with zero workflow runs MUST get 200 with empty arrays (never 403)
+    for (const activeOnlyFlag of ["true", "false"]) {
+      const aliceEmptyLogs = await handleInMemoryBackendRequest({
+        method: "GET",
+        path: "v1/workflows/logs",
+        authorizationHeader: aliceHeaders,
+        searchParams: new URLSearchParams({ active_only: activeOnlyFlag }),
+      });
+      expect(aliceEmptyLogs.status).toBe(200);
+      const emptyBody = aliceEmptyLogs.body as {
+        items: unknown[];
+        active_runs: unknown[];
+      };
+      expect(emptyBody.items).toEqual([]);
+      expect(emptyBody.active_runs).toEqual([]);
+    }
+
     const aliceRunRes = await handleInMemoryBackendRequest({
       method: "POST",
       path: "v1/workflows/runs",

@@ -1424,6 +1424,21 @@ describe('Isolated 6-Step Non-Skippable Native Training Pipeline Gate E2E', () =
     });
     expect(missingRunIdRes.status).toBe(404);
 
+    // Authenticated user with zero workflow runs MUST receive 200 with empty lists, NEVER 403
+    for (const flag of ['true', 'false']) {
+      const emptyUserLogsRes = await fetch(
+        `${gateBaseUrl}/api/v1/workflows/logs?active_only=${flag}`,
+        { headers: userHeaders }
+      );
+      expect(emptyUserLogsRes.status).toBe(200);
+      const emptyUserLogsJson = (await emptyUserLogsRes.json()) as {
+        items: unknown[];
+        active_runs: unknown[];
+      };
+      expect(emptyUserLogsJson.items).toEqual([]);
+      expect(emptyUserLogsJson.active_runs).toEqual([]);
+    }
+
     // Trigger an admin-owned workflow run and a regular-user-owned workflow run
     const adminWfRes = await fetch(`${gateBaseUrl}/api/workflows/system_ops/run`, {
       method: 'POST',

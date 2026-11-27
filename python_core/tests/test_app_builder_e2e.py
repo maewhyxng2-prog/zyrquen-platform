@@ -450,6 +450,87 @@ class AppBuilderAndBuildRunnerE2ETests(unittest.TestCase):
         self.assertFalse(blocked_history["ok"])
         self.assertEqual(blocked_history["status"], "BLOCKED")
 
+    def test_9_path_traversal_symlink_and_sandbox_escape_blocked(self) -> None:
+        ws_name = "sec_confinement_ws"
+        ws = (self.data_dir / "sandbox_workspaces" / ws_name).resolve()
+        ws.mkdir(parents=True, exist_ok=True)
+
+        # 1. Path traversal, backslashes, null bytes, leading slashes, and .zyrquen_history tampering
+        bad_paths = [
+            "../escape.py",
+            "..\\..\\escape.py",
+            "/etc/passwd",
+            "bad\x00name.py",
+            ".zyrquen_history/history.json",
+        ]
+        for bad_path in bad_paths:
+            res_builder = self.registry.execute(
+                "development.app_builder",
+                {"workspace": ws_name, "goal": "Traversal test", "files": {bad_path: "x = 1\n"}},
+                user_role="user",
+                conn=self.conn,
+                data_dir=self.data_dir,
+            )
+            self.assertFalse(res_builder["ok"], f"Expected BLOCKED for app_builder path {bad_path!r}")
+            self.assertEqual(res_builder["status"], "BLOCKED")
+
+            res_patch = self.registry.execute(
+                "development.code_patch_apply",
+                {"workspace": ws_name, "edits": {bad_path: "x = 1\n"}},
+                user_role="user",
+                conn=self.conn,
+                data_dir=self.data_dir,
+            )
+            self.assertFalse(res_patch["ok"], f"Expected BLOCKED for code_patch_apply path {bad_path!r}")
+            self.assertEqual(res_patch["status"], "BLOCKED")
+
+        # 2. Symlink inside workspace pointing outside workspace MUST be blocked
+        outside_file = self.data_dir / "secret_outside.txt"
+        outside_file.write_text("SECRET_TOKEN_DO_NOT_LEAK", encoding="utf-8")
+        symlink_path = ws / "leak_link.txt"
+        symlink_path.symlink_to(outside_file)
+
+        res_sym_read = self.registry.execute(
+            "development.workspace_history",
+            {"workspace": ws_name, "action": "read_file", "file_path": "leak_link.txt"},
+            user_role="user",
+            conn=self.conn,
+            data_dir=self.data_dir,
+        )
+        self.assertFalse(res_sym_read["ok"])
+        self.assertEqual(res_sym_read["status"], "BLOCKED")
+
+        res_sym_write = self.registry.execute(
+            "development.code_patch_apply",
+            {"workspace": ws_name, "edits": {"leak_link.txt": "overwritten"}},
+            user_role="user",
+            conn=self.conn,
+            data_dir=self.data_dir,
+        )
+        self.assertFalse(res_sym_write["ok"])
+        self.assertEqual(res_sym_write["status"], "BLOCKED")
+        self.assertEqual(outside_file.read_text(encoding="utf-8"), "SECRET_TOKEN_DO_NOT_LEAK")
+
+        # 3. Dangerous OS/subprocess/network/eval calls MUST be blocked before sandbox execution
+        for dangerous_src in (
+            "import subprocess\ndef run():\n    return subprocess.run(['id'])\n",
+            "import os\ndef run():\n    return os.environ\n",
+            "import socket\ndef run():\n    return socket.socket()\n",
+            "def run():\n    return eval('1+1')\n",
+        ):
+            res_dangerous = build_and_verify_app(
+                self.data_dir / "sandbox_workspaces" / "sec_dangerous_ws",
+                goal="Attempt restricted system call",
+                files={
+                    "app.py": dangerous_src,
+                    "test_app.py": "import unittest\nclass T(unittest.TestCase):\n    def test_ok(self):\n        self.assertTrue(True)\n",
+                },
+                rollback_on_failure=True,
+            )
+            self.assertFalse(res_dangerous["ok"])
+            self.assertFalse(res_dangerous["output"]["lint_passed"])
+            self.assertFalse(res_dangerous["output"]["verified"])
+
 
 if __name__ == "__main__":
     unittest.main()

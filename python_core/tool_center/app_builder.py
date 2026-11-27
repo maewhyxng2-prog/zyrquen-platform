@@ -419,9 +419,13 @@ def manage_workspace_history(
         }
 
     if act == "read_file":
-        clean_rel = str(file_path or "").strip().lstrip("/")
+        raw_fp = str(file_path or "")
+        clean_rel = raw_fp.strip().lstrip("/")
         if (
-            not clean_rel
+            "\x00" in raw_fp
+            or "\\" in raw_fp
+            or raw_fp.strip().startswith("/")
+            or not clean_rel
             or ".." in Path(clean_rel).parts
             or any(part in IGNORED_WORKSPACE_PARTS for part in Path(clean_rel).parts)
         ):
@@ -1120,11 +1124,15 @@ def build_and_verify_app(
     planned_deletes: list[str] = []
 
     def _validate_rel(rel_raw: Any) -> str | None:
-        clean = str(rel_raw or "").strip().lstrip("/")
+        raw = str(rel_raw or "")
+        if "\x00" in raw or "\\" in raw or raw.strip().startswith("/"):
+            return None
+        clean = raw.strip()
         if (
             not clean
             or ".." in Path(clean).parts
             or any(part in IGNORED_WORKSPACE_PARTS for part in Path(clean).parts)
+            or _safe_confined_path(ws, clean) is None
         ):
             return None
         return clean

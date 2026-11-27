@@ -24,7 +24,7 @@ from ..app_builder import (
     run_real_project_build,
 )
 from ..contracts import CapabilitySpec, ToolkitManifest
-from ..software_engineering import WorkspaceTransaction, _diagnose_failure, compute_unified_diff
+from ..software_engineering import WorkspaceTransaction, _diagnose_failure, _safe_confined_path, compute_unified_diff
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
@@ -659,12 +659,11 @@ def _handle_code_patch_apply(payload: dict[str, Any], ctx: dict[str, Any]) -> di
         for rel, body in edits_raw.items():
             planned_edits[str(rel)] = str(body)
     elif target_file and isinstance(replacements, list) and replacements:
-        clean = target_file.lstrip("/")
-        if ".." in Path(clean).parts:
-            return {"ok": False, "status": "BLOCKED", "error": "Path traversal forbidden.", "output": {}}
-        fpath = (ws / clean).resolve()
-        if not fpath.is_relative_to(ws):
-            return {"ok": False, "status": "BLOCKED", "error": "Path escapes workspace.", "output": {}}
+        if target_file.startswith("/") or "\\" in target_file or "\x00" in target_file:
+            return {"ok": False, "status": "BLOCKED", "error": "Unsafe target_file path.", "output": {}}
+        fpath = _safe_confined_path(ws, target_file)
+        if fpath is None:
+            return {"ok": False, "status": "BLOCKED", "error": "Path escapes workspace or targets reserved metadata.", "output": {}}
         if not fpath.is_file():
             return {"ok": False, "status": "FAILED", "error": f"Target file '{target_file}' not found in workspace.", "output": {}}
         updated_text = fpath.read_text(encoding="utf-8", errors="replace")
@@ -676,7 +675,7 @@ def _handle_code_patch_apply(payload: dict[str, Any], ctx: dict[str, Any]) -> di
             if old_s not in updated_text:
                 return {"ok": False, "status": "FAILED", "error": f"Pattern #{idx + 1} not found in '{target_file}'.", "output": {}}
             updated_text = updated_text.replace(old_s, new_s, 1)
-        planned_edits[clean] = updated_text
+        planned_edits[target_file] = updated_text
     else:
         return {
             "ok": False,
@@ -685,9 +684,9 @@ def _handle_code_patch_apply(payload: dict[str, Any], ctx: dict[str, Any]) -> di
             "output": {},
         }
 
-    # Validate syntax of all candidate files before/with transaction
+    # Validate syntax and confinement of all candidate files before/with transaction
     for rel, content in planned_edits.items():
-        if ".." in Path(rel).parts or rel.startswith("/"):
+        if rel.startswith("/") or _safe_confined_path(ws, rel) is None:
             return {"ok": False, "status": "BLOCKED", "error": f"Unsafe relative path '{rel}'.", "output": {}}
         ok_syn, syn_err = _validate_file_syntax(rel, content)
         if not ok_syn:
@@ -696,8 +695,8 @@ def _handle_code_patch_apply(payload: dict[str, Any], ctx: dict[str, Any]) -> di
     if dry_run:
         diffs: dict[str, str] = {}
         for rel, content in planned_edits.items():
-            fpath = (ws / rel).resolve()
-            if not fpath.is_relative_to(ws):
+            fpath = _safe_confined_path(ws, rel)
+            if fpath is None:
                 return {"ok": False, "status": "BLOCKED", "error": "Path escapes workspace.", "output": {}}
             before = fpath.read_text(encoding="utf-8", errors="replace") if fpath.is_file() else ""
             diffs[rel] = compute_unified_diff(rel, before, content)
@@ -862,13 +861,15 @@ def _handle_refactor_engine(payload: dict[str, Any], ctx: dict[str, Any]) -> dic
         ws, ws_err = _resolve_sandbox_workspace(ctx, payload.get("workspace"))
         if ws_err or ws is None:
             return {"ok": False, "status": "BLOCKED", "error": ws_err or "Invalid workspace.", "output": {}}
-        fpath = (ws / target_file.lstrip("/")).resolve()
-        if not fpath.is_relative_to(ws) or ".." in Path(target_file).parts:
+        if target_file.startswith("/"):
+            return {"ok": False, "status": "BLOCKED", "error": "Absolute path escapes workspace.", "output": {}}
+        fpath = _safe_confined_path(ws, target_file)
+        if fpath is None:
             return {"ok": False, "status": "BLOCKED", "error": "Path escapes workspace.", "output": {}}
         if not fpath.is_file():
             return {"ok": False, "status": "FAILED", "error": f"File '{target_file}' not found in workspace.", "output": {}}
         original = fpath.read_text(encoding="utf-8", errors="replace")
-        label = target_file.lstrip("/")
+        label = target_file
     else:
         return {"ok": False, "status": "FAILED", "error": "Provide 'source' or ('workspace' + 'target_file').", "output": {}}
 
