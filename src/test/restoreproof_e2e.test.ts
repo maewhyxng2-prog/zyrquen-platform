@@ -71,6 +71,7 @@ describe('RestoreProof Real HTTP + Python CLI E2E (Isolated Data Dir)', () => {
         email: 'rp-admin@zyrquen.local',
         displayName: 'RP Admin',
         password: 'StrongPassword123!',
+        passcode: 'e2e-admin-passcode-only',
       }),
     });
     expect(claimRes.status).toBe(201);
