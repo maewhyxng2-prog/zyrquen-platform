@@ -2550,7 +2550,7 @@ def evaluate_checkpoint_heldout(conn: sqlite3.Connection, ckpt_row: sqlite3.Row)
         }
 
     # 2. Native Neural Transformer checkpoint (.json.gz)
-    ds = conn.execute("SELECT records_json FROM datasets WHERE id=?", (dataset_id,)).fetchone()
+    ds = conn.execute("SELECT records_json, leakage_detected FROM datasets WHERE id=?", (dataset_id,)).fetchone()
     if eval_status.startswith("NEURAL") or str(weights_path).endswith(".gz"):
         try:
             n_model, n_tok, _ = NativeTransformerLM.load_checkpoint(weights_path)
@@ -2558,13 +2558,19 @@ def evaluate_checkpoint_heldout(conn: sqlite3.Connection, ckpt_row: sqlite3.Row)
             return {"ok": False, "status": "FAILED", "error": f"Failed to load neural checkpoint: {exc}"}
         if not ds and dataset_id == "continual-curriculum":
             ds = conn.execute(
-                "SELECT records_json FROM datasets WHERE leakage_detected=0 ORDER BY created_at DESC LIMIT 1"
+                "SELECT records_json, leakage_detected FROM datasets WHERE leakage_detected=0 ORDER BY created_at DESC LIMIT 1"
             ).fetchone()
         if not ds:
             return {
                 "ok": False,
                 "status": "BLOCKED" if dataset_id != "continual-curriculum" else "NOT_RUN",
                 "error": "Training/held-out dataset missing for neural checkpoint",
+            }
+        if int(ds["leakage_detected"] or 0) != 0:
+            return {
+                "ok": False,
+                "status": "FAILED",
+                "error": "Held-out evaluation blocked: linked dataset has Data Leakage",
             }
         splits = json.loads(ds["records_json"])
         test_lines = splits.get("test", [])
@@ -2583,6 +2589,12 @@ def evaluate_checkpoint_heldout(conn: sqlite3.Connection, ckpt_row: sqlite3.Row)
     # 3. N-Gram JSON checkpoint
     if not ds:
         return {"ok": False, "status": "BLOCKED", "error": "Training dataset missing for N-gram checkpoint"}
+    if int(ds["leakage_detected"] or 0) != 0:
+        return {
+            "ok": False,
+            "status": "FAILED",
+            "error": "Held-out evaluation blocked: linked dataset has Data Leakage",
+        }
     splits = json.loads(ds["records_json"])
     test_lines = splits.get("test", [])
     try:
@@ -3637,12 +3649,147 @@ def _try_execute_chat_autonomous_goal(
     wants_ts = any(k in low for k in ("typescript", "tsx", "react", "express", "node", "frontend", "ui"))
     is_api_domain = any(k in low for k in ("api", "endpoint", "rest", "route", "webhook", "service", "บริการ"))
     is_data_domain = any(k in low for k in ("csv", "json", "data", "dataset", "etl", "ข้อมูล", "สถิติ"))
+    wants_multifile_app = (
+        not wants_ts
+        and any(
+            k in low
+            for k in (
+                "สร้างแอป",
+                "สร้างโปรเจกต์",
+                "แอปพลิเคชัน",
+                "หลายไฟล์",
+                "multi-file",
+                "multifile",
+                "build app",
+                "create app",
+                "cli app",
+                "app builder",
+            )
+        )
+    )
 
     raw_slug = re.sub(r"[^a-z0-9_]+", "_", low).strip("_")[:28]
     if not raw_slug:
         raw_slug = "api_service_module" if is_api_domain else ("data_pipeline_module" if is_data_domain else "workflow_module")
     slug = f"task_{raw_slug}" if raw_slug[0].isdigit() else raw_slug
     pascal_name = "".join(part.capitalize() for part in slug.split("_") if part) or "WorkflowModule"
+
+    if wants_multifile_app:
+        ws_slug = f"app_{slug[:24]}"
+        app_plan_steps = [
+            {
+                "step_id": "build_multifile_app",
+                "capability_id": "development.app_builder",
+                "input": {
+                    "workspace": ws_slug,
+                    "goal": cleaned,
+                    "app_name": slug,
+                    "blueprint": "auto",
+                    "auto_repair": True,
+                    "rollback_on_failure": True,
+                },
+                "depends_on": [],
+            },
+            {
+                "step_id": "independent_build_verify",
+                "capability_id": "development.real_build_runner",
+                "input": {"workspace": ws_slug, "run_lint": True, "run_tests": True},
+                "depends_on": ["build_multifile_app"],
+            },
+        ]
+        app_wave = execute_orchestrated_plan(
+            tc_reg,
+            f"app_builder:{cleaned[:160]}",
+            app_plan_steps,
+            conn=conn,
+            data_dir=DATA_DIR,
+            user_id=user_id or "system",
+            user_role="user",
+            enable_parallel=False,
+        )
+        if app_wave.get("run_id"):
+            run_ids.append(app_wave["run_id"])
+        caps_executed.extend(s["capability_id"] for s in (app_wave.get("steps") or []))
+
+        app_by_id = {s["step_id"]: s for s in (app_wave.get("steps") or [])}
+        builder_step = app_by_id.get("build_multifile_app") or {}
+        builder_out = builder_step.get("output") or {}
+        runner_step = app_by_id.get("independent_build_verify") or {}
+        runner_out = runner_step.get("output") or {}
+
+        app_verified = bool(
+            app_wave.get("ok")
+            and app_wave.get("delivery_verdict") == "SUCCESS"
+            and builder_out.get("verified") is True
+            and runner_out.get("verified") is True
+            and runner_out.get("build_passed") is True
+            and runner_out.get("lint_passed") is True
+            and runner_out.get("tests_passed") is True
+            and int(runner_out.get("tests_run") or 0) > 0
+        )
+
+        timings.append(
+            {
+                "task": "multifile_app_builder",
+                "duration_ms": round((time.perf_counter() - t_exec) * 1000, 3),
+                "matched": app_verified,
+                "status": "VERIFIED" if app_verified else "FAILED",
+                "detail": f"workspace={ws_slug}:tests={runner_out.get('tests_run', 0)}",
+            }
+        )
+        engine_path.extend(["multifile_app_builder", "real_build_runner", "verification_gate"])
+        step_md = "\n".join(
+            f"{idx + 1}. **{st['title']}** — {st['detail']}"
+            for idx, st in enumerate(plan_res.get("steps") or [])
+        )
+        files_list = list(builder_out.get("files") or [])
+        files_md = "\n".join(f"- `{fp}`" for fp in files_list[:15]) or "- (none)"
+        entry_path = DATA_DIR / "sandbox_workspaces" / ws_slug / "main.py"
+        entry_preview = entry_path.read_text(encoding="utf-8", errors="replace") if entry_path.is_file() else ""
+        val_summary = (
+            f"Build+Lint+Test ผ่านจริง ({runner_out.get('tests_run', 0)} tests, {len(files_list)} ไฟล์, "
+            f"snapshot `{builder_out.get('snapshot_id')}`)"
+            if app_verified
+            else f"ไม่สามารถรับรองแอปได้ (build={runner_out.get('build_passed')}, lint={runner_out.get('lint_passed')}, tests={runner_out.get('tests_passed')})"
+        )
+        content = (
+            f"**{'สร้างและทดสอบแอปพลิเคชันหลายไฟล์ผ่านการรับรองจริงแล้ว' if app_verified else 'การสร้างหรือทดสอบแอปพลิเคชันไม่ผ่านเกณฑ์ (Verification Failed)'}**\n"
+            f"เป้าหมาย: `{cleaned}` · Workspace: `{ws_slug}`\n\n"
+            f"**ขั้นตอนดำเนินงาน:**\n{step_md}\n\n"
+            f"**โครงสร้างไฟล์ในโปรเจกต์ ({len(files_list)} ไฟล์):**\n{files_md}\n\n"
+            f"> ผล Build & Test จริง: {val_summary}"
+        )
+        deliverable = {
+            "kind": "multi_file_app",
+            "title": f"แอปหลายไฟล์: {ws_slug}",
+            "workspace": ws_slug,
+            "blueprint": builder_out.get("blueprint"),
+            "files": files_list,
+            "snapshot_id": builder_out.get("snapshot_id"),
+            "filename": "main.py",
+            "language": "python",
+            "verified": app_verified,
+            "build_passed": bool(runner_out.get("build_passed")),
+            "lint_passed": bool(runner_out.get("lint_passed")),
+            "tests_passed": bool(runner_out.get("tests_passed")),
+            "tests_run": int(runner_out.get("tests_run") or 0),
+            "content": entry_preview,
+        }
+        return {
+            "content": content,
+            "status": "VERIFIED" if app_verified else "FAILED",
+            "execution_phase": "VERIFIED" if app_verified else "EXECUTED",
+            "goal_interpretation": goal_analysis,
+            "engine_path": engine_path,
+            "plan": plan_res,
+            "deliverable": deliverable,
+            "orchestration": {
+                "run_ids": run_ids,
+                "delivery_verdict": "SUCCESS" if app_verified else "FAILED",
+                "capabilities_executed": list(dict.fromkeys(caps_executed)),
+            },
+            "task_timings": timings,
+        }
 
     if wants_ts:
         lang = "typescript"

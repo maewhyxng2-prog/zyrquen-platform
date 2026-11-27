@@ -115,6 +115,20 @@ class WorkspaceTransaction:
         }
 
 
+def _iter_workspace_py(workspace_root: Path) -> list[Path]:
+    ignored = {".zyrquen_history", "__pycache__", ".git", ".pytest_cache"}
+    out: list[Path] = []
+    for pyf in sorted(workspace_root.rglob("*.py")):
+        try:
+            parts = pyf.relative_to(workspace_root).parts
+        except ValueError:
+            continue
+        if any(p in ignored for p in parts):
+            continue
+        out.append(pyf)
+    return out
+
+
 def _diagnose_failure(stderr: str, workspace_root: Path) -> dict[str, Any]:
     """
     Inspect real runtime test stderr + AST of workspace modules to diagnose root cause
@@ -122,16 +136,20 @@ def _diagnose_failure(stderr: str, workspace_root: Path) -> dict[str, Any]:
     """
     err = str(stderr or "")
     validator = PythonSyntaxValidator()
+    all_py = _iter_workspace_py(workspace_root)
+    impl_files = [p for p in all_py if not p.name.startswith("test_") and p.name != "__init__.py"]
+    test_text = "\n".join(
+        p.read_text(encoding="utf-8", errors="replace")
+        for p in all_py
+        if p.name.startswith("test_")
+    )
 
     # 1. Check for SyntaxError in any workspace module
-    for pyf in sorted(workspace_root.rglob("*.py")):
-        if pyf.name.startswith("test_"):
-            continue
+    for pyf in impl_files:
         src = pyf.read_text(encoding="utf-8", errors="replace")
         sv = validator.validate(src)
         if sv.get("status") != "valid":
             rel = str(pyf.relative_to(workspace_root))
-            # Common deterministic syntax fixes (e.g., missing ':' on def/if/for/while)
             repaired_lines: list[str] = []
             changed = False
             for line in src.splitlines():
@@ -157,33 +175,64 @@ def _diagnose_failure(stderr: str, workspace_root: Path) -> dict[str, Any]:
                 "detail": f"SyntaxError in {rel}: {sv.get('problems')}",
             }
 
-    # 2. Check for AssertionError / arithmetic / wrong operator / division-by-zero / NameError
-    # Parse test assertions in test_*.py vs implementation functions to detect clear mismatch
-    for pyf in sorted(workspace_root.rglob("*.py")):
-        if pyf.name.startswith("test_"):
-            continue
+    # 2. Check for ZeroDivisionError / empty list / AssertionError across multi-file implementation modules
+    expects_value_error = "assertRaises(ValueError)" in test_text
+    for pyf in impl_files:
         rel = str(pyf.relative_to(workspace_root))
         src = pyf.read_text(encoding="utf-8", errors="replace")
 
-        # Pattern A: ZeroDivisionError / missing zero guard in divide/ratio/avg helpers
-        if "ZeroDivisionError" in err and "return a / b" in src:
-            fixed = src.replace(
-                "return a / b",
-                "if b == 0:\n        raise ValueError('divisor must be non-zero')\n    return a / b",
+        # Pattern A: ZeroDivisionError on `return <lhs> / <rhs>` (general param names & len(xs))
+        if "ZeroDivisionError" in err:
+            m_len_div = re.search(
+                r"^(\s*)return\s+(.+?)\s*/\s*len\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*$",
+                src,
+                re.MULTILINE,
             )
-            if fixed != src:
-                return {
-                    "root_cause": "zero_division_unguarded",
-                    "target_file": rel,
-                    "repairable": True,
-                    "patch": {rel: fixed},
-                    "detail": f"ZeroDivisionError in {rel}; added explicit non-zero validation.",
-                }
+            if m_len_div:
+                indent, num_expr, seq_var = m_len_div.group(1), m_len_div.group(2), m_len_div.group(3)
+                fallback_stmt = (
+                    f"{indent}if not {seq_var}:\n"
+                    + (f"{indent}    raise ValueError('input collection must not be empty')\n" if expects_value_error else f"{indent}    return 0.0\n")
+                    + f"{indent}return {num_expr} / len({seq_var})"
+                )
+                fixed = src.replace(m_len_div.group(0), fallback_stmt, 1)
+                if fixed != src and validator.validate(fixed).get("status") == "valid":
+                    return {
+                        "root_cause": "zero_division_empty_collection",
+                        "target_file": rel,
+                        "repairable": True,
+                        "patch": {rel: fixed},
+                        "detail": f"ZeroDivisionError on empty '{seq_var}' in {rel}; added explicit emptiness guard.",
+                    }
 
-        # Pattern B: AssertionError where test failed on a specific function (e.g., subtract/multiply/clamp/total)
+            m_div = re.search(
+                r"^(\s*)return\s+([A-Za-z_][A-Za-z0-9_]*)\s*/\s*([A-Za-z_][A-Za-z0-9_]*)\s*$",
+                src,
+                re.MULTILINE,
+            )
+            if m_div:
+                indent, num_var, den_var = m_div.group(1), m_div.group(2), m_div.group(3)
+                guard = (
+                    f"{indent}if {den_var} == 0:\n"
+                    f"{indent}    raise ValueError('divisor must be non-zero')\n"
+                    f"{indent}return {num_var} / {den_var}"
+                )
+                fixed = src.replace(m_div.group(0), guard, 1)
+                if fixed != src and validator.validate(fixed).get("status") == "valid":
+                    return {
+                        "root_cause": "zero_division_unguarded",
+                        "target_file": rel,
+                        "repairable": True,
+                        "patch": {rel: fixed},
+                        "detail": f"ZeroDivisionError in {rel}; added explicit non-zero guard on '{den_var}'.",
+                    }
+
+        # Pattern B: AssertionError where arithmetic/utility function name implies exact binary op
         if "AssertionError" in err:
-            # Inspect simple binary op bugs where function name implies op
-            m_func = re.search(r"def\s+(add|subtract|multiply|square|double)\s*\(([^)]+)\):\s*\n\s*return\s+([^\n]+)", src)
+            m_func = re.search(
+                r"def\s+(add|subtract|multiply|divide|square|double)\s*\(([^)]+)\)(?:\s*->[^:]+)?:\s*\n\s*return\s+([^\n]+)",
+                src,
+            )
             if m_func:
                 fn_name, args_raw, expr = m_func.group(1), m_func.group(2), m_func.group(3).strip()
                 arg_list = [a.strip().split(":")[0].strip() for a in args_raw.split(",") if a.strip()]
@@ -194,6 +243,8 @@ def _diagnose_failure(stderr: str, workspace_root: Path) -> dict[str, Any]:
                     expected_expr = f"{arg_list[0]} - {arg_list[1]}"
                 elif fn_name == "multiply" and len(arg_list) == 2 and expr != f"{arg_list[0]} * {arg_list[1]}":
                     expected_expr = f"{arg_list[0]} * {arg_list[1]}"
+                elif fn_name == "divide" and len(arg_list) == 2 and "/" not in expr:
+                    expected_expr = f"{arg_list[0]} / {arg_list[1]}"
                 elif fn_name == "square" and len(arg_list) == 1 and expr != f"{arg_list[0]} * {arg_list[0]}" and expr != f"{arg_list[0]} ** 2":
                     expected_expr = f"{arg_list[0]} * {arg_list[0]}"
                 elif fn_name == "double" and len(arg_list) == 1 and expr != f"{arg_list[0]} * 2" and expr != f"2 * {arg_list[0]}":

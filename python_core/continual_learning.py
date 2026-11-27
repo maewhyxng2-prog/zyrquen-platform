@@ -387,6 +387,32 @@ def run_continual_learning_round(
             ),
         }
 
+    try:
+        from dataset_ingestion import run_leakage_detection
+
+        leak_report = run_leakage_detection(
+            {
+                "train": [{"input": ln} for ln in resolved_new],
+                "val": [{"input": ln} for ln in resolved_anchor],
+            }
+        )
+        if not leak_report.get("passed", True):
+            return {
+                "ok": False,
+                "error": (
+                    "ปฏิเสธการฝึก Continual Learning: พบ Data Leakage ระหว่างชุดข้อมูลใหม่และชุด Anchor "
+                    f"({', '.join(leak_report.get('violations') or [])})"
+                ),
+                "leakage_report": leak_report,
+            }
+    except ImportError:
+        overlap = {_norm(ln) for ln in resolved_new} & {_norm(ln) for ln in resolved_anchor}
+        if overlap:
+            return {
+                "ok": False,
+                "error": f"ปฏิเสธการฝึก Continual Learning: พบข้อมูลซ้ำซ้อน {len(overlap)} รายการระหว่าง new และ anchor",
+            }
+
     if dataset_id is None:
         dataset_id = "continual-curriculum"
 

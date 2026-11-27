@@ -448,7 +448,7 @@ class ToolCenterAndSupportSystemsTests(unittest.TestCase):
 
     def test_all_75_capabilities_orchestrated_e2e(self) -> None:
         all_ids = self.registry.list_capability_ids()
-        self.assertEqual(len(all_ids), 75)
+        self.assertEqual(len(all_ids), 78)
 
         # Seed a real dataset and KG relation in the isolated test DB
         ingest = zc.handle_ingest_dataset({
@@ -487,6 +487,9 @@ class ToolCenterAndSupportSystemsTests(unittest.TestCase):
             {"step_id": "s04_mig", "capability_id": "development.migration_analyzer", "input": {"migrations_path": "apps/api/migrations/versions"}, "depends_on": []},
             {"step_id": "s04_api", "capability_id": "development.api_implementation", "input": {"method": "POST", "endpoint": "/api/check", "framework": "fastapi", "handler_name": "check_ep", "dry_run": True}, "depends_on": []},
             {"step_id": "s04_a11y", "capability_id": "development.frontend_a11y_audit", "input": {"source": "<button type='button'>OK</button>"}, "depends_on": []},
+            {"step_id": "s04_app", "capability_id": "development.app_builder", "input": {"workspace": "e2e_app_ws", "goal": "Create task manager CLI app", "blueprint": "python_cli_app"}, "depends_on": []},
+            {"step_id": "s04_build", "capability_id": "development.real_build_runner", "input": {"workspace": "e2e_app_ws", "run_lint": True, "run_tests": True}, "depends_on": ["s04_app"]},
+            {"step_id": "s04_hist", "capability_id": "development.workspace_history", "input": {"workspace": "e2e_app_ws", "action": "list"}, "depends_on": ["s04_build"]},
             {"step_id": "s05", "capability_id": "data.leakage_check", "input": {"train": ["alpha one"], "validation": ["beta two"], "test": ["gamma three"]}, "depends_on": []},
             {"step_id": "s06", "capability_id": "data.profile_structured", "input": {"format": "csv", "content": "k,v\na,1\nb,2\n"}, "depends_on": []},
             {"step_id": "s07", "capability_id": "data.transform", "input": {"format": "csv", "content": "k,v\na,1\na,1\n", "deduplicate": True, "trim_whitespace": True}, "depends_on": []},

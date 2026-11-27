@@ -256,7 +256,15 @@ def run_workspace_unittest(
             "external_models_used": False,
         }
 
-    py_files = sorted(ws.rglob("*.py"))
+    def _is_ignored(path: Path) -> bool:
+        try:
+            parts = path.relative_to(ws).parts
+        except ValueError:
+            return True
+        return any(part in {".zyrquen_history", "__pycache__", ".git", ".pytest_cache"} for part in parts)
+
+    py_files = [p for p in sorted(ws.rglob("*.py")) if not _is_ignored(p)]
+    json_files = [p for p in sorted(ws.rglob("*.json")) if not _is_ignored(p)]
     if not py_files:
         return {
             "ok": False,
@@ -274,6 +282,8 @@ def run_workspace_unittest(
         rel = pyf.relative_to(ws)
         # Allow standard test imports (`unittest`, `pathlib`, `json`) in test_*.py, disallow network/LLM/subprocess
         src = pyf.read_text(encoding="utf-8", errors="replace")
+        if pyf.name == "__init__.py" and not src.strip():
+            continue
         pol = inspect_sandbox_code_policy(src)
         if not pol["ok"]:
             # Permit benign `unittest` import only inside test_*.py while still blocking all LLM/network/shell
@@ -304,6 +314,16 @@ def run_workspace_unittest(
             dest = tmp_ws / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(pyf.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+            # Ensure nested test folders (e.g., tests/test_app.py) are discoverable by unittest discover
+            if pyf.name.startswith("test_") and dest.parent != tmp_ws:
+                init_p = dest.parent / "__init__.py"
+                if not init_p.exists():
+                    init_p.write_text('"""Test package marker."""\n', encoding="utf-8")
+        for jf in json_files:
+            rel = jf.relative_to(ws)
+            dest = tmp_ws / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(jf.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
 
         clean_env = {
             "PYTHONDONTWRITEBYTECODE": "1",

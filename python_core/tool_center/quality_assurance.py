@@ -132,6 +132,60 @@ def verify_capability_delivery(
         if not exists_ok:
             blockers.append(f"Artifact verification failed for '{claimed_file}'.")
 
+    # 4b. Multi-file sandbox workspace disk verification (for app_builder / real_build_runner / project_scaffold)
+    ws_name = str(output.get("workspace") or "").strip()
+    claimed_files = output.get("files")
+    if (
+        ws_name
+        and isinstance(claimed_files, list)
+        and claimed_files
+        and data_dir is not None
+        and not output.get("dry_run")
+        and not output.get("rolled_back")
+    ):
+        sb_root = (Path(data_dir) / "sandbox_workspaces" / ws_name).resolve()
+        missing_ws_files: list[str] = []
+        for rel_item in claimed_files:
+            rel_s = str(rel_item or "").strip().lstrip("/")
+            if not rel_s or ".." in Path(rel_s).parts:
+                missing_ws_files.append(str(rel_item))
+                continue
+            target_f = (sb_root / rel_s).resolve()
+            if not target_f.is_relative_to(sb_root) or not target_f.is_file():
+                missing_ws_files.append(rel_s)
+        ws_files_ok = len(missing_ws_files) == 0
+        checks.append({
+            "check": "workspace_multifile_disk_verification",
+            "passed": ws_files_ok,
+            "detail": (
+                f"Verified {len(claimed_files)} files in sandbox_workspaces/{ws_name}"
+                if ws_files_ok
+                else f"Missing workspace files on disk: {', '.join(missing_ws_files[:5])}"
+            ),
+        })
+        if not ws_files_ok:
+            blockers.append(f"Multi-file workspace verification failed: {missing_ws_files[:5]}")
+
+    # 4c. Real Build & Test Gate: never certify app build/runner unless build + lint + tests actually passed
+    if spec and spec.id in {"development.app_builder", "development.real_build_runner"} and not output.get("dry_run"):
+        b_ok = output.get("build_passed") is True
+        l_ok = output.get("lint_passed") is True
+        t_ok = output.get("tests_passed") is True
+        t_run = int(output.get("tests_run") or 0) > 0
+        v_ok = output.get("verified") is True
+        gate_ok = b_ok and l_ok and t_ok and t_run and v_ok
+        checks.append({
+            "check": "real_build_and_test_gate",
+            "passed": gate_ok,
+            "detail": (
+                f"build={b_ok}, lint={l_ok}, tests={t_ok}, tests_run={int(output.get('tests_run') or 0)}, verified={v_ok}"
+            ),
+        })
+        if not gate_ok:
+            blockers.append(
+                "Build/Lint/Test gate failed: app delivery cannot be certified VERIFIED without passing real build and unit tests."
+            )
+
     # 5. Domain-specific warnings (e.g. uncorroborated or unverified claims)
     if output.get("verdict") in {"INSUFFICIENT_EVIDENCE", "CONFLICTING_SOURCES"}:
         warnings.append(f"Research evidence returned honest non-verified verdict: {output.get('verdict')}")

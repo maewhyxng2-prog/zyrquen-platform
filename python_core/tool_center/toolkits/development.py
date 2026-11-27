@@ -18,6 +18,11 @@ from apps.core.intelligence.language_registry import ProgrammingLanguageRegistry
 from apps.core.intelligence.static_validation import PythonSyntaxValidator, StaticValidationInterface
 import tools_engine as te
 
+from ..app_builder import (
+    build_and_verify_app,
+    manage_workspace_history,
+    run_real_project_build,
+)
 from ..contracts import CapabilitySpec, ToolkitManifest
 from ..software_engineering import WorkspaceTransaction, _diagnose_failure, compute_unified_diff
 
@@ -1351,6 +1356,55 @@ def _handle_frontend_a11y_audit(payload: dict[str, Any], _ctx: dict[str, Any]) -
     }
 
 
+def _handle_real_build_runner(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """Run real isolated compileall + AST/policy lint + unittest suite inside sandbox workspace."""
+    ws, ws_err = _resolve_sandbox_workspace(ctx, payload.get("workspace"))
+    if ws_err or ws is None:
+        return {"ok": False, "status": "BLOCKED", "error": ws_err or "Invalid workspace.", "output": {}}
+    return run_real_project_build(
+        ws,
+        run_lint=bool(payload.get("run_lint", True)),
+        run_tests=bool(payload.get("run_tests", True)),
+        timeout_s=float(payload.get("timeout_s") or 8.0),
+    )
+
+
+def _handle_app_builder(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """Multi-file Persistent App Builder with transactional edits, build+lint+test, repair loop & snapshot."""
+    ws, ws_err = _resolve_sandbox_workspace(ctx, payload.get("workspace"))
+    if ws_err or ws is None:
+        return {"ok": False, "status": "BLOCKED", "error": ws_err or "Invalid workspace.", "output": {}}
+    goal = str(payload.get("goal") or "").strip()
+    files = payload.get("files") if isinstance(payload.get("files"), dict) else None
+    if not goal and not files:
+        return {"ok": False, "status": "FAILED", "error": "Provide either 'goal' or multi-file 'files' specification.", "output": {}}
+    return build_and_verify_app(
+        ws,
+        goal=goal or "Multi-file app update",
+        app_name=str(payload.get("app_name") or ws.name or "zyrquen_app"),
+        blueprint=str(payload.get("blueprint") or "auto"),
+        files=files,
+        mode=str(payload.get("mode") or "upsert"),
+        auto_repair=bool(payload.get("auto_repair", True)),
+        max_repair_rounds=int(payload.get("max_repair_rounds") or 2),
+        rollback_on_failure=bool(payload.get("rollback_on_failure", True)),
+    )
+
+
+def _handle_workspace_history(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """Manage persistent workspace snapshots, unified diffs, and rollback across sessions."""
+    ws, ws_err = _resolve_sandbox_workspace(ctx, payload.get("workspace"))
+    if ws_err or ws is None:
+        return {"ok": False, "status": "BLOCKED", "error": ws_err or "Invalid workspace.", "output": {}}
+    return manage_workspace_history(
+        ws,
+        action=str(payload.get("action") or "list"),
+        snapshot_id=str(payload.get("snapshot_id")) if payload.get("snapshot_id") else None,
+        base_snapshot_id=str(payload.get("base_snapshot_id")) if payload.get("base_snapshot_id") else None,
+        label=str(payload.get("label") or ""),
+    )
+
+
 def register_development_toolkit(registry: Any) -> None:
     manifest = ToolkitManifest(
         id="development",
@@ -1840,6 +1894,114 @@ def register_development_toolkit(registry: Any) -> None:
                 keywords=("frontend", "a11y", "accessibility", "tsx", "ui", "การเข้าถึง"),
             ),
             _handle_frontend_a11y_audit,
+        ),
+        (
+            CapabilitySpec(
+                id="development.app_builder",
+                toolkit_id="development",
+                name="สร้างและปรับปรุงแอปหลายไฟล์แบบถาวร (Persistent Multi-file App Builder)",
+                version="1.0.0",
+                description="วางโครงสร้างและแก้ไขแอปหลายไฟล์ เชื่อม Build/Lint/Test จริง Repair Loop อัตโนมัติ และ Snapshot/Rollback",
+                input_schema={
+                    "type": "object",
+                    "required": ["workspace"],
+                    "properties": {
+                        "workspace": {"type": "string"},
+                        "goal": {"type": "string"},
+                        "app_name": {"type": "string"},
+                        "blueprint": {"type": "string", "enum": ["auto", "python_cli_app", "python_service_app", "python_data_app"]},
+                        "files": {"type": "object"},
+                        "mode": {"type": "string", "enum": ["upsert", "replace"]},
+                        "auto_repair": {"type": "boolean"},
+                        "max_repair_rounds": {"type": "integer"},
+                        "rollback_on_failure": {"type": "boolean"},
+                    },
+                },
+                output_schema={
+                    "type": "object",
+                    "required": [
+                        "workspace",
+                        "verified",
+                        "build_passed",
+                        "lint_passed",
+                        "tests_passed",
+                        "tests_run",
+                        "files",
+                        "snapshot_id",
+                    ],
+                },
+                dependencies=("python_core.tool_center.app_builder", "python_core.tool_center.software_engineering"),
+                permission_mode="auto",
+                risk_tier="sandbox_io",
+                lifecycle_status="READY",
+                bound_modules=("python_core/tool_center/app_builder.py", "python_core/tool_center/software_engineering.py"),
+                documentation="สร้าง/แก้ไขโปรเจกต์หลายไฟล์ใน sandbox_workspaces พร้อมทดสอบและบันทึก snapshot ถาวรเมื่อผ่านจริง",
+                example_input={"workspace": "demo_app", "goal": "Create task manager CLI app", "blueprint": "python_cli_app"},
+                keywords=("app", "builder", "multifile", "project", "create app", "สร้างแอป", "หลายไฟล์", "สร้างโปรเจกต์"),
+            ),
+            _handle_app_builder,
+        ),
+        (
+            CapabilitySpec(
+                id="development.real_build_runner",
+                toolkit_id="development",
+                name="รัน Build, Lint และ Test จริงใน Sandbox (Real Build Runner)",
+                version="1.0.0",
+                description="คอมไพล์ (python -I -m compileall), ตรวจ AST/Policy/Secrets และรัน unittest ในพื้นที่กักกันจริง",
+                input_schema={
+                    "type": "object",
+                    "required": ["workspace"],
+                    "properties": {
+                        "workspace": {"type": "string"},
+                        "run_lint": {"type": "boolean"},
+                        "run_tests": {"type": "boolean"},
+                        "timeout_s": {"type": "number"},
+                    },
+                },
+                output_schema={
+                    "type": "object",
+                    "required": ["workspace", "build_passed", "lint_passed", "tests_passed", "tests_run", "verified"],
+                },
+                dependencies=("python_core.tool_center.app_builder",),
+                permission_mode="auto",
+                risk_tier="sandbox_io",
+                lifecycle_status="READY",
+                bound_modules=("python_core/tool_center/app_builder.py", "python_core/tool_center/sandbox.py"),
+                documentation="รัน Build + Lint + Unit Test จริงใน Sandbox และไม่คืน VERIFIED หากขั้นตอนใดไม่ผ่าน",
+                example_input={"workspace": "demo_app", "run_lint": True, "run_tests": True},
+                keywords=("build", "runner", "compile", "lint", "test", "ci", "คอมไพล์", "รันเทสต์"),
+            ),
+            _handle_real_build_runner,
+        ),
+        (
+            CapabilitySpec(
+                id="development.workspace_history",
+                toolkit_id="development",
+                name="ประวัติ Snapshot, Diff และ Rollback ของ Workspace",
+                version="1.0.0",
+                description="จัดการ Snapshot ของโปรเจกต์ เปรียบเทียบ Unified Diff และย้อนกลับไปยังสถานะที่ผ่านการตรวจสอบ",
+                input_schema={
+                    "type": "object",
+                    "required": ["workspace", "action"],
+                    "properties": {
+                        "workspace": {"type": "string"},
+                        "action": {"type": "string", "enum": ["snapshot", "list", "diff", "rollback"]},
+                        "snapshot_id": {"type": "string"},
+                        "base_snapshot_id": {"type": "string"},
+                        "label": {"type": "string"},
+                    },
+                },
+                output_schema={"type": "object", "required": ["action", "workspace"]},
+                dependencies=("python_core.tool_center.app_builder",),
+                permission_mode="auto",
+                risk_tier="sandbox_io",
+                lifecycle_status="READY",
+                bound_modules=("python_core/tool_center/app_builder.py",),
+                documentation="บันทึก snapshot ใน .zyrquen_history, ตรวจ diff ระหว่างรุ่น และ rollback แบบ atomic",
+                example_input={"workspace": "demo_app", "action": "list"},
+                keywords=("snapshot", "history", "diff", "rollback", "restore", "ย้อนกลับ", "ประวัติ"),
+            ),
+            _handle_workspace_history,
         ),
     ]
 

@@ -164,6 +164,41 @@ class LearningAndEvalIntegrityTests(unittest.TestCase):
             conn.close()
 
     def test_continual_promotion_sets_neural_continual_verified(self) -> None:
+        distinct_corpus = [
+            "ตัวแปลงข้อความระดับไบต์สร้างโทเคนย่อยอย่างมีประสิทธิภาพโดยไม่พึ่งพาพจนานุกรมภายนอก",
+            "เครื่องมือแยกวิเคราะห์โครงสร้างไวยากรณ์ตรวจสอบลำดับนิพจน์ทางคณิตศาสตร์ได้อย่างถูกต้อง",
+            "ฐานข้อมูลเชิงสัมพันธ์จัดเก็บตารางเหตุการณ์และดัชนีสืบค้นแบบธุรกรรมปลอดภัย",
+            "กลไกควบคุมเวอร์ชันบันทึกประวัติการแก้ไขไฟล์และคำนวณความแตกต่างเชิงบรรทัด",
+            "ระบบกักกันการประมวลผลจำกัดหน่วยความจำและปิดกั้นการเชื่อมต่อเครือข่ายภายนอก",
+            "โมดูลตรวจสอบความถูกต้องของข้อมูลคัดกรองรายการซ้ำซ้อนก่อนส่งเข้าสู่ขั้นตอนถัดไป",
+            "ส่วนประสานงานเวิร์กโฟลว์จัดเรียงลำดับงานตามกราฟความสัมพันธ์แบบไม่มีวงวน",
+            "ชุดทดสอบอัตโนมัติจำลองสถานการณ์ผิดพลาดเพื่อตรวจจับข้อบกพร่องด้านการหารด้วยศูนย์",
+            "คลังความรู้เชื่อมโยงความสัมพันธ์เชิงสาเหตุพร้อมบันทึกหลักฐานอ้างอิงที่ตรวจสอบได้",
+            "ระบบจัดการทรัพยากรเฝ้าดูภาระซีพียูและพื้นที่จัดเก็บคงเหลือก่อนอนุมัติงานใหม่",
+            "ขั้นตอนการปรับเทียบน้ำหนักใช้การสะสมเกรเดียนต์ร่วมกับการลดอัตราการเรียนรู้แบบโคไซน์",
+            "เกตตรวจสอบคุณภาพปฏิเสธการส่งมอบงานเมื่อคำสั่งคอมไพล์หรือทดสอบยูนิตไม่ผ่าน",
+            "อัลกอริทึมค้นหาเส้นทางกราฟเลือกโหนดเป้าหมายที่มีความคล้ายคลึงของสัญลักษณ์สูงสุด",
+            "สถาปัตยกรรมความจำระยะสั้นจัดเก็บเหตุการณ์ล้มเหลวเพื่อสร้างแบบฝึกหัดซ่อมแซมจุดอ่อน",
+            "เครื่องตรวจจับข้อมูลรั่วไหลเปรียบเทียบแฮชเชิงความหมายระหว่างชุดฝึกกับชุดประเมินผล",
+            "ชั้นความสนใจแบบหลายหัวคำนวณน้ำหนักบริบทของลำดับโทเคนในหน้าต่างขนาดคงที่",
+            "ระบบสำรองสถานะไฟล์สร้างจุดย้อนกลับอัตโนมัติก่อนเริ่มปรับปรุงโมดูลซอฟต์แวร์",
+            "ตัวตรวจสอบสิทธิ์บังคับใช้บทบาทผู้ดูแลระบบก่อนเลื่อนขั้นน้ำหนักโมเดลรุ่นใหม่",
+        ]
+        distinct_new = [
+            "แพ็กเกจตัวสร้างแอปพลิเคชันจัดโครงสร้างซอร์สโค้ดหลายไฟล์พร้อมชุดทดสอบมาตรฐาน",
+            "โปรแกรมคอมไพล์ตรวจสอบความถูกต้องของไวยากรณ์ไพทอนและโครงร่างเจสันในห้องทดลอง",
+            "กลไกซ่อมแซมอัตโนมัติวิเคราะห์ข้อความแสดงข้อผิดพลาดเพื่อสร้างแพตช์ที่ปลอดภัย",
+            "ตัวจัดการประวัติบันทึกความแตกต่างระหว่างรุ่นและย้อนคืนสถานะเดิมเมื่อเกิดปัญหา",
+            "ขั้นตอนตรวจประเมินผลวัดอัตราการผ่านจริงบนกรณีทดสอบที่ไม่เคยปรากฏระหว่างฝึก",
+            "สายท่อประมวลผลตรวจสอบความครบถ้วนของข้อกำหนดส่วนติดต่อโปรแกรมประยุกต์ทุกเส้นทาง",
+        ]
+        distinct_anchor = [
+            "ฟังก์ชันคำนวณค่าเฉลี่ยต้องป้องกันกรณีรายการข้อมูลว่างเปล่าก่อนดำเนินการหารเสมอ",
+            "โครงสร้างข้อมูลบันทึกหลักฐานรหัสแฮชแบบถาวรเพื่อรองรับการตรวจย้อนหลังครบวงจร",
+            "ระบบรักษาความปลอดภัยสแกนหาข้อมูลลับและป้องกันการเข้าถึงโฟลเดอร์นอกขอบเขต",
+            "หน้าต่างบริบทเก็บเฉพาะข้อมูลอ้างอิงที่ยืนยันแหล่งที่มาและไม่มีความขัดแย้งกัน",
+            "ตัวจัดตารางเวลาแยกงานอัตโนมัติที่ได้รับสิทธิ์ออกจากคำสั่งที่ต้องรออนุมัติพิเศษ",
+        ]
         with isolated_core_env():
             conn = zc.get_db()
             ing = zc.handle_ingest_dataset(
@@ -171,22 +206,11 @@ class LearningAndEvalIntegrityTests(unittest.TestCase):
                     "name": "continual-base-corpus",
                     "user_id": "u1",
                     "source": "internal_test_corpus",
-                    "content": "\n".join(
-                        [
-                            f"สถาปัตยกรรมโครงข่ายประสาทเทียมโมดูลที่ {i} ใช้หน่วยความจำอ้างอิงลำดับ {k} กับตัวแปร {w} และทดสอบสมรรถนะจริง"
-                            for i, (k, w) in enumerate([
-                                ("เอกเทศ", "อัลฟา"), ("ทวินาม", "เบตา"), ("ตรีโกณ", "แกมมา"),
-                                ("จตุรัส", "เดลตา"), ("ปัญจภาค", "เอปซิลอน"), ("ฉกัณฑ์", "ซีตา"),
-                                ("สัตตม", "อีตา"), ("อัฐม", "ทีตา"), ("นวม", "ไอโอตา"),
-                                ("ทศนิยม", "แคปปา"), ("เอกาทศ", "แลมบ์ดา"), ("ทวาทศ", "มิว"),
-                                ("เตรส", "นิว"), ("จตุรทศ", "ไซ"), ("ปัญจทศ", "โอไมครอน"),
-                                ("โสฬส", "พาย"), ("สัตตทศ", "โร"), ("อัฐทศ", "ซิกมา"),
-                            ])
-                        ]
-                    ),
+                    "content": "\n".join(distinct_corpus),
                 }
             )
             self.assertTrue(ing["ok"], ing)
+            self.assertEqual(ing["dataset"]["leakage_detected"], 0, ing)
             ds_id = ing["dataset"]["id"]
 
             exp = ml.run_controlled_neural_experiment(
@@ -213,14 +237,8 @@ class LearningAndEvalIntegrityTests(unittest.TestCase):
                 conn,
                 zc.CHECKPOINT_DIR,
                 "u1",
-                new_samples=[
-                    f"ความรู้เชิงตรรกะใหม่ลำดับที่ {i} เชื่อมโยงระบบหน่วยความจำภายในและตรวจสอบข้อมูลย้อนกลับ"
-                    for i in range(10)
-                ],
-                anchor_samples=[
-                    f"ระบบประมวลผลฐานข้อมูลซิร์เควนชุดที่ {i} ตรวจสอบความถูกต้องและบันทึกผลลัพธ์อย่างแม่นยำ"
-                    for i in range(8)
-                ],
+                new_train_lines=distinct_new,
+                anchor_lines=distinct_anchor,
                 epochs=4,
                 seed=43,
             )
@@ -241,6 +259,69 @@ class LearningAndEvalIntegrityTests(unittest.TestCase):
                 details = json.loads(ev["details_json"])
                 self.assertEqual(details["heldout_test"]["status"], "PASS")
                 self.assertIsNotNone(ev["test_accuracy"])
+            conn.close()
+
+    def test_template_leakage_and_overlap_strictly_blocked(self) -> None:
+        with isolated_core_env():
+            conn = zc.get_db()
+            # 1. Templated lines must be flagged with leakage_detected == 1 and blocked from experiment training
+            templated = [
+                f"สถาปัตยกรรมโครงข่ายโมดูลหมายเลข {i} ใช้หน่วยความจำอ้างอิงคู่ที่ {i + 1} และทดสอบสมรรถนะ"
+                for i in range(18)
+            ]
+            ing = zc.handle_ingest_dataset(
+                {
+                    "name": "templated-leaky-corpus",
+                    "user_id": "u1",
+                    "source": "internal_test_corpus",
+                    "content": "\n".join(templated),
+                }
+            )
+            self.assertTrue(ing["ok"], ing)
+            self.assertEqual(ing["dataset"]["leakage_detected"], 1)
+            blocked_exp = ml.run_controlled_neural_experiment(
+                conn,
+                zc.CHECKPOINT_DIR,
+                "u1",
+                dataset_id=ing["dataset"]["id"],
+                epochs=2,
+                seed=42,
+            )
+            self.assertFalse(blocked_exp["ok"])
+            self.assertIn("Data Leakage", blocked_exp["error"])
+
+            # 2. Continual learning MUST reject overlapping new_train_lines and anchor_lines
+            overlap_res = cl.run_continual_learning_round(
+                conn,
+                zc.CHECKPOINT_DIR,
+                "u1",
+                new_train_lines=[
+                    "ชุดข้อมูลใหม่สำหรับทดสอบการป้องกันการรั่วไหลข้ามชุดข้อมูลฝึก",
+                    "ตัวประมวลผลแบบจำลองภาษาสร้างลำดับโทเคนจากการกระจายความน่าจะเป็น",
+                ],
+                anchor_lines=[
+                    "ชุดข้อมูลใหม่สำหรับทดสอบการป้องกันการรั่วไหลข้ามชุดข้อมูลฝึก",
+                    "ระบบจัดการฐานข้อมูลตรวจสอบความสอดคล้องของธุรกรรมก่อนบันทึก",
+                ],
+                epochs=2,
+                seed=42,
+            )
+            self.assertFalse(overlap_res["ok"])
+            self.assertIn("Leakage", overlap_res["error"])
+
+            # 3. evaluate_checkpoint_heldout MUST fail-closed if linked dataset has leakage_detected=1
+            fake_ckpt = {"id": "ckpt-leak", "weights_path": str(zc.CHECKPOINT_DIR / "missing.json.gz"), "eval_status": "NEURAL_VERIFIED", "dataset_id": ing["dataset"]["id"], "ngram_order": 0}
+            fake_w = zc.CHECKPOINT_DIR / "ckpt_leak_check.json.gz"
+            import native_neural as nn
+            import native_tokenizer as nt
+            tok = nt.NativeBPETokenizer()
+            tok.train(["alpha beta gamma delta", "epsilon zeta eta theta"], target_vocab_size=64)
+            mod = nn.NativeTransformerLM(vocab_size=tok.vocab_size, d_model=16, n_heads=2, n_layers=1, d_ff=32, max_seq_len=16, seed=1)
+            mod.save_checkpoint(fake_w, tok, metrics={})
+            fake_ckpt["weights_path"] = str(fake_w)
+            ev_blocked = zc.evaluate_checkpoint_heldout(conn, fake_ckpt)  # type: ignore[arg-type]
+            self.assertFalse(ev_blocked["ok"])
+            self.assertEqual(ev_blocked["status"], "FAILED")
             conn.close()
 
 

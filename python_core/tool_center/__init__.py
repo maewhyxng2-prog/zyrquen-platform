@@ -42,6 +42,11 @@ from .software_engineering import (  # noqa: E402
     run_autonomous_repair_loop,
     run_engineering_benchmark,
 )
+from .app_builder import (  # noqa: E402
+    build_and_verify_app,
+    manage_workspace_history,
+    run_real_project_build,
+)
 from .autonomous_training import (  # noqa: E402
     run_autonomous_engineering_curriculum,
     run_comprehensive_benchmark,
@@ -73,6 +78,7 @@ __all__ = [
     "WorkspaceTransaction",
     "aggregate_plan_verdict",
     "analyze_failure_patterns",
+    "build_and_verify_app",
     "classify_error",
     "compute_unified_diff",
     "decide_improvement_proposal",
@@ -84,6 +90,7 @@ __all__ = [
     "init_task_memory_schema",
     "init_tool_center_schema",
     "inspect_sandbox_code_policy",
+    "manage_workspace_history",
     "record_task_memory",
     "retrieve_relevant_memories",
     "run_autonomous_engineering_curriculum",
@@ -91,6 +98,7 @@ __all__ = [
     "run_comprehensive_benchmark",
     "run_engineering_benchmark",
     "run_python_sandbox",
+    "run_real_project_build",
     "run_self_improvement_evaluation",
     "run_workspace_unittest",
     "select_tools_for_goal",
