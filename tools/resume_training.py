@@ -273,7 +273,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         description="Verify SHA-256 against PR #56 manifest, restore Step 6600 Optimizer/Trainer state, and resume training to Step 7000."
     )
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
-    parser.add_argument("--step", type=int, default=6000, help="Checkpoint step to resume from (default: 6600)")
+    parser.add_argument("--step", type=int, default=6600, help="Checkpoint step to resume from (default: 6600)")
     parser.add_argument("--target-step", type=int, default=7000, help="Target global step (default: 7000)")
     parser.add_argument("--chunk-steps", type=int, default=25, help="Checkpoint save interval in steps")
     parser.add_argument("--batch-size", type=int, default=3)
