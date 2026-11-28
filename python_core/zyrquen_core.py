@@ -500,6 +500,15 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS oauth_provider_configs (
+                provider TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                client_secret_enc TEXT NOT NULL,
+                secret_masked TEXT NOT NULL DEFAULT '••••••••',
+                updated_by TEXT,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_reasoning_traces_user_created
                 ON reasoning_traces(user_id, created_at DESC);
 
@@ -5444,6 +5453,9 @@ def train_checkpoint_from_dataset(conn: sqlite3.Connection, dataset_id: str, use
     }
     with open(weights_path, "w", encoding="utf-8") as f:
         json.dump(weights_payload, f)
+    from checkpoint_hash import save_checkpoint_sha256
+
+    save_checkpoint_sha256(weights_path)
 
     eval_status = "PASS" if test_acc > 0 else "VERIFIED_LOW_ACC"
     with conn:

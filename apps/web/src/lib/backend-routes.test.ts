@@ -44,6 +44,11 @@ describe("backend proxy route allowlist", () => {
     expect(isAllowedBackendRoute("GET", "admin/overview")).toBe(true);
     expect(isAllowedBackendRoute("GET", "admin/users")).toBe(true);
     expect(isAllowedBackendRoute("GET", "admin/audit-logs")).toBe(true);
+    expect(isAllowedBackendRoute("GET", "admin/oauth/config")).toBe(true);
+    expect(isAllowedBackendRoute("PUT", "admin/oauth/config/google")).toBe(true);
+    expect(isAllowedBackendRoute("PUT", "admin/oauth/config/github")).toBe(true);
+    expect(isAllowedBackendRoute("DELETE", "admin/oauth/config/google")).toBe(true);
+    expect(isAllowedBackendRoute("DELETE", "admin/oauth/config/github")).toBe(true);
     expect(isAllowedBackendRoute("POST", "auth/login")).toBe(true);
     expect(isAllowedBackendRoute("POST", "auth/register")).toBe(true);
     expect(isAllowedBackendRoute("POST", "auth/logout")).toBe(true);
@@ -108,6 +113,12 @@ describe("backend proxy route allowlist", () => {
       isAllowedBackendRoute("GET", "v1/models/registry/ZYRQUEN-Native-0.1.0/lineage"),
     ).toBe(true);
     expect(
+      isAllowedBackendRoute("GET", "v1/models/registry/ZYRQUEN-Native-0.1.0/verify"),
+    ).toBe(true);
+    expect(
+      isAllowedBackendRoute("POST", "v1/models/registry/ZYRQUEN-Native-0.1.0/verify"),
+    ).toBe(true);
+    expect(
       isAllowedBackendRoute("GET", "v1/models/registry/ZYRQUEN-Native-0.1.0/artifacts/manifest"),
     ).toBe(true);
     expect(
@@ -159,6 +170,9 @@ describe("backend proxy route allowlist", () => {
       ),
     ).toBe(false);
     expect(isAllowedBackendRoute("POST", "admin/overview")).toBe(false);
+    expect(isAllowedBackendRoute("POST", "admin/oauth/config")).toBe(false);
+    expect(isAllowedBackendRoute("PUT", "admin/oauth/config/gitlab")).toBe(false);
+    expect(isAllowedBackendRoute("GET", "admin/oauth/config/google")).toBe(false);
     expect(isAllowedBackendRoute("DELETE", "auth/login")).toBe(false);
     expect(isAllowedBackendRoute("GET", "auth/verify-email")).toBe(false);
     expect(isAllowedBackendRoute("POST", "auth/oauth/github/callback")).toBe(false);
@@ -174,6 +188,8 @@ describe("backend proxy route allowlist", () => {
     expect(isAllowedBackendRoute("POST", "v1/workflows/services/status")).toBe(false);
     expect(isAllowedBackendRoute("DELETE", "v1/workflows/services/status")).toBe(false);
     expect(isAllowedBackendRoute("DELETE", "v1/models/registry/ZYRQUEN-Native-0.1.0/promote")).toBe(false);
+    expect(isAllowedBackendRoute("DELETE", "v1/models/registry/ZYRQUEN-Native-0.1.0/verify")).toBe(false);
+    expect(isAllowedBackendRoute("POST", "v1/models/registry/../secret/verify")).toBe(false);
     expect(isAllowedBackendRoute("POST", "v1/models/registry/../secret/promote")).toBe(false);
     expect(isAllowedBackendRoute("GET", "v1/models/registry/v1..2/lineage")).toBe(false);
     expect(

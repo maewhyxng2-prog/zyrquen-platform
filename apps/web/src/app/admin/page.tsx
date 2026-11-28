@@ -6,8 +6,10 @@ import { useRouter } from "next/navigation";
 import { DeveloperNav } from "@/components/DeveloperNav";
 import { Icon } from "@/components/Icon";
 import { MetricHelpTooltip } from "@/components/MetricHelpTooltip";
+import { OAuthProvidersConfigCard } from "@/components/OAuthProvidersConfigCard";
 import { PageHeader } from "@/components/PageHeader";
 import { Panel } from "@/components/Panel";
+import { RegistryCheckpointIntegrityCard } from "@/components/RegistryCheckpointIntegrityCard";
 import { StatusBadge } from "@/components/StatusBadge";
 import {
   apiRequest,
@@ -16,7 +18,15 @@ import {
   normalizeAuditLogEntry,
   readSession,
 } from "@/lib/api";
-import type { AuditEntry, Session } from "@/lib/types";
+import {
+  shortSha256,
+  verifyRegistryVersionIntegrity,
+} from "@/lib/checkpoint-integrity";
+import type {
+  AuditEntry,
+  CheckpointIntegrityResult,
+  Session,
+} from "@/lib/types";
 
 type AdminOverview = {
   users: number;
@@ -152,6 +162,14 @@ export default function AdminPage() {
   const [artifactBusy, setArtifactBusy] = useState<"logs" | "manifest" | "metadata" | null>(null);
   const [artifactError, setArtifactError] = useState("");
   const [artifactNotice, setArtifactNotice] = useState("");
+  const [registryRefreshTick, setRegistryRefreshTick] = useState(0);
+  const [quickCheckByVersion, setQuickCheckByVersion] = useState<
+    Record<string, CheckpointIntegrityResult>
+  >({});
+  const [quickCheckBusyVersion, setQuickCheckBusyVersion] = useState<string | null>(null);
+  const [quickCheckErrorByVersion, setQuickCheckErrorByVersion] = useState<
+    Record<string, string>
+  >({});
   const modalDialogRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
 
@@ -227,6 +245,7 @@ export default function AdminPage() {
   const handleRefresh = useCallback(async () => {
     setLoading(true);
     setError("");
+    setRegistryRefreshTick((tick) => tick + 1);
     await fetchAdminData();
     if (typeof window !== "undefined") {
       window.dispatchEvent(new Event("zyrquen:approvals-change"));
@@ -275,11 +294,44 @@ export default function AdminPage() {
       if (next) {
         setArtifactError("");
         setArtifactNotice("");
+        setQuickCheckByVersion({});
+        setQuickCheckErrorByVersion({});
+        setQuickCheckBusyVersion(null);
         void loadModelLineage();
       }
       return next;
     });
   }, [loadModelLineage]);
+
+  const handleQuickCheckVersion = useCallback(async (version: string) => {
+    setQuickCheckBusyVersion(version);
+    setQuickCheckErrorByVersion((prev) => {
+      const next = { ...prev };
+      delete next[version];
+      return next;
+    });
+    try {
+      const result = await verifyRegistryVersionIntegrity(version);
+      setQuickCheckByVersion((prev) => ({ ...prev, [version]: result }));
+      if (result.compatibility) {
+        setLineageData((prev) =>
+          prev && prev.record.version === version
+            ? { ...prev, compatibility: result.compatibility! }
+            : prev,
+        );
+      }
+    } catch (reason) {
+      setQuickCheckErrorByVersion((prev) => ({
+        ...prev,
+        [version]:
+          reason instanceof Error
+            ? reason.message
+            : `ไม่สามารถตรวจสอบ SHA-256 สำหรับ ${version} ได้`,
+      }));
+    } finally {
+      setQuickCheckBusyVersion((curr) => (curr === version ? null : curr));
+    }
+  }, []);
 
   const handleDownloadArtifact = useCallback(
     async (version: string, kind: "logs" | "manifest" | "metadata") => {
@@ -754,6 +806,13 @@ export default function AdminPage() {
               </div>
             </Panel>
 
+            <RegistryCheckpointIntegrityCard
+              className="settings-panel-wide"
+              refreshSignal={registryRefreshTick}
+            />
+
+            <OAuthProvidersConfigCard className="settings-panel-wide" />
+
             <Panel className="settings-panel-wide">
               <div className="panel-heading">
                 <div>
@@ -910,21 +969,72 @@ export default function AdminPage() {
               ) : (
                 <>
                   <div className="lineage-summary-strip">
-                    <div className="lineage-badges">
-                      <StatusBadge tone={lifecycleTone(lineageData.record.lifecycle_status)}>
-                        {lineageData.record.lifecycle_status ?? "registered"}
-                      </StatusBadge>
-                      <StatusBadge
-                        tone={lineageData.compatibility.compatible ? "good" : "bad"}
+                    <div className="lineage-node-head">
+                      <div className="lineage-badges">
+                        <StatusBadge tone={lifecycleTone(lineageData.record.lifecycle_status)}>
+                          {lineageData.record.lifecycle_status ?? "registered"}
+                        </StatusBadge>
+                        <StatusBadge
+                          tone={lineageData.compatibility.compatible ? "good" : "bad"}
+                        >
+                          {lineageData.compatibility.compatible
+                            ? "Compatibility PASS"
+                            : "Compatibility FAIL"}
+                        </StatusBadge>
+                        <StatusBadge tone="info">
+                          Depth {lineageData.lineage.depth}
+                        </StatusBadge>
+                        {quickCheckByVersion[lineageData.record.version] ? (
+                          <StatusBadge
+                            icon={
+                              quickCheckByVersion[lineageData.record.version].status === "Verified"
+                                ? "check-circle"
+                                : "close"
+                            }
+                            tone={
+                              quickCheckByVersion[lineageData.record.version].status === "Verified"
+                                ? "good"
+                                : "bad"
+                            }
+                          >
+                            {quickCheckByVersion[lineageData.record.version].status}
+                          </StatusBadge>
+                        ) : null}
+                      </div>
+                      <button
+                        className="button button-primary button-compact"
+                        disabled={quickCheckBusyVersion !== null}
+                        onClick={() => void handleQuickCheckVersion(lineageData.record.version)}
+                        type="button"
                       >
-                        {lineageData.compatibility.compatible
-                          ? "Compatibility PASS"
-                          : "Compatibility FAIL"}
-                      </StatusBadge>
-                      <StatusBadge tone="info">
-                        Depth {lineageData.lineage.depth}
-                      </StatusBadge>
+                        <Icon name="shield" size={14} />
+                        {quickCheckBusyVersion === lineageData.record.version
+                          ? "Checking..."
+                          : "Quick Check"}
+                      </button>
                     </div>
+                    {quickCheckErrorByVersion[lineageData.record.version] ? (
+                      <p className="form-alert form-alert-error" role="alert">
+                        <Icon name="close" size={15} />
+                        <span>{quickCheckErrorByVersion[lineageData.record.version]}</span>
+                      </p>
+                    ) : null}
+                    {quickCheckByVersion[lineageData.record.version] ? (
+                      <p className="lineage-parent-tag tabular-nums" role="status">
+                        {quickCheckByVersion[lineageData.record.version].detail} · Expected:{" "}
+                        <code>
+                          {shortSha256(
+                            quickCheckByVersion[lineageData.record.version].expected_sha256,
+                          )}
+                        </code>{" "}
+                        · Actual:{" "}
+                        <code>
+                          {shortSha256(
+                            quickCheckByVersion[lineageData.record.version].actual_sha256,
+                          )}
+                        </code>
+                      </p>
+                    ) : null}
                     {lineageData.compatibility.reasons.length > 0 ? (
                       <ul className="lineage-reasons">
                         {lineageData.compatibility.reasons.map((reason) => (
@@ -1023,6 +1133,8 @@ export default function AdminPage() {
                         const workflowEntries = Object.entries(
                           node.workflow_lineage ?? {},
                         ).filter(([, val]) => val !== null && val !== undefined && val !== "");
+                        const nodeCheck = quickCheckByVersion[node.version];
+                        const nodeCheckError = quickCheckErrorByVersion[node.version];
                         return (
                           <div className="lineage-node-card" key={`${node.version}-${index}`}>
                             <div className="lineage-node-head">
@@ -1039,10 +1151,43 @@ export default function AdminPage() {
                                   <span className="lineage-parent-tag">root baseline</span>
                                 )}
                               </div>
-                              <StatusBadge tone={lifecycleTone(node.lifecycle_status)}>
-                                {node.lifecycle_status}
-                              </StatusBadge>
+                              <div className="workflow-actions">
+                                {nodeCheck ? (
+                                  <StatusBadge
+                                    icon={nodeCheck.status === "Verified" ? "check-circle" : "close"}
+                                    tone={nodeCheck.status === "Verified" ? "good" : "bad"}
+                                  >
+                                    {nodeCheck.status}
+                                  </StatusBadge>
+                                ) : null}
+                                <StatusBadge tone={lifecycleTone(node.lifecycle_status)}>
+                                  {node.lifecycle_status}
+                                </StatusBadge>
+                                <button
+                                  aria-label={`Quick Check ${node.version}`}
+                                  className="button button-secondary button-compact"
+                                  disabled={quickCheckBusyVersion !== null}
+                                  onClick={() => void handleQuickCheckVersion(node.version)}
+                                  type="button"
+                                >
+                                  <Icon name="shield" size={13} />
+                                  {quickCheckBusyVersion === node.version
+                                    ? "Checking..."
+                                    : "Quick Check"}
+                                </button>
+                              </div>
                             </div>
+                            {nodeCheckError ? (
+                              <p className="form-alert form-alert-error" role="alert">
+                                <Icon name="close" size={15} />
+                                <span>{nodeCheckError}</span>
+                              </p>
+                            ) : nodeCheck ? (
+                              <p className="lineage-parent-tag tabular-nums" role="status">
+                                {nodeCheck.detail} · SHA-256:{" "}
+                                <code>{shortSha256(nodeCheck.actual_sha256)}</code>
+                              </p>
+                            ) : null}
 
                             <div className="lineage-meta-grid tabular-nums">
                               <div>

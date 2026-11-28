@@ -163,7 +163,11 @@ class Seq2Seq(nn.Module):
 
 
 def save_checkpoint(state, filename):
+    from python_core.checkpoint_hash import save_checkpoint_sha256
+
     torch.save(state, filename)
+    _, digest = save_checkpoint_sha256(filename)
+    return digest
 
 
 def main():

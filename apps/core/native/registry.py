@@ -18,6 +18,7 @@ Concurrency & Filesystem Boundary:
 from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -37,6 +38,12 @@ except ImportError:  # pragma: no cover - non-POSIX fallback
 from apps.core.native.tokenizer import ZyrquenTokenizer
 from apps.core.training_infrastructure.recovery.checkpoint_recovery import (
     CheckpointManager, _safe_torch_load)
+from python_core.checkpoint_hash import (
+    compute_file_sha256,
+    read_checkpoint_sha256,
+    save_checkpoint_sha256,
+    sha256_sidecar_path,
+)
 
 SCHEMA = "zyrquen.model-registry.v1"
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -695,6 +702,7 @@ class ModelRegistry:
                 shutil.copy2(Path(dataset_dir) / "manifest.json", dest / "dataset_manifest.json")
                 if _sha256(dest / "checkpoint.pt") != entry["sha256"]:
                     raise RegistryError("artifact copy failed verification")
+                save_checkpoint_sha256(dest / "checkpoint.pt", digest=entry["sha256"])
             except Exception:
                 shutil.rmtree(dest, ignore_errors=True)
                 raise
@@ -711,7 +719,8 @@ class ModelRegistry:
                 "lifecycle_status": "registered",
                 "frozen": bool(frozen),
                 "checkpoint": {"step": entry["step"], "sha256": entry["sha256"],
-                               "size_bytes": entry["size_bytes"], "path": f"artifacts/{version}/checkpoint.pt"},
+                               "size_bytes": entry["size_bytes"], "path": f"artifacts/{version}/checkpoint.pt",
+                               "sha256_path": f"artifacts/{version}/checkpoint.pt.sha256"},
                 "tokenizer": {"version": tok.version, "sha256": tok.fingerprint(),
                               "file_sha256": _sha256(dest / "tokenizer.json"),
                               "vocab_size": tok.vocab_size,
@@ -859,6 +868,121 @@ class ModelRegistry:
         except (OSError, json.JSONDecodeError):
             return False
         return isinstance(manifest_data, dict) and manifest_data.get("content_sha256") == ds_digest
+
+    def verify_checkpoint_integrity(self, version: str) -> dict[str, Any]:
+        """Strictly verify a registered checkpoint against its `.sha256` sidecar and registry digest."""
+        if not isinstance(version, str) or not _VERSION.match(version):
+            raise RegistryError("invalid version name (use letters, digits, . _ - ; max 64 chars)")
+        rec = self.get(version)
+        checked_at = datetime.now(timezone.utc).isoformat()
+        ckpt_section = rec.get("checkpoint") if isinstance(rec, dict) else None
+        rel = ckpt_section.get("path") if isinstance(ckpt_section, dict) else None
+        recorded_sha = ckpt_section.get("sha256") if isinstance(ckpt_section, dict) else None
+        sidecar_rel_cfg = ckpt_section.get("sha256_path") if isinstance(ckpt_section, dict) else None
+
+        def _fail(
+            detail: str,
+            *,
+            checkpoint_path: str | None = rel if isinstance(rel, str) else None,
+            sidecar_path: str | None = sidecar_rel_cfg if isinstance(sidecar_rel_cfg, str) else None,
+            sidecar_present: bool = False,
+            expected_sha256: str | None = None,
+            actual_sha256: str | None = None,
+        ) -> dict[str, Any]:
+            return {
+                "version": version,
+                "status": "Corrupted",
+                "verified": False,
+                "checkpoint_path": checkpoint_path,
+                "sidecar_path": sidecar_path,
+                "sidecar_present": sidecar_present,
+                "expected_sha256": expected_sha256,
+                "recorded_sha256": recorded_sha if isinstance(recorded_sha, str) else None,
+                "actual_sha256": actual_sha256,
+                "checked_at": checked_at,
+                "detail": detail,
+            }
+
+        if not isinstance(rel, str) or not rel.strip():
+            return _fail("Checkpoint path is missing from registry record.")
+
+        resolved_root = self.root.resolve()
+        ckpt_path = self.root / rel
+        if ckpt_path.is_symlink() or not ckpt_path.resolve().is_relative_to(resolved_root):
+            return _fail("Checkpoint path is symlinked or escapes registry root.")
+        if not ckpt_path.is_file():
+            return _fail(f"Checkpoint file missing: {rel}")
+
+        if isinstance(sidecar_rel_cfg, str) and sidecar_rel_cfg.strip():
+            sidecar_path = self.root / sidecar_rel_cfg
+            sidecar_rel = sidecar_rel_cfg
+        else:
+            sidecar_path = sha256_sidecar_path(ckpt_path)
+            sidecar_rel = f"{rel}.sha256"
+
+        if sidecar_path.is_symlink() or not sidecar_path.resolve().is_relative_to(resolved_root):
+            return _fail(
+                "SHA-256 sidecar path is symlinked or escapes registry root.",
+                sidecar_path=sidecar_rel,
+            )
+        if not sidecar_path.is_file():
+            return _fail(
+                f"SHA-256 sidecar file missing: {sidecar_rel}",
+                sidecar_path=sidecar_rel,
+                sidecar_present=False,
+            )
+
+        try:
+            expected_sha = read_checkpoint_sha256(ckpt_path, sidecar_path=sidecar_path)
+        except (OSError, ValueError) as exc:
+            return _fail(
+                f"Invalid SHA-256 sidecar file: {exc}",
+                sidecar_path=sidecar_rel,
+                sidecar_present=True,
+            )
+
+        try:
+            actual_sha = compute_file_sha256(ckpt_path)
+        except OSError as exc:
+            return _fail(
+                f"Unable to read checkpoint file: {exc}",
+                sidecar_path=sidecar_rel,
+                sidecar_present=True,
+                expected_sha256=expected_sha,
+            )
+
+        if not hmac.compare_digest(actual_sha, expected_sha):
+            return _fail(
+                "Checkpoint SHA-256 mismatch against .sha256 sidecar file.",
+                sidecar_path=sidecar_rel,
+                sidecar_present=True,
+                expected_sha256=expected_sha,
+                actual_sha256=actual_sha,
+            )
+
+        if isinstance(recorded_sha, str) and _is_valid_sha256_hex(recorded_sha):
+            if not hmac.compare_digest(actual_sha, recorded_sha.lower()):
+                return _fail(
+                    "Checkpoint SHA-256 mismatch against registry metadata digest.",
+                    sidecar_path=sidecar_rel,
+                    sidecar_present=True,
+                    expected_sha256=expected_sha,
+                    actual_sha256=actual_sha,
+                )
+
+        return {
+            "version": version,
+            "status": "Verified",
+            "verified": True,
+            "checkpoint_path": rel,
+            "sidecar_path": sidecar_rel,
+            "sidecar_present": True,
+            "expected_sha256": expected_sha,
+            "recorded_sha256": recorded_sha.lower() if isinstance(recorded_sha, str) else None,
+            "actual_sha256": actual_sha,
+            "checked_at": checked_at,
+            "detail": "Checkpoint SHA-256 matches .sha256 sidecar file.",
+        }
 
     # ---- lifecycle & evaluation gate ----
     def attach_evaluation_evidence(

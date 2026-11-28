@@ -26,6 +26,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from checkpoint_hash import save_checkpoint_sha256
 from native_neural import train_neural_model
 
 
@@ -416,6 +417,7 @@ def decide_experiment(
         cand["weights_path"] = str(final_path)
 
     cand["checkpoint_sha256"] = actual_sha
+    save_checkpoint_sha256(final_path, digest=actual_sha)
 
     with conn:
         conn.execute(
