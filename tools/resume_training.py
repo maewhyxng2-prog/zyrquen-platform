@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Safe checkpoint verification and training resumption from Step 6000 -> 7000
+"""Safe checkpoint verification and training resumption from Step 6600 -> 7000
 for ZYRQUEN Native V2 (PureNativeTransformerLMV2 + PureContinualTrainerV2).
 
 Policy:
@@ -35,7 +35,7 @@ from tools.tpu_probe import detect_runtime_accelerator, format_runtime_report  #
 
 DEFAULT_OUT_DIR = Path("/content/zyrquen-resume/checkpoints")
 
-# PR #56 Checkpoint Manifest: step -> (filename, sha256)
+# PR #56 manifest plus verified continuation checkpoint manifest: step -> (filename, sha256)
 PR56_STEP_MANIFEST: Dict[int, Tuple[str, str]] = {
     4000: ("v2_continued_step4000.json.gz", "0ca27a632e85bc7fde764b9948ceb9ed16a53911d5773bd51b5cd7c722a5237d"),
     4025: ("v2_continued_step4025.json.gz", "f4b33c82a27a0a3f05b468d2ff1cf297746f7a3aa85ecbc03ff0093f34c75314"),
@@ -80,6 +80,8 @@ PR56_STEP_MANIFEST: Dict[int, Tuple[str, str]] = {
     5950: ("v2_teacher_transfer_run5000_step5950.json.gz", "afad144ed48bec461e9e22bfd8a4b1a7513cffa945a8e3a4f48ae98e2bf6c854"),
     5975: ("v2_teacher_transfer_run5000_step5975.json.gz", "abbc4c214d72a8f79339a89dc8c4b4ca97826a7df9e519d0f24c5bf4f7d6bd3a"),
     6000: ("v2_teacher_transfer_run5000_step6000.json.gz", "3b7f0ed4de259a0b1db2135caf193c074409cadb3a599ae4656cfd4b3dffbca7"),
+    # Continuation checkpoint recorded after PR #56 Step 6000.
+    6600: ("v2_teacher_transfer_run5000_step6600.json.gz", "2064faf0981d2d9ab9f68632ca76b06080a4d85858c766e0820efba6b9018471"),
 }
 
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -149,7 +151,7 @@ def _all_finite(tree: Any) -> bool:
 
 def verify_trainer_can_continue(
     trainer: PureContinualTrainerV2,
-    expected_step: int = 6000,
+    expected_step: int = 6600,
 ) -> Dict[str, Any]:
     """Ensure restored optimizer, replay buffer, importance weights, and forward/backward pass can safely continue training."""
     if trainer.global_step != expected_step:
@@ -200,7 +202,7 @@ def verify_trainer_can_continue(
 
 
 def resume_from_checkpoint(
-    step: int = 6000,
+    step: int = 6600,
     out_dir: Path = DEFAULT_OUT_DIR,
 ) -> Dict[str, Any]:
     """Verify SHA-256 and restore full Optimizer + Continual-Learning state."""
@@ -268,10 +270,10 @@ def load_texts(path: Path) -> List[str]:
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Verify SHA-256 against PR #56 manifest, restore Step 6000 Optimizer/Trainer state, and resume training to Step 7000."
+        description="Verify SHA-256 against PR #56 manifest, restore Step 6600 Optimizer/Trainer state, and resume training to Step 7000."
     )
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
-    parser.add_argument("--step", type=int, default=6000, help="Checkpoint step to resume from (default: 6000)")
+    parser.add_argument("--step", type=int, default=6000, help="Checkpoint step to resume from (default: 6600)")
     parser.add_argument("--target-step", type=int, default=7000, help="Target global step (default: 7000)")
     parser.add_argument("--chunk-steps", type=int, default=25, help="Checkpoint save interval in steps")
     parser.add_argument("--batch-size", type=int, default=3)
