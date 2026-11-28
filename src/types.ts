@@ -72,9 +72,31 @@ export interface AuthProviderInfo {
   id: 'github' | 'google';
   name: string;
   configured: boolean;
+  source?: 'manual' | 'env' | 'none';
   scopes: string[];
   callbackPath: string;
   callbackUrl: string;
+}
+
+export interface AdminOAuthProviderConfig {
+  id: 'github' | 'google';
+  name: string;
+  configured: boolean;
+  source: 'manual' | 'env' | 'none';
+  clientId: string;
+  hasSecret: boolean;
+  secretMasked: string;
+  callbackUrl: string;
+  updatedAt?: string | null;
+  updatedBy?: string | null;
+}
+
+export interface AdminOAuthConfigResponse {
+  ok: boolean;
+  providers: {
+    google: AdminOAuthProviderConfig;
+    github: AdminOAuthProviderConfig;
+  };
 }
 
 export interface AuthProvidersResponse {

@@ -183,6 +183,16 @@ type InMemoryStore = {
   emailVerificationTokens: Map<string, StoredEmailVerificationToken>;
   oauthStates: Map<string, StoredOAuthState>;
   oauthIdentities: StoredOAuthIdentity[];
+  oauthConfigs: Map<
+    OAuthProvider,
+    {
+      clientId: string;
+      clientSecret: string;
+      secretMasked: string;
+      updatedAt: string;
+      updatedBy: string;
+    }
+  >;
   conversations: Map<string, StoredConversation>;
   usageRecords: StoredUsageRecord[];
   apiKeys: Map<string, StoredApiKey>;
@@ -327,20 +337,42 @@ function allowTestOAuthEndpoints(): boolean {
 
 type OAuthProvider = "github" | "google";
 
-function getOAuthProviderConfig(provider: OAuthProvider, origin: string) {
+function maskSecret(secret: string): string {
+  const trimmed = secret.trim();
+  if (!trimmed) return "";
+  return trimmed.length >= 12 ? `••••••••${trimmed.slice(-4)}` : "••••••••";
+}
+
+function getOAuthProviderConfig(
+  provider: OAuthProvider,
+  origin: string,
+  store?: InMemoryStore,
+) {
   const cleanOrigin = (origin || "http://localhost:3000").replace(/\/+$/, "");
   const callbackUrl = `${cleanOrigin}/api/backend/auth/oauth/${provider}/callback`;
   const useTest = allowTestOAuthEndpoints();
+  const manual = store?.oauthConfigs.get(provider);
 
   if (provider === "github") {
-    const clientId = (process.env.GITHUB_OAUTH_CLIENT_ID || "").trim();
-    const clientSecret = (process.env.GITHUB_OAUTH_CLIENT_SECRET || "").trim();
+    const envClientId = (process.env.GITHUB_OAUTH_CLIENT_ID || "").trim();
+    const envClientSecret = (process.env.GITHUB_OAUTH_CLIENT_SECRET || "").trim();
+    const clientId = manual?.clientId || envClientId;
+    const clientSecret = manual?.clientSecret || envClientSecret;
+    const source: "manual" | "env" | "none" = manual
+      ? "manual"
+      : envClientId && envClientSecret
+        ? "env"
+        : "none";
     return {
       provider,
       name: "GitHub",
       configured: Boolean(clientId && clientSecret),
+      source,
       clientId,
       clientSecret,
+      secretMasked: manual?.secretMasked || (envClientSecret ? maskSecret(envClientSecret) : ""),
+      updatedAt: manual?.updatedAt ?? null,
+      updatedBy: manual?.updatedBy ?? null,
       scopes: ["read:user", "user:email"],
       callbackUrl,
       authorizeUrl:
@@ -358,14 +390,25 @@ function getOAuthProviderConfig(provider: OAuthProvider, origin: string) {
     };
   }
 
-  const clientId = (process.env.GOOGLE_OAUTH_CLIENT_ID || "").trim();
-  const clientSecret = (process.env.GOOGLE_OAUTH_CLIENT_SECRET || "").trim();
+  const envClientId = (process.env.GOOGLE_OAUTH_CLIENT_ID || "").trim();
+  const envClientSecret = (process.env.GOOGLE_OAUTH_CLIENT_SECRET || "").trim();
+  const clientId = manual?.clientId || envClientId;
+  const clientSecret = manual?.clientSecret || envClientSecret;
+  const source: "manual" | "env" | "none" = manual
+    ? "manual"
+    : envClientId && envClientSecret
+      ? "env"
+      : "none";
   return {
     provider,
     name: "Google",
     configured: Boolean(clientId && clientSecret),
+    source,
     clientId,
     clientSecret,
+    secretMasked: manual?.secretMasked || (envClientSecret ? maskSecret(envClientSecret) : ""),
+    updatedAt: manual?.updatedAt ?? null,
+    updatedBy: manual?.updatedBy ?? null,
     scopes: ["openid", "email", "profile"],
     callbackUrl,
     authorizeUrl:
@@ -616,6 +659,7 @@ function createInitialStore(): InMemoryStore {
     emailVerificationTokens: new Map(),
     oauthStates: new Map(),
     oauthIdentities: [],
+    oauthConfigs: new Map(),
     conversations: new Map(),
     usageRecords: [],
     apiKeys: new Map(),
@@ -1162,8 +1206,8 @@ export async function handleInMemoryBackendRequest(options: {
   }
 
   if (method === "GET" && path === "auth/providers") {
-    const googleCfg = getOAuthProviderConfig("google", requestOrigin);
-    const githubCfg = getOAuthProviderConfig("github", requestOrigin);
+    const googleCfg = getOAuthProviderConfig("google", requestOrigin, store);
+    const githubCfg = getOAuthProviderConfig("github", requestOrigin, store);
     return {
       status: 200,
       body: {
@@ -1192,7 +1236,7 @@ export async function handleInMemoryBackendRequest(options: {
       linkUserId = caller.user.id;
     }
 
-    const cfg = getOAuthProviderConfig(provider, requestOrigin);
+    const cfg = getOAuthProviderConfig(provider, requestOrigin, store);
     if (!cfg.configured) {
       return {
         status: 503,
@@ -1301,7 +1345,7 @@ export async function handleInMemoryBackendRequest(options: {
       };
     }
 
-    const cfg = getOAuthProviderConfig(provider, stateEntry.origin);
+    const cfg = getOAuthProviderConfig(provider, stateEntry.origin, store);
     if (!cfg.configured) {
       return {
         status: 503,
@@ -3318,6 +3362,119 @@ export async function handleInMemoryBackendRequest(options: {
       return { status: 403, body: { detail: "Admin access is required." } };
     }
     return { status: 200, body: store.auditLogs.slice(0, 100) };
+  }
+
+  const buildSanitizedAdminOAuthBody = () => {
+    const googleCfg = getOAuthProviderConfig("google", requestOrigin, store);
+    const githubCfg = getOAuthProviderConfig("github", requestOrigin, store);
+    return {
+      ok: true,
+      providers: {
+        google: {
+          id: "google",
+          name: googleCfg.name,
+          configured: googleCfg.configured,
+          source: googleCfg.source,
+          clientId: googleCfg.clientId,
+          hasSecret: Boolean(googleCfg.clientSecret),
+          secretMasked: googleCfg.secretMasked,
+          callbackUrl: googleCfg.callbackUrl,
+          updatedAt: googleCfg.updatedAt,
+          updatedBy: googleCfg.updatedBy,
+        },
+        github: {
+          id: "github",
+          name: githubCfg.name,
+          configured: githubCfg.configured,
+          source: githubCfg.source,
+          clientId: githubCfg.clientId,
+          hasSecret: Boolean(githubCfg.clientSecret),
+          secretMasked: githubCfg.secretMasked,
+          callbackUrl: githubCfg.callbackUrl,
+          updatedAt: githubCfg.updatedAt,
+          updatedBy: githubCfg.updatedBy,
+        },
+      },
+    };
+  };
+
+  if (method === "GET" && path === "admin/oauth/config") {
+    if (currentUser.role !== "admin") {
+      return { status: 403, body: { detail: "Admin access is required." } };
+    }
+    return { status: 200, body: buildSanitizedAdminOAuthBody() };
+  }
+
+  const adminOAuthMatch = path.match(/^admin\/oauth\/config\/(google|github)$/i);
+  if (adminOAuthMatch && (method === "PUT" || method === "DELETE")) {
+    if (currentUser.role !== "admin") {
+      return { status: 403, body: { detail: "Admin access is required." } };
+    }
+    const provider = adminOAuthMatch[1].toLowerCase() as OAuthProvider;
+    if (method === "DELETE") {
+      store.oauthConfigs.delete(provider);
+      store.auditLogs.unshift({
+        id: randomUUID(),
+        actor_user_id: currentUser.id,
+        action: "admin.oauth_config_cleared",
+        resource_id: `oauth:${provider}`,
+        created_at: new Date().toISOString(),
+      });
+      return { status: 200, body: buildSanitizedAdminOAuthBody() };
+    }
+    const body = parseJsonBody(options.rawBody);
+    const rawClientId =
+      typeof body.clientId === "string" ? body.clientId.trim() : "";
+    const rawClientSecret =
+      typeof body.clientSecret === "string" ? body.clientSecret.trim() : "";
+    const hasInvalidControl = (value: string, allowSpaces: boolean) =>
+      [...value].some((ch) => {
+        const code = ch.charCodeAt(0);
+        return code < 32 || code === 127 || (!allowSpaces && /\s/.test(ch));
+      });
+    if (
+      !rawClientId ||
+      rawClientId.length < 8 ||
+      rawClientId.length > 256 ||
+      hasInvalidControl(rawClientId, false)
+    ) {
+      return {
+        status: 400,
+        body: {
+          detail: "Client ID ไม่ถูกต้อง (ต้องมีความยาว 8-256 ตัวอักษรและไม่มีช่องว่าง)",
+        },
+      };
+    }
+    const existing = store.oauthConfigs.get(provider);
+    const effectiveSecret = rawClientSecret || existing?.clientSecret || "";
+    if (
+      !effectiveSecret ||
+      effectiveSecret.length < 8 ||
+      effectiveSecret.length > 512 ||
+      hasInvalidControl(effectiveSecret, true)
+    ) {
+      return {
+        status: 400,
+        body: {
+          detail: "กรุณาระบุ Client Secret ที่ถูกต้อง (ความยาว 8-512 ตัวอักษร)",
+        },
+      };
+    }
+    store.oauthConfigs.set(provider, {
+      clientId: rawClientId,
+      clientSecret: effectiveSecret,
+      secretMasked: maskSecret(effectiveSecret),
+      updatedAt: new Date().toISOString(),
+      updatedBy: currentUser.email,
+    });
+    store.auditLogs.unshift({
+      id: randomUUID(),
+      actor_user_id: currentUser.id,
+      action: "admin.oauth_config_updated",
+      resource_id: `oauth:${provider}`,
+      created_at: new Date().toISOString(),
+    });
+    return { status: 200, body: buildSanitizedAdminOAuthBody() };
   }
 
   if (method === "GET" && path === "v1/datasets/status") {

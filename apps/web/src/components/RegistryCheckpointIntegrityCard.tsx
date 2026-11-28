@@ -6,6 +6,7 @@ import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
 import {
   fetchAndVerifyLatestCheckpoint,
+  resolveIntegrityBadgeState,
   shortSha256,
   type LatestCheckpointVerificationSnapshot,
 } from "@/lib/checkpoint-integrity";
@@ -61,6 +62,11 @@ export function RegistryCheckpointIntegrityCard({
 
   const verification = snapshot?.verification ?? null;
   const latestVersion = snapshot?.latestVersion ?? null;
+  const badgeState = resolveIntegrityBadgeState({
+    loading,
+    error,
+    verification,
+  });
 
   return (
     <Panel className={className}>
@@ -70,22 +76,15 @@ export function RegistryCheckpointIntegrityCard({
           <h2>ความสมบูรณ์ Checkpoint ล่าสุด (.sha256)</h2>
         </div>
         <div className="panel-heading-actions">
-          {loading && !verification ? (
-            <StatusBadge tone="info">Checking...</StatusBadge>
-          ) : error ? (
-            <StatusBadge icon="close" tone="bad">
-              Error
+          <span
+            aria-live="polite"
+            data-status={badgeState.label}
+            data-testid="checkpoint-integrity-status"
+          >
+            <StatusBadge icon={badgeState.icon} tone={badgeState.tone}>
+              {badgeState.label}
             </StatusBadge>
-          ) : verification ? (
-            <StatusBadge
-              icon={verification.status === "Verified" ? "check-circle" : "close"}
-              tone={verification.status === "Verified" ? "good" : "bad"}
-            >
-              {verification.status}
-            </StatusBadge>
-          ) : (
-            <StatusBadge tone="neutral">Not Available</StatusBadge>
-          )}
+          </span>
           <button
             className="button button-secondary button-compact"
             disabled={loading}
@@ -162,10 +161,10 @@ export function RegistryCheckpointIntegrityCard({
               </small>
             </div>
             <StatusBadge
-              icon={verification.status === "Verified" ? "check-circle" : "close"}
-              tone={verification.status === "Verified" ? "good" : "bad"}
+              icon={badgeState.icon}
+              tone={badgeState.tone}
             >
-              {verification.status}
+              {badgeState.label}
             </StatusBadge>
           </div>
 

@@ -74,8 +74,11 @@ export function isAllowedBackendRoute(method: string, path: string): boolean {
   if (new RegExp(`^users/me/api-keys/${id}/usage$`, "i").test(path)) {
     return normalizedMethod === "GET";
   }
-  if (path === "admin/users" || path === "admin/audit-logs") {
+  if (path === "admin/users" || path === "admin/audit-logs" || path === "admin/oauth/config") {
     return normalizedMethod === "GET";
+  }
+  if (/^admin\/oauth\/config\/(google|github)$/i.test(path)) {
+    return normalizedMethod === "PUT" || normalizedMethod === "DELETE";
   }
   if (new RegExp(`^v1/workflows/runs/${id}$`, "i").test(path)) {
     return normalizedMethod === "GET";

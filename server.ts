@@ -451,21 +451,145 @@ function allowTestOAuthEndpoints(): boolean {
   );
 }
 
+interface ManualOAuthConfigEntry {
+  clientId: string;
+  clientSecret: string;
+  secretMasked: string;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+const manualOAuthConfigs = new Map<OAuthProvider, ManualOAuthConfigEntry>();
+let manualOAuthLoaded = false;
+
+function resolveServerDataDir(): string {
+  const raw = (process.env.ZYRQUEN_DATA_DIR || '').trim();
+  return raw ? path.resolve(raw) : path.resolve(__dirname, 'data');
+}
+
+function getOAuthEncryptionKey(): Buffer {
+  const envSecret =
+    (process.env.ZYRQUEN_SESSION_SECRET || '').trim() ||
+    (process.env.ZYRQUEN_APPROVAL_SECRET || '').trim();
+  if (envSecret) {
+    return crypto.createHash('sha256').update(`zyrquen-oauth-enc-v1:${envSecret}`).digest();
+  }
+  const dataDir = resolveServerDataDir();
+  fs.mkdirSync(dataDir, { recursive: true });
+  const keyPath = path.join(dataDir, '.oauth_master_key');
+  if (fs.existsSync(keyPath)) {
+    const existingHex = fs.readFileSync(keyPath, 'utf-8').trim();
+    if (/^[0-9a-f]{64}$/i.test(existingHex)) {
+      return Buffer.from(existingHex, 'hex');
+    }
+  }
+  const freshKey = crypto.randomBytes(32);
+  fs.writeFileSync(keyPath, freshKey.toString('hex'), { encoding: 'utf-8', mode: 0o600 });
+  return freshKey;
+}
+
+function encryptOAuthSecret(plaintext: string): string {
+  const key = getOAuthEncryptionKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf-8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `v1.${iv.toString('base64url')}.${tag.toString('base64url')}.${encrypted.toString('base64url')}`;
+}
+
+function decryptOAuthSecret(encoded: string): string | null {
+  const parts = encoded.split('.');
+  if (parts.length !== 4 || parts[0] !== 'v1') return null;
+  try {
+    const key = getOAuthEncryptionKey();
+    const iv = Buffer.from(parts[1], 'base64url');
+    const tag = Buffer.from(parts[2], 'base64url');
+    const ciphertext = Buffer.from(parts[3], 'base64url');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf-8');
+  } catch {
+    return null;
+  }
+}
+
+function maskOAuthSecret(secret: string): string {
+  const trimmed = secret.trim();
+  if (!trimmed) return '';
+  if (trimmed.length >= 12) {
+    return `••••••••${trimmed.slice(-4)}`;
+  }
+  return '••••••••';
+}
+
+async function refreshManualOAuthConfigs(): Promise<void> {
+  try {
+    const res = await runPythonScript<{
+      ok: boolean;
+      configs?: Array<{
+        provider: string;
+        client_id: string;
+        client_secret_enc: string;
+        secret_masked?: string;
+        updated_by?: string | null;
+        updated_at?: string | null;
+      }>;
+    }>('db_bridge.py', { action: 'oauth_config_get', payload: {} });
+    manualOAuthConfigs.clear();
+    if (res.ok && Array.isArray(res.configs)) {
+      for (const row of res.configs) {
+        const provider = String(row.provider || '').toLowerCase();
+        if (provider !== 'google' && provider !== 'github') continue;
+        const decrypted = decryptOAuthSecret(String(row.client_secret_enc || ''));
+        if (!decrypted || !row.client_id) continue;
+        manualOAuthConfigs.set(provider, {
+          clientId: String(row.client_id).trim(),
+          clientSecret: decrypted,
+          secretMasked: row.secret_masked || maskOAuthSecret(decrypted),
+          updatedAt: row.updated_at ?? null,
+          updatedBy: row.updated_by ?? null,
+        });
+      }
+    }
+    manualOAuthLoaded = true;
+  } catch {
+    manualOAuthLoaded = true;
+  }
+}
+
+async function ensureManualOAuthConfigsLoaded(): Promise<void> {
+  if (!manualOAuthLoaded) {
+    await refreshManualOAuthConfigs();
+  }
+}
+
 function getOAuthProviderConfig(provider: OAuthProvider, baseUrl: string) {
   const cleanBase = baseUrl.replace(/\/+$/, '');
   const callbackPath = `/api/auth/oauth/${provider}/callback`;
   const callbackUrl = `${cleanBase}${callbackPath}`;
+  const manual = manualOAuthConfigs.get(provider);
 
   if (provider === 'github') {
-    const clientId = (process.env.GITHUB_OAUTH_CLIENT_ID || '').trim();
-    const clientSecret = (process.env.GITHUB_OAUTH_CLIENT_SECRET || '').trim();
+    const envClientId = (process.env.GITHUB_OAUTH_CLIENT_ID || '').trim();
+    const envClientSecret = (process.env.GITHUB_OAUTH_CLIENT_SECRET || '').trim();
+    const clientId = manual?.clientId || envClientId;
+    const clientSecret = manual?.clientSecret || envClientSecret;
+    const source: 'manual' | 'env' | 'none' = manual
+      ? 'manual'
+      : envClientId && envClientSecret
+        ? 'env'
+        : 'none';
     const useTest = allowTestOAuthEndpoints();
     return {
       provider,
       name: 'GitHub',
       configured: Boolean(clientId && clientSecret),
+      source,
       clientId,
       clientSecret,
+      secretMasked: manual?.secretMasked || (envClientSecret ? maskOAuthSecret(envClientSecret) : ''),
+      updatedAt: manual?.updatedAt ?? null,
+      updatedBy: manual?.updatedBy ?? null,
       scopes: ['read:user', 'user:email'],
       callbackPath,
       callbackUrl,
@@ -484,15 +608,26 @@ function getOAuthProviderConfig(provider: OAuthProvider, baseUrl: string) {
     };
   }
 
-  const clientId = (process.env.GOOGLE_OAUTH_CLIENT_ID || '').trim();
-  const clientSecret = (process.env.GOOGLE_OAUTH_CLIENT_SECRET || '').trim();
+  const envClientId = (process.env.GOOGLE_OAUTH_CLIENT_ID || '').trim();
+  const envClientSecret = (process.env.GOOGLE_OAUTH_CLIENT_SECRET || '').trim();
+  const clientId = manual?.clientId || envClientId;
+  const clientSecret = manual?.clientSecret || envClientSecret;
+  const source: 'manual' | 'env' | 'none' = manual
+    ? 'manual'
+    : envClientId && envClientSecret
+      ? 'env'
+      : 'none';
   const useTest = allowTestOAuthEndpoints();
   return {
     provider,
     name: 'Google',
     configured: Boolean(clientId && clientSecret),
+    source,
     clientId,
     clientSecret,
+    secretMasked: manual?.secretMasked || (envClientSecret ? maskOAuthSecret(envClientSecret) : ''),
+    updatedAt: manual?.updatedAt ?? null,
+    updatedBy: manual?.updatedBy ?? null,
     scopes: ['openid', 'email', 'profile'],
     callbackPath,
     callbackUrl,
@@ -704,6 +839,7 @@ function requireAdmin(req: AuthedRequest, res: Response, next: NextFunction) {
 
 export async function createApp(options: { attachVite?: boolean } = {}) {
   await runPythonScript('zyrquen_core.py', { cmd: 'init', payload: {} });
+  await refreshManualOAuthConfigs();
 
   const app = express();
   app.set('trust proxy', 1);
@@ -1045,7 +1181,8 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
     res.json({ user: req.user });
   });
 
-  app.get('/api/auth/providers', (req: Request, res: Response) => {
+  app.get('/api/auth/providers', async (req: Request, res: Response) => {
+    await ensureManualOAuthConfigsLoaded();
     const baseUrl = resolvePublicBaseUrl(req);
     const github = getOAuthProviderConfig('github', baseUrl);
     const google = getOAuthProviderConfig('google', baseUrl);
@@ -1058,6 +1195,7 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
           id: 'github',
           name: github.name,
           configured: github.configured,
+          source: github.source,
           scopes: github.scopes,
           callbackPath: github.callbackPath,
           callbackUrl: github.callbackUrl,
@@ -1066,6 +1204,7 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
           id: 'google',
           name: google.name,
           configured: google.configured,
+          source: google.source,
           scopes: google.scopes,
           callbackPath: google.callbackPath,
           callbackUrl: google.callbackUrl,
@@ -1079,6 +1218,7 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
   });
 
   app.get('/api/auth/oauth/:provider/url', async (req: Request, res: Response) => {
+    await ensureManualOAuthConfigsLoaded();
     const rawProvider = String(req.params.provider || '').toLowerCase();
     if (rawProvider !== 'github' && rawProvider !== 'google') {
       res.status(400).json({ error: 'Unsupported OAuth provider' });
@@ -1237,6 +1377,7 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
         return;
       }
 
+      await ensureManualOAuthConfigsLoaded();
       const cfg = getOAuthProviderConfig(provider, defaultOrigin);
       if (!cfg.configured) {
         res
@@ -3727,6 +3868,136 @@ export async function createApp(options: { attachVite?: boolean } = {}) {
     });
     res.json(data);
   });
+
+  function buildAdminOAuthResponse(baseUrl: string) {
+    const google = getOAuthProviderConfig('google', baseUrl);
+    const github = getOAuthProviderConfig('github', baseUrl);
+    return {
+      ok: true,
+      providers: {
+        google: {
+          id: 'google' as const,
+          name: google.name,
+          configured: google.configured,
+          source: google.source,
+          clientId: google.clientId || '',
+          hasSecret: Boolean(google.clientSecret),
+          secretMasked: google.secretMasked,
+          callbackUrl: google.callbackUrl,
+          updatedAt: google.updatedAt,
+          updatedBy: google.updatedBy,
+        },
+        github: {
+          id: 'github' as const,
+          name: github.name,
+          configured: github.configured,
+          source: github.source,
+          clientId: github.clientId || '',
+          hasSecret: Boolean(github.clientSecret),
+          secretMasked: github.secretMasked,
+          callbackUrl: github.callbackUrl,
+          updatedAt: github.updatedAt,
+          updatedBy: github.updatedBy,
+        },
+      },
+    };
+  }
+
+  app.get('/api/admin/oauth/config', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+    await refreshManualOAuthConfigs();
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.json(buildAdminOAuthResponse(resolvePublicBaseUrl(req)));
+  });
+
+  app.put(
+    '/api/admin/oauth/config/:provider',
+    requireAuth,
+    requireAdmin,
+    async (req: AuthedRequest, res: Response) => {
+      const rawProvider = String(req.params.provider || '').trim().toLowerCase();
+      if (rawProvider !== 'google' && rawProvider !== 'github') {
+        res.status(400).json({ error: 'Unsupported OAuth provider' });
+        return;
+      }
+      const provider: OAuthProvider = rawProvider;
+      await ensureManualOAuthConfigsLoaded();
+
+      const rawClientId = typeof req.body?.clientId === 'string' ? req.body.clientId.trim() : '';
+      const rawClientSecret =
+        typeof req.body?.clientSecret === 'string' ? req.body.clientSecret.trim() : '';
+
+      const hasInvalidControl = (value: string, allowSpaces: boolean) =>
+        [...value].some((ch) => {
+          const code = ch.charCodeAt(0);
+          return code < 32 || code === 127 || (!allowSpaces && /\s/.test(ch));
+        });
+
+      if (!rawClientId || rawClientId.length < 8 || rawClientId.length > 256 || hasInvalidControl(rawClientId, false)) {
+        res.status(400).json({ error: 'Client ID ไม่ถูกต้อง (ต้องมีความยาว 8-256 ตัวอักษรและไม่มีช่องว่าง)' });
+        return;
+      }
+
+      const existingManual = manualOAuthConfigs.get(provider);
+      const effectiveSecret = rawClientSecret || existingManual?.clientSecret || '';
+      if (!effectiveSecret || effectiveSecret.length < 8 || effectiveSecret.length > 512 || hasInvalidControl(effectiveSecret, true)) {
+        res.status(400).json({ error: 'กรุณาระบุ Client Secret ที่ถูกต้อง (ความยาว 8-512 ตัวอักษร)' });
+        return;
+      }
+
+      const encryptedSecret = encryptOAuthSecret(effectiveSecret);
+      const masked = maskOAuthSecret(effectiveSecret);
+
+      const saved = await runPythonScript<{ ok: boolean; error?: string }>('db_bridge.py', {
+        action: 'oauth_config_upsert',
+        payload: {
+          provider,
+          client_id: rawClientId,
+          client_secret_enc: encryptedSecret,
+          secret_masked: masked,
+          actor_id: req.user!.id,
+          actor_email: req.user!.email,
+        },
+      });
+      if (!saved.ok) {
+        res.status(500).json({ error: saved.error || 'ไม่สามารถบันทึกการตั้งค่า OAuth ได้' });
+        return;
+      }
+
+      await refreshManualOAuthConfigs();
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.json(buildAdminOAuthResponse(resolvePublicBaseUrl(req)));
+    }
+  );
+
+  app.delete(
+    '/api/admin/oauth/config/:provider',
+    requireAuth,
+    requireAdmin,
+    async (req: AuthedRequest, res: Response) => {
+      const rawProvider = String(req.params.provider || '').trim().toLowerCase();
+      if (rawProvider !== 'google' && rawProvider !== 'github') {
+        res.status(400).json({ error: 'Unsupported OAuth provider' });
+        return;
+      }
+      const provider: OAuthProvider = rawProvider;
+      const cleared = await runPythonScript<{ ok: boolean; error?: string }>('db_bridge.py', {
+        action: 'oauth_config_delete',
+        payload: {
+          provider,
+          actor_id: req.user!.id,
+          actor_email: req.user!.email,
+        },
+      });
+      if (!cleared.ok) {
+        res.status(500).json({ error: cleared.error || 'ไม่สามารถล้างการตั้งค่า OAuth ได้' });
+        return;
+      }
+
+      await refreshManualOAuthConfigs();
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.json(buildAdminOAuthResponse(resolvePublicBaseUrl(req)));
+    }
+  );
 
   app.post(
     '/api/admin/overview/summary',

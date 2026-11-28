@@ -500,6 +500,15 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS oauth_provider_configs (
+                provider TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                client_secret_enc TEXT NOT NULL,
+                secret_masked TEXT NOT NULL DEFAULT '••••••••',
+                updated_by TEXT,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_reasoning_traces_user_created
                 ON reasoning_traces(user_id, created_at DESC);
 

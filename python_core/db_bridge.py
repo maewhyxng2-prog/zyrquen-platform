@@ -2619,6 +2619,128 @@ def handle_action(action: str, payload: dict) -> dict:
         conn.close()
         return handle_restoreproof_bridge(action, payload, DATA_DIR)
 
+    if action == "oauth_config_get":
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS oauth_provider_configs (
+                provider TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                client_secret_enc TEXT NOT NULL,
+                secret_masked TEXT NOT NULL DEFAULT '••••••••',
+                updated_by TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        rows = conn.execute(
+            "SELECT provider, client_id, client_secret_enc, secret_masked, updated_by, updated_at "
+            "FROM oauth_provider_configs"
+        ).fetchall()
+        conn.close()
+        return {"ok": True, "configs": [row_to_dict(r) for r in rows]}
+
+    if action == "oauth_config_upsert":
+        provider = str(payload.get("provider") or "").strip().lower()
+        if provider not in ("google", "github"):
+            conn.close()
+            return {"ok": False, "error": "Unsupported OAuth provider"}
+        client_id = str(payload.get("client_id") or "").strip()
+        client_secret_enc = str(payload.get("client_secret_enc") or "").strip()
+        secret_masked = str(payload.get("secret_masked") or "••••••••").strip() or "••••••••"
+        actor_id = str(payload.get("actor_id") or "system")
+        actor_email = str(payload.get("actor_email") or "admin")
+        ts = now_iso()
+        if not client_id or not client_secret_enc:
+            conn.close()
+            return {"ok": False, "error": "client_id and encrypted client_secret are required"}
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS oauth_provider_configs (
+                provider TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                client_secret_enc TEXT NOT NULL,
+                secret_masked TEXT NOT NULL DEFAULT '••••••••',
+                updated_by TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO oauth_provider_configs (
+                provider, client_id, client_secret_enc, secret_masked, updated_by, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(provider) DO UPDATE SET
+                client_id = excluded.client_id,
+                client_secret_enc = excluded.client_secret_enc,
+                secret_masked = excluded.secret_masked,
+                updated_by = excluded.updated_by,
+                updated_at = excluded.updated_at
+            """,
+            (provider, client_id, client_secret_enc, secret_masked, actor_email, ts),
+        )
+        conn.execute(
+            """
+            INSERT INTO audit_logs (id, actor_id, actor_email, action, target, outcome, details_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()),
+                actor_id,
+                actor_email,
+                "admin_oauth_config_updated",
+                f"oauth:{provider}",
+                "SUCCESS",
+                json.dumps({"provider": provider, "client_secret": "[REDACTED]"}),
+                ts,
+            ),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True, "provider": provider, "updated_at": ts, "updated_by": actor_email}
+
+    if action == "oauth_config_delete":
+        provider = str(payload.get("provider") or "").strip().lower()
+        if provider not in ("google", "github"):
+            conn.close()
+            return {"ok": False, "error": "Unsupported OAuth provider"}
+        actor_id = str(payload.get("actor_id") or "system")
+        actor_email = str(payload.get("actor_email") or "admin")
+        ts = now_iso()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS oauth_provider_configs (
+                provider TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                client_secret_enc TEXT NOT NULL,
+                secret_masked TEXT NOT NULL DEFAULT '••••••••',
+                updated_by TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("DELETE FROM oauth_provider_configs WHERE provider = ?", (provider,))
+        conn.execute(
+            """
+            INSERT INTO audit_logs (id, actor_id, actor_email, action, target, outcome, details_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()),
+                actor_id,
+                actor_email,
+                "admin_oauth_config_cleared",
+                f"oauth:{provider}",
+                "SUCCESS",
+                json.dumps({"provider": provider}),
+                ts,
+            ),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True, "provider": provider}
+
     conn.close()
     return {"ok": False, "error": f"Unknown bridge action '{action}'"}
 

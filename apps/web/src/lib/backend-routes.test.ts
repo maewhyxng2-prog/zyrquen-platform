@@ -44,6 +44,11 @@ describe("backend proxy route allowlist", () => {
     expect(isAllowedBackendRoute("GET", "admin/overview")).toBe(true);
     expect(isAllowedBackendRoute("GET", "admin/users")).toBe(true);
     expect(isAllowedBackendRoute("GET", "admin/audit-logs")).toBe(true);
+    expect(isAllowedBackendRoute("GET", "admin/oauth/config")).toBe(true);
+    expect(isAllowedBackendRoute("PUT", "admin/oauth/config/google")).toBe(true);
+    expect(isAllowedBackendRoute("PUT", "admin/oauth/config/github")).toBe(true);
+    expect(isAllowedBackendRoute("DELETE", "admin/oauth/config/google")).toBe(true);
+    expect(isAllowedBackendRoute("DELETE", "admin/oauth/config/github")).toBe(true);
     expect(isAllowedBackendRoute("POST", "auth/login")).toBe(true);
     expect(isAllowedBackendRoute("POST", "auth/register")).toBe(true);
     expect(isAllowedBackendRoute("POST", "auth/logout")).toBe(true);
@@ -165,6 +170,9 @@ describe("backend proxy route allowlist", () => {
       ),
     ).toBe(false);
     expect(isAllowedBackendRoute("POST", "admin/overview")).toBe(false);
+    expect(isAllowedBackendRoute("POST", "admin/oauth/config")).toBe(false);
+    expect(isAllowedBackendRoute("PUT", "admin/oauth/config/gitlab")).toBe(false);
+    expect(isAllowedBackendRoute("GET", "admin/oauth/config/google")).toBe(false);
     expect(isAllowedBackendRoute("DELETE", "auth/login")).toBe(false);
     expect(isAllowedBackendRoute("GET", "auth/verify-email")).toBe(false);
     expect(isAllowedBackendRoute("POST", "auth/oauth/github/callback")).toBe(false);

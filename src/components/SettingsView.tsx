@@ -30,6 +30,7 @@ import { runNativeCapabilityBenchmark } from '../lib/benchmark';
 import { serializeTableToTsv } from '../lib/clipboard';
 import { useZyrquenTheme } from '../lib/theme';
 import { MODEL_VARIANTS } from '../types';
+import { AdminOAuthConfigPanel } from './AdminOAuthConfigPanel';
 import { CopyButton } from './CopyButton';
 import { MetricHelpTooltip } from './MetricHelpTooltip';
 import { ModelRegistryModal, type ModelRegistryModalTab } from './ModelRegistryModal';
@@ -3181,6 +3182,8 @@ export function SettingsView({
                   />
                 </div>
               </details>
+
+              <AdminOAuthConfigPanel token={token} />
 
               <details className="rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-5 sm:p-6">
                 <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-semibold text-[var(--color-text)]">

@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { DeveloperNav } from "@/components/DeveloperNav";
 import { Icon } from "@/components/Icon";
 import { MetricHelpTooltip } from "@/components/MetricHelpTooltip";
+import { OAuthProvidersConfigCard } from "@/components/OAuthProvidersConfigCard";
 import { PageHeader } from "@/components/PageHeader";
 import { Panel } from "@/components/Panel";
 import { RegistryCheckpointIntegrityCard } from "@/components/RegistryCheckpointIntegrityCard";
@@ -809,6 +810,8 @@ export default function AdminPage() {
               className="settings-panel-wide"
               refreshSignal={registryRefreshTick}
             />
+
+            <OAuthProvidersConfigCard className="settings-panel-wide" />
 
             <Panel className="settings-panel-wide">
               <div className="panel-heading">

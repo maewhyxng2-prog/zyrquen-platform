@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fetchAndVerifyLatestCheckpoint,
+  resolveIntegrityBadgeState,
   selectLatestRegistryVersion,
   verifyRegistryVersionIntegrity,
 } from "./checkpoint-integrity";
@@ -15,6 +16,7 @@ async function loginAsDemoAdmin(): Promise<string> {
   const res = await handleInMemoryBackendRequest({
     method: "POST",
     path: "auth/login",
+    authorizationHeader: null,
     rawBody: JSON.stringify({
       email: "demo@zyrquen.local",
       password: "zyrquen-demo-pass",
@@ -112,6 +114,56 @@ describe("checkpoint-integrity helpers", () => {
 
     const manual = await verifyRegistryVersionIntegrity("ZYRQUEN-Native-10.0.1");
     expect(manual.verified).toBe(true);
+  });
+
+  it("maps integrity verification states to color-coded Verified and Corrupted badges", () => {
+    expect(
+      resolveIntegrityBadgeState({ loading: true, verification: null }),
+    ).toEqual({ label: "Checking...", tone: "info", icon: "clock" });
+
+    expect(
+      resolveIntegrityBadgeState({
+        loading: false,
+        verification: {
+          version: "v1",
+          status: "Verified",
+          verified: true,
+          checkpoint_path: "artifacts/v1/checkpoint.pt",
+          sidecar_path: "artifacts/v1/checkpoint.pt.sha256",
+          sidecar_present: true,
+          expected_sha256: "a".repeat(64),
+          actual_sha256: "a".repeat(64),
+          checked_at: "2026-11-28T10:00:00.000Z",
+          detail: "Matched",
+        },
+      }),
+    ).toEqual({ label: "Verified", tone: "good", icon: "check-circle" });
+
+    expect(
+      resolveIntegrityBadgeState({
+        loading: false,
+        verification: {
+          version: "v1",
+          status: "Corrupted",
+          verified: false,
+          checkpoint_path: "artifacts/v1/checkpoint.pt",
+          sidecar_path: "artifacts/v1/checkpoint.pt.sha256",
+          sidecar_present: false,
+          expected_sha256: null,
+          actual_sha256: "b".repeat(64),
+          checked_at: "2026-11-28T10:00:00.000Z",
+          detail: "Missing sidecar",
+        },
+      }),
+    ).toEqual({ label: "Corrupted", tone: "bad", icon: "close" });
+
+    expect(
+      resolveIntegrityBadgeState({
+        loading: false,
+        error: "Registry unreachable",
+        verification: null,
+      }),
+    ).toEqual({ label: "Error", tone: "bad", icon: "close" });
   });
 });
 

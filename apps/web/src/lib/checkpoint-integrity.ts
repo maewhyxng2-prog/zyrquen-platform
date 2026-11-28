@@ -130,3 +130,48 @@ export function shortSha256(value?: string | null): string {
   if (value.length <= 16) return value;
   return `${value.slice(0, 12)}…${value.slice(-6)}`;
 }
+
+export type IntegrityBadgeState = {
+  label: "Verified" | "Corrupted" | "Checking..." | "Error" | "Not Available";
+  tone: "good" | "bad" | "info" | "neutral";
+  icon?: "check-circle" | "close" | "clock";
+};
+
+export function resolveIntegrityBadgeState(params: {
+  loading: boolean;
+  error?: string;
+  verification: CheckpointIntegrityResult | null;
+}): IntegrityBadgeState {
+  if (params.loading) {
+    return {
+      label: "Checking...",
+      tone: "info",
+      icon: "clock",
+    };
+  }
+  if (params.error) {
+    return {
+      label: "Error",
+      tone: "bad",
+      icon: "close",
+    };
+  }
+  if (params.verification?.status === "Verified") {
+    return {
+      label: "Verified",
+      tone: "good",
+      icon: "check-circle",
+    };
+  }
+  if (params.verification?.status === "Corrupted") {
+    return {
+      label: "Corrupted",
+      tone: "bad",
+      icon: "close",
+    };
+  }
+  return {
+    label: "Not Available",
+    tone: "neutral",
+  };
+}
