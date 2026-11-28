@@ -510,10 +510,12 @@ def _run_pytorch_seed(
 
     from v2.zyrquen_v2_model import NativeTransformerLMV2, ZyrquenV2Config
 
+    from v2.tpu_backend import resolve_torch_device
+
     seed_root.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(seed)
     random.seed(seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_torch_device()
     tok = ByteTokenizer()
 
     class TinyBaselineLM(nn.Module):
@@ -816,7 +818,9 @@ def _run_pytorch_suite(
     if not seed_list:
         raise ValueError("At least one seed must be provided")
 
-    device_type = "cuda" if torch.cuda.is_available() else "cpu"
+    from v2.tpu_backend import resolve_torch_device
+
+    device_type = str(resolve_torch_device())
     per_seed_runs: List[Dict[str, Any]] = []
     for seed in seed_list:
         per_seed_runs.append(

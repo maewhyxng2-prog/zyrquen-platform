@@ -225,8 +225,10 @@ def _train_and_eval_baseline_pytorch(
             mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=x.device)
             return self.head(self.enc(h, mask=mask, is_causal=True))
 
+    from v2.tpu_backend import resolve_torch_device
+
     torch.manual_seed(seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_torch_device()
     tok = ByteTokenizer()
     base_model = TinyBaselineLM(vocab_size=tok.vocab_size).to(device)
     base_opt = torch.optim.AdamW(base_model.parameters(), lr=1e-3)
@@ -294,8 +296,10 @@ def stage_train(
         import torch
         from v2.zyrquen_v2_model import NativeTransformerLMV2, ZyrquenV2Config
 
+        from v2.tpu_backend import resolve_torch_device
+
         torch.manual_seed(seed)
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = resolve_torch_device()
         base_reg, base_unseen = _train_and_eval_baseline_pytorch(
             p1_train, p2_train, reg_tasks, unseen_tasks, seed=seed, steps=max(4, steps_p1 + steps_p2)
         )

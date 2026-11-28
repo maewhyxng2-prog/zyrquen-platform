@@ -301,8 +301,10 @@ def _run_pytorch_experiment(
             out = self.enc(h, mask=mask, is_causal=True)
             return self.head(out)
 
+    from v2.tpu_backend import resolve_torch_device
+
     torch.manual_seed(42)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_torch_device()
     tok = ByteTokenizer()
     run_stamp = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
     work_dir = Path("/tmp/zyrquen_v2_exp") / f"torch_{run_stamp}"

@@ -433,9 +433,9 @@ class ContinualTrainerV2:
         device: Optional[Any] = None,
     ) -> None:
         torch, _ = _require_torch()
-        self.device = device or torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu"
-        )
+        from v2.tpu_backend import resolve_torch_device
+
+        self.device = resolve_torch_device(device)
         self.model = model.to(self.device)
         self.tokenizer = tokenizer
         self.base_lr = lr
@@ -601,6 +601,9 @@ class ContinualTrainerV2:
             total_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), grad_clip)
             self.optimizer.step()
+            from v2.tpu_backend import tpu_sync_step
+
+            tpu_sync_step(self.device)
             self.scheduler.step()
             self.global_step += 1
             last_loss = float(ce_loss.item())
@@ -620,10 +623,12 @@ class ContinualTrainerV2:
                 f"Refusing to overwrite existing checkpoint: {out_path}"
             )
         out_path.parent.mkdir(parents=True, exist_ok=True)
+        from v2.tpu_backend import state_dict_to_cpu
+
         payload = {
             "schema": "zyrquen.v2.checkpoint",
             "config": self.model.cfg.__dict__,
-            "model_state_dict": self.model.state_dict(),
+            "model_state_dict": state_dict_to_cpu(self.model.state_dict()),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict(),
             "replay_buffer": self.replay_buffer,
@@ -648,6 +653,7 @@ class ContinualTrainerV2:
         device: Optional[Any] = None,
     ) -> "ContinualTrainerV2":
         torch, _ = _require_torch()
+        from v2.tpu_backend import resolve_torch_device
         from v2.zyrquen_v2_model import NativeTransformerLMV2, ZyrquenV2Config
 
         ckpt_path = Path(path)
@@ -656,8 +662,8 @@ class ContinualTrainerV2:
             if actual != expected_sha256:
                 raise ValueError("Checkpoint SHA-256 verification failed")
 
-        dev = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        ckpt = torch.load(ckpt_path, map_location=dev)
+        dev = resolve_torch_device(device)
+        ckpt = torch.load(ckpt_path, map_location="cpu")
         cfg = ZyrquenV2Config(**ckpt["config"])
         model = NativeTransformerLMV2(cfg)
         model.load_state_dict(ckpt["model_state_dict"], strict=True)

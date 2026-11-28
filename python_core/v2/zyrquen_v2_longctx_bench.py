@@ -396,10 +396,12 @@ def _run_pytorch_longctx(
             )
             return self.head(self.enc(h, mask=mask, is_causal=True))
 
+    from v2.tpu_backend import resolve_torch_device
+
     t0 = time.time()
     torch.manual_seed(101)
     random.seed(101)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_torch_device()
     tok = ByteTokenizer()
 
     def _loss_over_texts(
