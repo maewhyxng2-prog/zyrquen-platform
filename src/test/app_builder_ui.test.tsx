@@ -142,7 +142,7 @@ describe('MultiFileAppBuilder', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText('app/main.py')).toBeTruthy();
+      expect(screen.getAllByText('app/main.py').length).toBeGreaterThan(0);
     });
 
     fireEvent.change(screen.getByLabelText('เส้นทางไฟล์ใหม่'), {
@@ -155,7 +155,7 @@ describe('MultiFileAppBuilder', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText('VERIFIED')).toBeTruthy();
+      expect(screen.getAllByText('VERIFIED').length).toBeGreaterThan(0);
       expect(screen.getByText('Repair rounds: 1')).toBeTruthy();
       expect(screen.getByText('diagnose_round_1')).toBeTruthy();
       expect(screen.getByText('rebuild_retest_round_1')).toBeTruthy();

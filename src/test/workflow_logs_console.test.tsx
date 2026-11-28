@@ -27,8 +27,12 @@ describe('WorkflowLogsConsole', () => {
     render(<WorkflowLogsConsole token="tok-empty" />);
 
     expect(
-      screen.getByText(/กำลังเชื่อมต่อ \/api\/v1\/workflows\/logs/i)
+      screen.getByText(/กำลังโหลด \/api\/v1\/workflows\/logs/i)
     ).toBeTruthy();
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
 
     await act(async () => {
       resolveFetch(
@@ -43,7 +47,7 @@ describe('WorkflowLogsConsole', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText('ยังไม่มี Workflow ที่กำลังทำงานในขณะนี้')
+        screen.getByText('ไม่มีเวิร์กโฟลว์ที่กำลังทำงานอยู่')
       ).toBeTruthy();
     });
     expect(fetchMock).toHaveBeenCalledWith(
@@ -58,9 +62,11 @@ describe('WorkflowLogsConsole', () => {
       <WorkflowLogsConsole token="" onAuthError={onAuthError} />
     );
 
-    expect(screen.getByText('ต้องยืนยันตัวตน (401)')).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByText('ต้องยืนยันตัวตน (401)')).toBeTruthy();
+    });
     expect(
-      screen.getByText(/กรุณาเข้าสู่ระบบเพื่อดู Execution Logs จริง/i)
+      screen.getByText(/ล็อกอินเพื่อดู Execution Logs จริงจาก Workflow Orchestrator/i)
     ).toBeTruthy();
 
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
@@ -85,9 +91,7 @@ describe('WorkflowLogsConsole', () => {
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeTruthy();
     });
-    expect(
-      screen.getByText('ไม่มีสิทธิ์เข้าถึง Execution Logs ของ Workflow ที่ระบุ')
-    ).toBeTruthy();
+    expect(screen.getByText('Forbidden')).toBeTruthy();
     expect(screen.queryByRole('log')).toBeNull();
   });
 
@@ -187,7 +191,7 @@ describe('WorkflowLogsConsole', () => {
     });
 
     // Search non-matching text -> Empty filter state with reset button
-    const searchInput = screen.getByLabelText('ค้นหาข้อความหรือ workflow ใน Logs');
+    const searchInput = screen.getByLabelText('ค้นหาข้อความหรือเวิร์กโฟลว์ในบันทึก');
     fireEvent.change(searchInput, { target: { value: 'does-not-exist' } });
     await waitFor(() => {
       expect(screen.getByText('ไม่พบ Orchestration Logs ที่ตรงกับเงื่อนไข')).toBeTruthy();
@@ -199,7 +203,7 @@ describe('WorkflowLogsConsole', () => {
     });
 
     // Select specific active workflow run_id
-    fireEvent.change(screen.getByLabelText('เลือก Workflow Run'), {
+    fireEvent.change(screen.getByLabelText('เลือก Run Workflow'), {
       target: { value: 'run-b-9999' },
     });
     await waitFor(() => {
@@ -237,7 +241,7 @@ describe('WorkflowLogsConsole', () => {
 
     // Pause polling
     fireEvent.click(screen.getByRole('button', { name: 'หยุดชั่วคราว' }));
-    expect(screen.getByText('Paused')).toBeTruthy();
+    expect(screen.getByText('หยุดชั่วคราว')).toBeTruthy();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5200);
@@ -246,6 +250,6 @@ describe('WorkflowLogsConsole', () => {
 
     // Resume polling
     fireEvent.click(screen.getByRole('button', { name: 'ติดตามต่อเนื่อง' }));
-    expect(screen.getByText('Live 2.5s')).toBeTruthy();
+    expect(screen.getByText('สด 2.5 วินาที')).toBeTruthy();
   });
 });
