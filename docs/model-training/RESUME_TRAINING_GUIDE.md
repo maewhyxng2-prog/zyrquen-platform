@@ -53,6 +53,10 @@
 
 ## 4. คำสั่ง CLI สำหรับ Terminal หรือ Colab Shell (`!` นำหน้าเมื่ออยู่ใน Colab)
 
+- ตรวจสถานะ Colab TPU / TorchTPU / CPU Runtime ก่อนฝึก (ไม่ติดตั้งแพ็กเกจเพิ่ม):
+  ```bash
+  !python3 tools/tpu_probe.py
+  ```
 - ตรวจ SHA-256 ตาม PR #56 manifest และคืนค่าสถานะ Optimizer/Trainer จาก Step 6000:
   ```bash
   !python3 tools/resume_training.py \
@@ -60,7 +64,7 @@
     --step 6000 \
     --verify-only
   ```
-- ฝึกต่อจาก Step 6000 (`v2_teacher_transfer_run5000_step6000.json.gz`) ไปยัง Step 7000:
+- ฝึกต่อจาก Step 6000 (`v2_teacher_transfer_run5000_step6000.json.gz`) ไปยัง Step 7000 (Pure Native V2 ทำงานได้ทั้งเมื่อ Colab จัดสรร `v5e-1`/`v6e-1 TPU` และ CPU):
   ```bash
   !python3 tools/resume_training.py \
     --out-dir /content/zyrquen-resume/checkpoints \

@@ -31,6 +31,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from v2.zyrquen_v2_pure import PureContinualTrainerV2  # noqa: E402
 from v2.zyrquen_v2_trainer import ByteTokenizer  # noqa: E402
+from tools.tpu_probe import detect_runtime_accelerator, format_runtime_report  # noqa: E402
 
 DEFAULT_OUT_DIR = Path("/content/zyrquen-resume/checkpoints")
 
@@ -279,7 +280,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--val-file", type=Path, default=None, help="Optional held-out validation JSON/JSONL path")
     parser.add_argument("--run-prefix", type=str, default=None, help="Output checkpoint filename prefix")
     parser.add_argument("--verify-only", action="store_true", help="Only verify SHA-256 and state restoration")
+    parser.add_argument("--check-tpu", action="store_true", help="Only print Colab TPU / TorchTPU / CPU runtime diagnostics")
     args = parser.parse_args(argv)
+
+    runtime_info = detect_runtime_accelerator()
+    if args.check_tpu:
+        print(format_runtime_report(runtime_info))
+        return 0
+
+    print(
+        f"[0/3] Runtime           : python={runtime_info['python_version']} | "
+        f"torch={runtime_info['torch_version'] or 'none'} | "
+        f"accelerator={runtime_info['accelerator']} | "
+        f"devices={runtime_info['device_count']} | "
+        f"tpu_addr={runtime_info['tpu_address']}"
+    )
 
     restored = resume_from_checkpoint(step=args.step, out_dir=args.out_dir)
     trainer: PureContinualTrainerV2 = restored["trainer"]
