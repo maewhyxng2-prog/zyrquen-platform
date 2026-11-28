@@ -42,32 +42,32 @@
 
 1. เปิด `experiments_native_training_lab.ipynb` บน Google Colab
 2. รัน **Cell 1** เพื่อตั้งค่า `REPO_DIR`, `OUT_DIR` และนำเข้าฟังก์ชันจาก `python_core` และ `tools`
-3. รัน **Cell 2** (`verify_all_pr56_checkpoints` + `verify_checkpoint_against_pr56_manifest`) เพื่อตรวจความถูกต้องของ SHA-256 ก่อนโหลด
+3. รัน **Cell 2** (`verify_checkpoint_hash(step)` และ `verify_all_pr56_checkpoints`) เพื่อตรวจความถูกต้องของ SHA-256 ก่อนโหลด
 4. ใน **Cell 3** เลือก `TARGET_CHECKPOINT`:
-   - เลือก `"v2_continued_step4025.json.gz"` เพื่อฝึกต่อจากจุด Step 4025
-   - หรือเลือก `"latest_auto"` / `"v2_teacher_transfer_run5000_step6000.json.gz"` เพื่อฝึกต่อจาก Step 6000
+   - ค่าเริ่มต้น `"v2_teacher_transfer_run5000_step6000.json.gz"` เพื่อฝึกต่อจาก Step 6000 ไปยัง Step 7000
+   - หรือเลือก `"v2_continued_step4025.json.gz"` / `"v2_teacher_transfer_step5000.json.gz"` / `"latest_auto"`
 5. รัน **Cell 4** เพื่อทดสอบ Step 6000 เทียบ Step 5000 บนชุด `transfer_val` (กำหนด `VAL_FILE`)
-6. รัน **Cell 5** เพื่อฝึกต่อทีละ 25 steps พร้อมสร้าง `.sha256` sidecar อัตโนมัติ และรัน **Cell 6** เพื่อตรวจความสมบูรณ์หลังฝึกจบ
+6. รัน **Cell 5** (`TARGET_STEP = 7000`) เพื่อฝึกต่อทีละ 25 steps พร้อมสร้าง `.sha256` sidecar อัตโนมัติ และรัน **Cell 6** เพื่อตรวจความสมบูรณ์หลังฝึกจบ
 
 ---
 
 ## 4. คำสั่ง CLI สำหรับ Terminal หรือ Colab Shell (`!` นำหน้าเมื่ออยู่ใน Colab)
 
-- ตรวจ SHA-256 และ fresh-runtime reload จาก `v2_continued_step4025.json.gz`:
+- ตรวจ SHA-256 ตาม PR #56 manifest และคืนค่าสถานะ Optimizer/Trainer จาก Step 6000:
   ```bash
-  !python3 tools/resume_v2_lab.py \
+  !python3 tools/resume_training.py \
     --out-dir /content/zyrquen-resume/checkpoints \
-    --checkpoint /content/zyrquen-resume/checkpoints/v2_continued_step4025.json.gz \
+    --step 6000 \
     --verify-only
   ```
-- ฝึกต่อจาก `v2_continued_step4025.json.gz` ไปยัง Step 5000:
+- ฝึกต่อจาก Step 6000 (`v2_teacher_transfer_run5000_step6000.json.gz`) ไปยัง Step 7000:
   ```bash
-  !python3 tools/resume_v2_lab.py \
+  !python3 tools/resume_training.py \
     --out-dir /content/zyrquen-resume/checkpoints \
-    --checkpoint /content/zyrquen-resume/checkpoints/v2_continued_step4025.json.gz \
-    --train-file /path/to/train.jsonl \
-    --target-step 5000 \
-    --chunk-steps 25
+    --step 6000 \
+    --target-step 7000 \
+    --chunk-steps 25 \
+    --train-file /path/to/train.jsonl
   ```
 - โหลด Step 6000 และวัดผลเทียบ Step 5000 บนชุด held-out transfer-validation:
   ```bash
