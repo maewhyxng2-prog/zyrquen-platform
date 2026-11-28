@@ -482,6 +482,7 @@ export function MemoryWorkflowsView({ token, user }: MemoryWorkflowsViewProps) {
   const [launchingMission, setLaunchingMission] = useState(false);
 
   const [runningGroupId, setRunningGroupId] = useState<string | null>(null);
+  const [decidingRunId, setDecidingRunId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -638,6 +639,25 @@ export function MemoryWorkflowsView({ token, user }: MemoryWorkflowsViewProps) {
       setError(err instanceof ApiError ? err.message : 'เรียกทำงานเวิร์กโฟลว์ไม่สำเร็จ');
     } finally {
       setRunningGroupId(null);
+    }
+  }
+
+  async function handleWorkflowDecision(runId: string, decision: 'approve' | 'reject') {
+    setDecidingRunId(runId);
+    setError(null);
+    try {
+      const res = await apiRequest<{ run: WorkflowRun }>(`/api/workflows/runs/${runId}/decide`, {
+        method: 'POST',
+        token,
+        body: { decision },
+      });
+      if (res.run) {
+        setRuns((prev) => prev.map((item) => (item.id === runId ? res.run : item)));
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'ไม่สามารถดำเนินการอนุมัติเวิร์กโฟลว์ได้');
+    } finally {
+      setDecidingRunId(null);
     }
   }
 
@@ -1130,6 +1150,28 @@ export function MemoryWorkflowsView({ token, user }: MemoryWorkflowsViewProps) {
                           <span className="text-xs text-[var(--color-text-muted)] tabular-nums">
                             {new Date(run.created_at).toLocaleString('th-TH')}
                           </span>
+                          {run.status === 'PENDING_APPROVAL' && user.role === 'admin' && (
+                            <>
+                              <button
+                                type="button"
+                                disabled={decidingRunId === run.id}
+                                onClick={() => void handleWorkflowDecision(run.id, 'approve')}
+                                className="inline-flex h-7 items-center gap-1 rounded-lg bg-[var(--color-accent)] px-2.5 text-[11px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                              >
+                                <CheckCircle2 className="h-3 w-3" />
+                                <span>{decidingRunId === run.id ? 'กำลังดำเนินการ...' : 'อนุมัติและทำต่อ'}</span>
+                              </button>
+                              <button
+                                type="button"
+                                disabled={decidingRunId === run.id}
+                                onClick={() => void handleWorkflowDecision(run.id, 'reject')}
+                                className="inline-flex h-7 items-center gap-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 text-[11px] font-medium text-[var(--color-danger)] transition-colors hover:bg-[var(--color-danger-bg)] disabled:opacity-50"
+                              >
+                                <XCircle className="h-3 w-3" />
+                                <span>ปฏิเสธ</span>
+                              </button>
+                            </>
+                          )}
                           <CopyButton
                             getText={() => {
                               const lines = [

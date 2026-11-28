@@ -562,6 +562,39 @@ def _read_confined_text(candidate: Path, root: Path) -> str | None:
         return None
 
 
+def _run_model_checkpoint_verification(version: str) -> dict:
+    if not _SAFE_VERSION_RE.match(version):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid model version identifier.",
+        )
+    registry, info = _get_model_registry()
+    if registry is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=info)
+    try:
+        integrity = registry.verify_checkpoint_integrity(version)
+        compat = registry.check_compatibility(version)
+        return {**integrity, "compatibility": compat}
+    except RegistryError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.get("/v1/models/registry/{version}/verify")
+def get_model_checkpoint_verification(
+    version: str,
+    _: User = Depends(get_current_user),
+):
+    return _run_model_checkpoint_verification(version)
+
+
+@router.post("/v1/models/registry/{version}/verify")
+def verify_model_checkpoint(
+    version: str,
+    _: User = Depends(get_current_user),
+):
+    return _run_model_checkpoint_verification(version)
+
+
 @router.get("/v1/models/registry/{version}/artifacts/manifest")
 def download_model_manifest(
     version: str,

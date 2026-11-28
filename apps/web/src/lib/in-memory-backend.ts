@@ -1,5 +1,8 @@
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, resolve, sep } from "node:path";
 import type {
+  CheckpointIntegrityResult,
   NativeHealth,
   V10ClosureAudit,
   WorkflowActiveJobSummary,
@@ -2974,6 +2977,209 @@ export async function handleInMemoryBackendRequest(options: {
         },
         compatibility: record.compatibility,
       },
+    };
+  }
+
+  const verifyMatch = path.match(/^v1\/models\/registry\/([^/]+)\/verify$/i);
+  if ((method === "GET" || method === "POST") && verifyMatch) {
+    let versionName: string;
+    try {
+      versionName = decodeURIComponent(verifyMatch[1]);
+    } catch {
+      return { status: 400, body: { detail: "Invalid model version identifier." } };
+    }
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(versionName)) {
+      return { status: 400, body: { detail: "Invalid model version identifier." } };
+    }
+
+    const checkedAt = new Date().toISOString();
+    const configuredRoot = process.env.ZYRQUEN_MODEL_REGISTRY_ROOT?.trim();
+
+    if (configuredRoot) {
+      let resolvedRoot: string;
+      try {
+        if (lstatSync(configuredRoot).isSymbolicLink()) {
+          return { status: 503, body: { detail: "Model registry root cannot be a symlink." } };
+        }
+        resolvedRoot = realpathSync(configuredRoot);
+        if (!statSync(resolvedRoot).isDirectory()) {
+          return { status: 503, body: { detail: `Model registry root is not a directory: ${configuredRoot}` } };
+        }
+      } catch {
+        return { status: 503, body: { detail: `Model registry root does not exist: ${configuredRoot}` } };
+      }
+
+      const resolveConfinedFile = (relPath: string | null | undefined): { ok: true; resolved: string } | { ok: false; reason: string } => {
+        if (typeof relPath !== "string" || !relPath.trim()) {
+          return { ok: false, reason: "Missing relative artifact path." };
+        }
+        if (isAbsolute(relPath) || relPath.split(/[\\/]/).includes("..")) {
+          return { ok: false, reason: "Artifact path escapes registry root." };
+        }
+        const candidate = resolve(resolvedRoot, relPath);
+        try {
+          const lst = lstatSync(candidate);
+          if (lst.isSymbolicLink()) {
+            return { ok: false, reason: `Refusing symlinked file: ${relPath}` };
+          }
+          const real = realpathSync(candidate);
+          if (!real.startsWith(resolvedRoot + sep)) {
+            return { ok: false, reason: "Artifact path escapes registry root." };
+          }
+          if (!statSync(real).isFile()) {
+            return { ok: false, reason: `Artifact is not a regular file: ${relPath}` };
+          }
+          return { ok: true, resolved: real };
+        } catch {
+          return { ok: false, reason: `File not found: ${relPath}` };
+        }
+      };
+
+      const regFileCheck = resolveConfinedFile("registry.json");
+      if (!regFileCheck.ok) {
+        return { status: 503, body: { detail: "registry.json is missing or invalid." } };
+      }
+
+      let regJson: { versions?: Record<string, Record<string, unknown>> };
+      try {
+        regJson = JSON.parse(readFileSync(regFileCheck.resolved, "utf-8")) as {
+          versions?: Record<string, Record<string, unknown>>;
+        };
+      } catch {
+        return { status: 503, body: { detail: "registry.json is unreadable." } };
+      }
+
+      const diskRec = regJson.versions?.[versionName];
+      if (!diskRec || typeof diskRec !== "object") {
+        return { status: 404, body: { detail: `unknown version: ${versionName}` } };
+      }
+
+      const ckptSection =
+        diskRec.checkpoint && typeof diskRec.checkpoint === "object"
+          ? (diskRec.checkpoint as { path?: unknown; sha256_path?: unknown; sha256?: unknown })
+          : null;
+      const ckptRel = typeof ckptSection?.path === "string" ? ckptSection.path : null;
+      const recordedSha = typeof ckptSection?.sha256 === "string" ? ckptSection.sha256 : null;
+      const sidecarRel =
+        typeof ckptSection?.sha256_path === "string" && ckptSection.sha256_path.trim()
+          ? ckptSection.sha256_path
+          : ckptRel
+            ? `${ckptRel}.sha256`
+            : null;
+
+      const failDisk = (
+        detail: string,
+        opts?: { sidecarPresent?: boolean; expectedSha256?: string | null; actualSha256?: string | null },
+      ): InMemoryResponse => ({
+        status: 200,
+        body: {
+          version: versionName,
+          status: "Corrupted",
+          verified: false,
+          checkpoint_path: ckptRel,
+          sidecar_path: sidecarRel,
+          sidecar_present: opts?.sidecarPresent ?? false,
+          expected_sha256: opts?.expectedSha256 ?? null,
+          recorded_sha256: recordedSha,
+          actual_sha256: opts?.actualSha256 ?? null,
+          checked_at: checkedAt,
+          detail,
+        } satisfies CheckpointIntegrityResult,
+      });
+
+      const ckptCheck = resolveConfinedFile(ckptRel);
+      if (!ckptCheck.ok) {
+        return failDisk(ckptCheck.reason);
+      }
+
+      const sidecarCheck = resolveConfinedFile(sidecarRel);
+      if (!sidecarCheck.ok) {
+        return failDisk(sidecarCheck.reason, { sidecarPresent: false });
+      }
+
+      let expectedSha = "";
+      try {
+        const rawSidecar = readFileSync(sidecarCheck.resolved, "utf-8").trim();
+        const firstToken = rawSidecar.split(/\s+/)[0] ?? "";
+        if (!/^[0-9a-fA-F]{64}$/.test(firstToken)) {
+          return failDisk("Invalid SHA-256 hex digest in .sha256 sidecar file.", {
+            sidecarPresent: true,
+          });
+        }
+        expectedSha = firstToken.toLowerCase();
+      } catch {
+        return failDisk("Unable to read .sha256 sidecar file.", { sidecarPresent: true });
+      }
+
+      const actualSha = createHash("sha256")
+        .update(readFileSync(ckptCheck.resolved))
+        .digest("hex")
+        .toLowerCase();
+
+      const digestsMatch = timingSafeEqual(
+        Buffer.from(actualSha, "hex"),
+        Buffer.from(expectedSha, "hex"),
+      );
+      if (!digestsMatch) {
+        return failDisk("Checkpoint SHA-256 mismatch against .sha256 sidecar file.", {
+          sidecarPresent: true,
+          expectedSha256: expectedSha,
+          actualSha256: actualSha,
+        });
+      }
+
+      if (recordedSha && /^[0-9a-fA-F]{64}$/.test(recordedSha)) {
+        const recordedMatches = timingSafeEqual(
+          Buffer.from(actualSha, "hex"),
+          Buffer.from(recordedSha.toLowerCase(), "hex"),
+        );
+        if (!recordedMatches) {
+          return failDisk("Checkpoint SHA-256 mismatch against registry metadata digest.", {
+            sidecarPresent: true,
+            expectedSha256: expectedSha,
+            actualSha256: actualSha,
+          });
+        }
+      }
+
+      return {
+        status: 200,
+        body: {
+          version: versionName,
+          status: "Verified",
+          verified: true,
+          checkpoint_path: ckptRel,
+          sidecar_path: sidecarRel,
+          sidecar_present: true,
+          expected_sha256: expectedSha,
+          recorded_sha256: recordedSha ? recordedSha.toLowerCase() : null,
+          actual_sha256: actualSha,
+          checked_at: checkedAt,
+          detail: "Checkpoint SHA-256 matches .sha256 sidecar file.",
+        } satisfies CheckpointIntegrityResult,
+      };
+    }
+
+    const record = store.modelVersions.find((m) => m.version === versionName);
+    if (!record) return { status: 404, body: { detail: "Model version not found" } };
+
+    return {
+      status: 200,
+      body: {
+        version: record.version,
+        status: "Corrupted",
+        verified: false,
+        checkpoint_path: `artifacts/${record.version}/checkpoint.pt`,
+        sidecar_path: `artifacts/${record.version}/checkpoint.pt.sha256`,
+        sidecar_present: false,
+        expected_sha256: null,
+        recorded_sha256: record.checkpoint.sha256,
+        actual_sha256: null,
+        checked_at: checkedAt,
+        detail:
+          "Checkpoint .sha256 sidecar file is not available on disk in Node.js preview mode (fail-closed).",
+        compatibility: record.compatibility,
+      } satisfies CheckpointIntegrityResult,
     };
   }
 

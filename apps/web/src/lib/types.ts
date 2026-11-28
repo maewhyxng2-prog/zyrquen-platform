@@ -36,18 +36,62 @@ export type NativeHealth = {
 
 export type NativeModelVariant = {
   version: string;
+  parent?: string | null;
   lifecycle_status?: string;
+  created_at?: string;
   frozen?: boolean;
+  checkpoint?: {
+    path?: string;
+    sha256_path?: string;
+    step?: number;
+    sha256?: string;
+    size_bytes?: number;
+  } | null;
   compatibility?: {
+    version?: string;
     compatible?: boolean;
+    checks?: {
+      artifacts_sha256?: boolean;
+      tokenizer_sha256?: boolean;
+      architecture_config?: boolean;
+    };
+    reasons?: string[];
   } | null;
 };
 
 export type NativeModelRegistryResponse = {
   configured: boolean;
+  detail?: string;
+  root?: string;
   active_version: string | null;
   registered_count?: number;
   versions: NativeModelVariant[];
+};
+
+export type CheckpointIntegrityStatus = "Verified" | "Corrupted";
+
+export type CheckpointIntegrityResult = {
+  version: string;
+  status: CheckpointIntegrityStatus;
+  verified: boolean;
+  checkpoint_path: string | null;
+  sidecar_path: string | null;
+  sidecar_present: boolean;
+  expected_sha256: string | null;
+  recorded_sha256?: string | null;
+  actual_sha256: string | null;
+  checked_at: string;
+  detail: string;
+  compatibility?: {
+    version: string;
+    compatible: boolean;
+    checks: {
+      artifacts_sha256: boolean;
+      tokenizer_sha256: boolean;
+      architecture_config: boolean;
+    };
+    reasons: string[];
+  } | null;
 };
 
 export type Session = {
