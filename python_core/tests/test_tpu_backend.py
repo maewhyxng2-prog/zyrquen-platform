@@ -119,6 +119,48 @@ class TpuBackendTests(unittest.TestCase):
             self.assertEqual(info["tpu_accelerator_type"], "v5e-1")
             self.assertTrue(info["pure_native_v2_ready"])
 
+    def test_tpu_probe_survives_xla_abi_mismatch(self) -> None:
+        class BrokenXla(types.ModuleType):
+            def __getattr__(self, name: str):
+                raise ImportError("_XLAC.cpython-313-x86_64-linux-gnu.so: undefined symbol")
+
+        fake_torch = types.SimpleNamespace(
+            __version__="2.14.1+cpu",
+            cuda=types.SimpleNamespace(is_available=lambda: False),
+        )
+        broken_mod = BrokenXla("torch_xla")
+        with mock.patch.dict(
+            sys.modules,
+            {
+                "torch": fake_torch,
+                "torch_xla": broken_mod,
+                "torch_xla.runtime": broken_mod,
+                "torch_xla.core": broken_mod,
+                "torch_xla.core.xla_model": broken_mod,
+            },
+        ):
+            info = detect_runtime_accelerator()
+            self.assertEqual(info["torch_version"], "2.14.1+cpu")
+            self.assertIn("ImportError", info["xla_error"])
+            self.assertTrue(info["pure_native_v2_ready"])
+
+    def test_load_texts_supports_dict_and_gzip(self) -> None:
+        import gzip
+        import json
+        import tempfile
+        from tools.resume_v2_lab import load_texts_from_file
+
+        with tempfile.TemporaryDirectory() as tmp:
+            p1 = Path(tmp) / "independent_eval_v1.json"
+            p1.write_text(json.dumps({"name": "eval", "texts": ["alpha", "beta"]}), encoding="utf-8")
+            self.assertEqual(load_texts_from_file(p1), ["alpha", "beta"])
+
+            p2 = Path(tmp) / "transfer.json.gz"
+            with gzip.open(p2, "wt", encoding="utf-8") as fh:
+                json.dump({"train": [{"text": "t1"}], "val": [{"text": "v1"}]}, fh)
+            self.assertEqual(load_texts_from_file(p2, split="val"), ["v1"])
+            self.assertEqual(load_texts_from_file(p2, split="train"), ["t1"])
+
 
 if __name__ == "__main__":
     unittest.main()

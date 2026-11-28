@@ -610,6 +610,7 @@ def _run_seed_pytorch(
 ) -> Dict[str, Any]:
     import torch
     import torch.nn.functional as F
+    from v2.tpu_backend import resolve_torch_device
     from v2.zyrquen_v2_model import NativeTransformerLMV2, ZyrquenV2Config
 
     ckpt_dir = seed_dir / "checkpoints"
@@ -617,7 +618,7 @@ def _run_seed_pytorch(
 
     torch.manual_seed(seed)
     random.seed(seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_torch_device()
     tok = ByteTokenizer()
 
     stage_texts = {

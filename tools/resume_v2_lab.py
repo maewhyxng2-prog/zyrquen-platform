@@ -13,6 +13,7 @@ Policy:
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import re
@@ -120,31 +121,76 @@ def find_latest_checkpoint(out_dir: Path) -> Tuple[Path, Optional[str]]:
     return latest, resolve_expected_sha256(latest)
 
 
-def load_texts_from_file(path: Path) -> List[str]:
+def _extract_text_entry(item: Any) -> Optional[str]:
+    if isinstance(item, str):
+        return item if item.strip() else None
+    if isinstance(item, dict):
+        for key in ("full_text", "text", "content"):
+            val = item.get(key)
+            if isinstance(val, str) and val.strip():
+                return val
+        prompt = item.get("prompt") or item.get("instruction") or item.get("input")
+        if isinstance(prompt, str):
+            for ans_key in ("response", "completion", "reference_solution", "output", "answer", "target"):
+                ans = item.get(ans_key)
+                if isinstance(ans, str):
+                    return f"{prompt}\n{ans}" if ans else prompt
+    return None
+
+
+def _read_text_maybe_gzip(path: Path) -> str:
+    if path.name.lower().endswith(".gz"):
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            return fh.read()
+    return path.read_text(encoding="utf-8")
+
+
+def load_texts_from_file(path: Path, split: Optional[str] = None) -> List[str]:
     if not path.is_file():
         raise FileNotFoundError(f"Text dataset file not found: {path}")
+
+    raw_text = _read_text_maybe_gzip(path)
+    lower_name = path.name.lower()
     texts: List[str] = []
-    if path.suffix.lower() == ".jsonl":
-        for line in path.read_text(encoding="utf-8").splitlines():
+
+    if lower_name.endswith(".jsonl") or lower_name.endswith(".jsonl.gz"):
+        for line in raw_text.splitlines():
             line = line.strip()
             if not line:
                 continue
-            obj = json.loads(line)
-            if isinstance(obj, str):
-                texts.append(obj)
-            elif isinstance(obj, dict):
-                if isinstance(obj.get("text"), str):
-                    texts.append(obj["text"])
-                elif isinstance(obj.get("prompt"), str) and isinstance(obj.get("response"), str):
-                    texts.append(f"{obj['prompt']}\n{obj['response']}")
+            extracted = _extract_text_entry(json.loads(line))
+            if extracted is not None:
+                texts.append(extracted)
     else:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(raw, list):
-            for item in raw:
-                if isinstance(item, str):
-                    texts.append(item)
-                elif isinstance(item, dict) and isinstance(item.get("text"), str):
-                    texts.append(item["text"])
+        raw = json.loads(raw_text)
+        entries: Any = raw
+        if isinstance(raw, dict):
+            if split is not None:
+                if split not in raw:
+                    raise KeyError(
+                        f"Split '{split}' not found in {path.name}; available keys: {sorted(raw.keys())}"
+                    )
+                entries = raw[split]
+            else:
+                entries = None
+                for key in ("texts", "examples", "samples", "items", "records", "data", "prompts", "corpus"):
+                    if key in raw and isinstance(raw[key], list):
+                        entries = raw[key]
+                        break
+                if entries is None:
+                    list_keys = [k for k, v in raw.items() if isinstance(v, list)]
+                    if len(list_keys) == 1:
+                        entries = raw[list_keys[0]]
+                    else:
+                        raise ValueError(
+                            f"Dict dataset {path.name} has keys {sorted(raw.keys())}; pass split explicitly."
+                        )
+        if isinstance(entries, list):
+            for item in entries:
+                extracted = _extract_text_entry(item)
+                if extracted is not None:
+                    texts.append(extracted)
+
     if not texts:
         raise ValueError(f"No usable training/validation text entries found in {path}")
     return texts

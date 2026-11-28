@@ -236,34 +236,10 @@ def resume_from_checkpoint(
     }
 
 
-def load_texts(path: Path) -> List[str]:
-    if not path.is_file():
-        raise FileNotFoundError(f"Dataset file not found: {path}")
-    texts: List[str] = []
-    if path.suffix.lower() == ".jsonl":
-        for raw_line in path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            obj = json.loads(line)
-            if isinstance(obj, str):
-                texts.append(obj)
-            elif isinstance(obj, dict):
-                if isinstance(obj.get("text"), str):
-                    texts.append(obj["text"])
-                elif isinstance(obj.get("prompt"), str) and isinstance(obj.get("response"), str):
-                    texts.append(f"{obj['prompt']}\n{obj['response']}")
-    else:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(payload, list):
-            for item in payload:
-                if isinstance(item, str):
-                    texts.append(item)
-                elif isinstance(item, dict) and isinstance(item.get("text"), str):
-                    texts.append(item["text"])
-    if not texts:
-        raise ValueError(f"No usable text entries found in {path}")
-    return texts
+def load_texts(path: Path, split: Optional[str] = None) -> List[str]:
+    from tools.resume_v2_lab import load_texts_from_file
+
+    return load_texts_from_file(path, split=split)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -276,8 +252,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--chunk-steps", type=int, default=25, help="Checkpoint save interval in steps")
     parser.add_argument("--batch-size", type=int, default=3)
     parser.add_argument("--replay-ratio", type=float, default=0.5)
-    parser.add_argument("--train-file", type=Path, default=None, help="Training dataset JSON/JSONL path")
-    parser.add_argument("--val-file", type=Path, default=None, help="Optional held-out validation JSON/JSONL path")
+    parser.add_argument("--train-file", type=Path, default=None, help="Training dataset JSON/JSONL/JSON.GZ path")
+    parser.add_argument("--train-split", type=str, default=None, help="Optional split key when --train-file is a JSON dict")
+    parser.add_argument("--val-file", type=Path, default=None, help="Optional held-out validation JSON/JSONL/JSON.GZ path")
+    parser.add_argument("--val-split", type=str, default=None, help="Optional split key when --val-file is a JSON dict")
     parser.add_argument("--run-prefix", type=str, default=None, help="Output checkpoint filename prefix")
     parser.add_argument("--verify-only", action="store_true", help="Only verify SHA-256 and state restoration")
     parser.add_argument("--check-tpu", action="store_true", help="Only print Colab TPU / TorchTPU / CPU runtime diagnostics")
@@ -312,7 +290,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     if args.val_file is not None:
-        val_texts = load_texts(args.val_file)
+        val_texts = load_texts(args.val_file, split=args.val_split)
         pre_eval = trainer.model.evaluate_texts(tokenizer, val_texts)
         print(f"      Pre-resume eval   : {json.dumps(pre_eval)}")
 
@@ -324,7 +302,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"[3/3] Nothing to do     : global_step={trainer.global_step} >= target_step={args.target_step}")
         return 0
 
-    train_texts = load_texts(args.train_file)
+    train_texts = load_texts(args.train_file, split=args.train_split)
     prefix = args.run_prefix or f"v2_teacher_transfer_run{trainer.global_step}"
     print(
         f"[3/3] Training started  : step {trainer.global_step} -> {args.target_step} "
@@ -347,7 +325,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
 
     if args.val_file is not None:
-        post_eval = trainer.model.evaluate_texts(tokenizer, load_texts(args.val_file))
+        post_eval = trainer.model.evaluate_texts(tokenizer, load_texts(args.val_file, split=args.val_split))
         print(f"      Post-resume eval  : {json.dumps(post_eval)}")
 
     return 0

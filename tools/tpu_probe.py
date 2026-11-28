@@ -38,13 +38,23 @@ def detect_runtime_accelerator() -> Dict[str, Any]:
     device_count = 0
     backend_detail = "python-stdlib"
     xla_available = False
+    xla_error: Optional[str] = None
 
     try:
         import torch  # type: ignore
 
         torch_version = str(getattr(torch, "__version__", "unknown"))
-        # TorchTPU / PyTorch 2.14+ or XLA check
+
+        # 1. TorchTPU / PyTorch 2.14+ native torch.tpu or standalone torch_tpu plugin
         torch_tpu = getattr(torch, "tpu", None)
+        if torch_tpu is None:
+            try:
+                import torch_tpu as _torch_tpu  # type: ignore  # noqa: F401
+
+                torch_tpu = getattr(torch, "tpu", None)
+            except Exception:
+                torch_tpu = None
+
         if torch_tpu is not None and callable(getattr(torch_tpu, "is_available", None)):
             if torch_tpu.is_available():
                 accelerator = "TPU"
@@ -52,6 +62,7 @@ def detect_runtime_accelerator() -> Dict[str, Any]:
                 backend_detail = "torch.tpu"
                 xla_available = True
 
+        # 2. PyTorch XLA (only probe if TorchTPU not active; catch ABI mismatch safely)
         if accelerator is None:
             try:
                 import torch_xla.runtime as xr  # type: ignore
@@ -62,7 +73,8 @@ def detect_runtime_accelerator() -> Dict[str, Any]:
                     device_count = count
                     backend_detail = f"torch_xla.runtime ({xr.device_type()})"
                     xla_available = True
-            except Exception:
+            except Exception as exc:
+                xla_error = f"{type(exc).__name__}: {exc}"
                 try:
                     import torch_xla.core.xla_model as xm  # type: ignore
 
@@ -72,8 +84,9 @@ def detect_runtime_accelerator() -> Dict[str, Any]:
                         device_count = 1
                         backend_detail = f"torch_xla.xla_model ({dev})"
                         xla_available = True
-                except Exception:
-                    pass
+                        xla_error = None
+                except Exception as inner_exc:
+                    xla_error = f"{type(inner_exc).__name__}: {inner_exc}"
 
         if accelerator is None and torch.cuda.is_available():
             accelerator = "GPU"
@@ -99,6 +112,7 @@ def detect_runtime_accelerator() -> Dict[str, Any]:
         "tpu_accelerator_type": tpu_type,
         "tpu_device_nodes": device_nodes,
         "xla_or_torchtpu_ready": xla_available,
+        "xla_error": xla_error,
         "backend_detail": backend_detail,
         "pure_native_v2_ready": True,
         "pure_native_v2_note": (
@@ -121,6 +135,8 @@ def format_runtime_report(info: Dict[str, Any]) -> str:
         f"Backend         : {info['backend_detail']}",
         f"Pure Native V2  : ready={info['pure_native_v2_ready']} (CPU Pure Python)",
     ]
+    if info.get("xla_error"):
+        lines.append(f"XLA status      : unavailable ({info['xla_error']})")
     if info["accelerator"] is None and info["torch_version"] and "+cpu" in info["torch_version"]:
         lines.append(
             "Hint            : Colab returned CPU PyTorch without TPU allocation. "

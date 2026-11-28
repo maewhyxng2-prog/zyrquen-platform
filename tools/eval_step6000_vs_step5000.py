@@ -139,13 +139,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         description="Compare Step 6000 candidate against Step 5000 baseline on held-out transfer-validation data."
     )
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
-    parser.add_argument("--val-file", type=Path, required=True, help="Held-out validation JSON/JSONL file")
+    parser.add_argument("--val-file", type=Path, required=True, help="Held-out validation JSON/JSONL/JSON.GZ file")
+    parser.add_argument("--val-split", type=str, default=None, help="Optional split key when --val-file is a JSON dict")
     parser.add_argument("--baseline", type=Path, default=None)
     parser.add_argument("--candidate", type=Path, default=None)
     parser.add_argument("--output-json", type=Path, default=None)
     args = parser.parse_args(argv)
 
-    val_texts = load_texts_from_file(args.val_file)
+    val_texts = load_texts_from_file(args.val_file, split=args.val_split)
     report = compare_step6000_vs_step5000(
         out_dir=args.out_dir,
         val_texts=val_texts,
