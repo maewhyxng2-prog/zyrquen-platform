@@ -165,6 +165,54 @@ describe("checkpoint-integrity helpers", () => {
       }),
     ).toEqual({ label: "Error", tone: "bad", icon: "close" });
   });
+
+  it("verifies checkpoint SHA-256 against PR #56 manifest and rejects corrupted/missing files", async () => {
+    const { PR56_CHECKPOINT_MANIFEST, verify_checkpoint_hash } = await import(
+      "./checkpoint-integrity"
+    );
+    expect(PR56_CHECKPOINT_MANIFEST[5000].filename).toBe(
+      "v2_teacher_transfer_step5000.json.gz",
+    );
+    expect(PR56_CHECKPOINT_MANIFEST[6000].sha256).toBe(
+      "3b7f0ed4de259a0b1db2135caf193c074409cadb3a599ae4656cfd4b3dffbca7",
+    );
+
+    const dir = mkdtempSync(join(tmpdir(), "zyrquen-pr56-"));
+    try {
+      await expect(verify_checkpoint_hash(9999, { checkpointsDir: dir })).rejects.toThrow(
+        "not recorded in the PR #56",
+      );
+      await expect(verify_checkpoint_hash(6000, { checkpointsDir: dir })).rejects.toThrow(
+        "Checkpoint file not found",
+      );
+
+      // Corrupted bytes fail closed against the real PR #56 Step 6000 digest
+      const ckpt6000 = join(dir, PR56_CHECKPOINT_MANIFEST[6000].filename);
+      writeFileSync(ckpt6000, Buffer.from("corrupted-step6000-payload"));
+      await expect(verify_checkpoint_hash(6000, { checkpointsDir: dir })).rejects.toThrow(
+        "SHA-256 mismatch for step 6000",
+      );
+
+      // Exact matching SHA-256 succeeds cleanly
+      const validBytes = Buffer.from("valid-test-checkpoint-bytes");
+      const validDigest = createHash("sha256").update(validBytes).digest("hex");
+      writeFileSync(ckpt6000, validBytes);
+      const res = await verify_checkpoint_hash(6000, {
+        checkpointsDir: dir,
+        manifest: {
+          6000: {
+            filename: PR56_CHECKPOINT_MANIFEST[6000].filename,
+            sha256: validDigest,
+          },
+        },
+      });
+      expect(res.verified).toBe(true);
+      expect(res.actualSha256).toBe(validDigest);
+      expect(res.sizeBytes).toBe(validBytes.length);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("in-memory-backend checkpoint verification endpoint", () => {

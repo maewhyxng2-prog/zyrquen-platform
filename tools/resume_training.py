@@ -13,8 +13,10 @@ Policy:
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -123,12 +125,96 @@ def verify_checkpoint_hash(step: int, out_dir: Path = DEFAULT_OUT_DIR) -> Tuple[
     return ckpt_path, actual_sha
 
 
+REQUIRED_STATE_KEYS = {
+    "params",
+    "m_state",
+    "v_state",
+    "replay_buffer",
+    "anchor_params",
+    "importance_diag",
+    "trainer_hparams",
+}
+
+
+def _all_finite(tree: Any) -> bool:
+    if isinstance(tree, (int, float)):
+        return math.isfinite(float(tree))
+    if isinstance(tree, list):
+        return all(_all_finite(item) for item in tree)
+    if isinstance(tree, dict):
+        return all(_all_finite(val) for val in tree.values())
+    return True
+
+
+def verify_trainer_can_continue(
+    trainer: PureContinualTrainerV2,
+    expected_step: int = 6000,
+) -> Dict[str, Any]:
+    """Ensure restored optimizer, replay buffer, importance weights, and forward/backward pass can safely continue training."""
+    if trainer.global_step != expected_step:
+        raise AssertionError(
+            f"Restored global_step={trainer.global_step} != expected step={expected_step}"
+        )
+    if not trainer.m_state or not trainer.v_state:
+        raise AssertionError("Optimizer m_state / v_state failed to restore from checkpoint")
+    if set(trainer.m_state.keys()) != set(trainer.model.params.keys()):
+        raise AssertionError("Optimizer m_state parameter keys do not match model.params")
+    if set(trainer.v_state.keys()) != set(trainer.model.params.keys()):
+        raise AssertionError("Optimizer v_state parameter keys do not match model.params")
+    if not isinstance(trainer.replay_buffer, list):
+        raise AssertionError("Continual-learning replay_buffer did not restore as a list")
+    if not isinstance(trainer.importance_diag, dict) or not isinstance(trainer.anchor_params, dict):
+        raise AssertionError("Continual-learning importance_diag / anchor_params failed to restore")
+    if not _all_finite(trainer.model.params):
+        raise AssertionError("Non-finite parameter weights detected in restored model")
+    if not _all_finite(trainer.m_state) or not _all_finite(trainer.v_state):
+        raise AssertionError("Non-finite optimizer moment buffers detected")
+    if trainer.importance_diag and not _all_finite(trainer.importance_diag):
+        raise AssertionError("Non-finite values detected in importance_diag")
+
+    # Non-mutating forward/backward loss probe to verify gradient flow before resuming
+    probe_text = (
+        trainer.replay_buffer[0]
+        if trainer.replay_buffer
+        else "zyrquen native continuation safety probe"
+    )
+    probe_ids = trainer.tokenizer.encode(probe_text, add_eos=True)[: trainer.model.cfg.max_seq_len]
+    if len(probe_ids) < 2:
+        probe_ids = [65, 66, 67, trainer.tokenizer.eos_token_id]
+    probe_loss, _, probe_grads = trainer.model.forward_loss_and_backward(
+        probe_ids[:-1], probe_ids[1:]
+    )
+    if not math.isfinite(probe_loss) or not _all_finite(probe_grads):
+        raise AssertionError(f"Continuation safety probe produced non-finite loss/grads: {probe_loss}")
+
+    return {
+        "can_continue_safely": True,
+        "global_step": trainer.global_step,
+        "probe_loss": round(float(probe_loss), 4),
+        "optimizer_restored": True,
+        "replay_buffer_len": len(trainer.replay_buffer),
+        "has_anchor_params": bool(trainer.anchor_params),
+        "has_importance_diag": bool(trainer.importance_diag),
+    }
+
+
 def resume_from_checkpoint(
     step: int = 6000,
     out_dir: Path = DEFAULT_OUT_DIR,
 ) -> Dict[str, Any]:
     """Verify SHA-256 and restore full Optimizer + Continual-Learning state."""
     ckpt_path, verified_sha = verify_checkpoint_hash(step, out_dir=out_dir)
+
+    with gzip.open(ckpt_path, "rt", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Invalid checkpoint JSON payload in {ckpt_path.name}")
+    missing_keys = REQUIRED_STATE_KEYS - set(payload.keys())
+    if missing_keys:
+        raise ValueError(
+            f"Missing required checkpoint state keys in {ckpt_path.name}: {sorted(missing_keys)}"
+        )
+
     tokenizer = ByteTokenizer()
     trainer = PureContinualTrainerV2.load_checkpoint(
         ckpt_path,
@@ -137,12 +223,7 @@ def resume_from_checkpoint(
         resume_optimizer=True,
         restore_continual_state=True,
     )
-    if trainer.global_step != step:
-        raise AssertionError(
-            f"Restored global_step={trainer.global_step} != requested step={step}"
-        )
-    if not trainer.m_state or not trainer.v_state:
-        raise AssertionError("Optimizer m_state / v_state failed to restore from checkpoint")
+    safety = verify_trainer_can_continue(trainer, expected_step=step)
 
     return {
         "trainer": trainer,
@@ -150,11 +231,7 @@ def resume_from_checkpoint(
         "checkpoint_path": ckpt_path,
         "sha256": verified_sha,
         "size_bytes": ckpt_path.stat().st_size,
-        "global_step": trainer.global_step,
-        "optimizer_restored": True,
-        "replay_buffer_len": len(trainer.replay_buffer),
-        "has_anchor_params": bool(trainer.anchor_params),
-        "has_importance_diag": bool(trainer.importance_diag),
+        **safety,
     }
 
 
