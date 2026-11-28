@@ -24,6 +24,11 @@ from v2.zyrquen_v2_trainer import (
     ByteTokenizer,
 )
 
+try:
+    from checkpoint_hash import compute_file_sha256, save_checkpoint_sha256
+except ImportError:
+    from python_core.checkpoint_hash import compute_file_sha256, save_checkpoint_sha256
+
 
 @dataclass
 class PureZyrquenV2Config:
@@ -936,10 +941,7 @@ class PureContinualTrainerV2:
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         with gzip.open(out_path, "wb") as fh:
             fh.write(raw)
-        digest = hashlib.sha256(out_path.read_bytes()).hexdigest()
-        out_path.with_suffix(out_path.suffix + ".sha256").write_text(
-            digest, encoding="utf-8"
-        )
+        _, digest = save_checkpoint_sha256(out_path)
         return out_path, digest
 
     @classmethod
@@ -955,7 +957,7 @@ class PureContinualTrainerV2:
     ) -> "PureContinualTrainerV2":
         ckpt_path = Path(path)
         if expected_sha256 is not None:
-            actual = hashlib.sha256(ckpt_path.read_bytes()).hexdigest()
+            actual = compute_file_sha256(ckpt_path)
             if actual != expected_sha256:
                 raise ValueError("Checkpoint SHA-256 verification failed")
 

@@ -25,6 +25,11 @@ from typing import Any
 
 from native_tokenizer import NativeBPETokenizer
 
+try:
+    from checkpoint_hash import save_checkpoint_sha256
+except ImportError:
+    from python_core.checkpoint_hash import save_checkpoint_sha256
+
 
 def _zeros(n: int) -> list[float]:
     return [0.0] * n
@@ -593,11 +598,14 @@ class NativeTransformerLM:
         path: Path,
         tokenizer: NativeBPETokenizer,
         metrics: dict[str, Any] | None = None,
-    ) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
+    ) -> tuple[Path, str]:
+        ckpt_path = Path(path)
+        ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(self.to_dict(tokenizer=tokenizer, metrics=metrics), ensure_ascii=False).encode("utf-8")
-        with gzip.open(path, "wb") as f:
+        with gzip.open(ckpt_path, "wb") as f:
             f.write(payload)
+        _, digest = save_checkpoint_sha256(ckpt_path)
+        return ckpt_path, digest
 
     @classmethod
     def load_checkpoint(cls, path: Path) -> tuple["NativeTransformerLM", NativeBPETokenizer, dict[str, Any]]:

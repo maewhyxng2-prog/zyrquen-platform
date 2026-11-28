@@ -14,6 +14,11 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+try:
+    from checkpoint_hash import compute_file_sha256, save_checkpoint_sha256
+except ImportError:
+    from python_core.checkpoint_hash import compute_file_sha256, save_checkpoint_sha256
+
 PAD_TOKEN_ID = 256
 EOS_TOKEN_ID = 257
 BYTE_VOCAB_SIZE = 258
@@ -407,11 +412,7 @@ def _require_torch():
 
 
 def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return compute_file_sha256(path)
 
 
 class ContinualTrainerV2:
@@ -631,10 +632,7 @@ class ContinualTrainerV2:
             "global_step": self.global_step,
         }
         torch.save(payload, out_path)
-        digest = _sha256_file(out_path)
-        out_path.with_suffix(out_path.suffix + ".sha256").write_text(
-            digest, encoding="utf-8"
-        )
+        _, digest = save_checkpoint_sha256(out_path)
         return out_path, digest
 
     @classmethod

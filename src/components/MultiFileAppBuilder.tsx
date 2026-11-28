@@ -250,13 +250,18 @@ export function MultiFileAppBuilder({ token }: MultiFileAppBuilderProps) {
   }, [token, workspaceName]);
 
   useEffect(() => {
-    void loadWorkspaces();
+    const timer = window.setTimeout(() => {
+      void loadWorkspaces();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [loadWorkspaces]);
 
   useEffect(() => {
-    if (workspaceName) {
+    if (!workspaceName) return;
+    const timer = window.setTimeout(() => {
       void loadWorkspaceDetail(workspaceName);
-    }
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [workspaceName, loadWorkspaceDetail]);
 
   const handleOpenWorkspaceFile = async (relPath: string) => {
